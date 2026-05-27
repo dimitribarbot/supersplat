@@ -13,6 +13,7 @@
     "menu.file.export.splat": "Splat (.splat)",
     "menu.file.export.sog": "SOG (.sog)",
     "menu.file.export.viewer": "Viewer App",
+    "menu.file.export.viewerSettings": "ビューア設定 (.json)",
     "menu.select": "選択",
     "menu.select.all": "全て",
     "menu.select.none": "選択を解除",

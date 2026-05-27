@@ -1324,6 +1324,20 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
     }
 };
 
+const serializeViewerSettings = async (
+    experienceSettings: ExperienceSettings,
+    fs: FileSystem,
+    filename: string
+): Promise<void> => {
+    const writer = await fs.createWriter(filename);
+    try {
+        const json = JSON.stringify(experienceSettings, null, 4);
+        await writer.write(new TextEncoder().encode(json));
+    } finally {
+        await writer.close();
+    }
+};
+
 // SOG serialization using splat-transform library
 
 type SogSettings = SerializeSettings & {
@@ -1365,6 +1379,7 @@ export {
     serializeSplat,
     serializeSog,
     serializeViewer,
+    serializeViewerSettings,
     AnimTrack,
     CameraPose,
     Camera,

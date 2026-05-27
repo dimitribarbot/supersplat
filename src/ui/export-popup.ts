@@ -332,7 +332,8 @@ class ExportPopup extends Container {
                 ply: [compressRow, bandsRow, filenameRow],
                 splat: [filenameRow],
                 sog: [bandsRow, iterationsRow, filenameRow],
-                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, filenameRow]
+                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, filenameRow],
+                viewerSettings: [animationRow, loopRow, colorRow, fovRow, filenameRow]
             }[exportType];
 
             allRows.forEach((r) => {
@@ -361,6 +362,9 @@ class ExportPopup extends Container {
                     break;
                 case 'viewer':
                     updateExtension(viewerTypeSelect.value === 'html' ? '.html' : '.zip');
+                    break;
+                case 'viewerSettings':
+                    updateExtension('.json');
                     break;
             }
 
@@ -497,6 +501,16 @@ class ExportPopup extends Container {
                 };
             };
 
+            const assembleViewerSettingsOptions = (): SceneExportOptions => {
+                const viewerOptions = assembleViewerOptions();
+                return {
+                    filename: viewerOptions.filename,
+                    splatIdx: 'all',
+                    serializeSettings: {},
+                    viewerExportSettings: viewerOptions.viewerExportSettings
+                };
+            };
+
             return new Promise<null | SceneExportOptions>((resolve) => {
                 onCancel = () => {
                     resolve(null);
@@ -515,6 +529,9 @@ class ExportPopup extends Container {
                             break;
                         case 'viewer':
                             resolve(assembleViewerOptions());
+                            break;
+                        case 'viewerSettings':
+                            resolve(assembleViewerSettingsOptions());
                             break;
                     }
                 };

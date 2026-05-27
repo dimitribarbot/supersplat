@@ -6,15 +6,15 @@ import { Events } from './events';
 import { BrowserFileSystem, MappedReadFileSystem } from './io';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeViewer, SogSettings, ViewerExportSettings } from './splat-serialize';
+import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeViewer, serializeViewerSettings, SogSettings, ViewerExportSettings } from './splat-serialize';
 import { localize } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
 
-type ExportType = 'ply' | 'splat' | 'sog' | 'viewer';
+type ExportType = 'ply' | 'splat' | 'sog' | 'viewer' | 'viewerSettings';
 
-type FileType = 'ply' | 'compressedPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
+type FileType = 'ply' | 'compressedPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer' | 'viewerSettings';
 
 interface SceneExportOptions {
     filename: string;
@@ -92,6 +92,12 @@ const filePickerTypes: { [key: string]: FilePickerAcceptType } = {
         description: 'Viewer ZIP',
         accept: {
             'application/zip': ['.zip']
+        }
+    },
+    'viewerSettings': {
+        description: 'Viewer Settings JSON',
+        accept: {
+            'application/json': ['.json']
         }
     }
 };
@@ -500,8 +506,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
         const fileType: FileType =
             (exportType === 'viewer') ? (options.viewerExportSettings!.type === 'zip' ? 'packageViewer' : 'htmlViewer') :
-                (exportType === 'ply') ? (options.compressedPly ? 'compressedPly' : 'ply') :
-                    (exportType === 'sog') ? 'sog' : 'splat';
+                (exportType === 'viewerSettings') ? 'viewerSettings' :
+                    (exportType === 'ply') ? (options.compressedPly ? 'compressedPly' : 'ply') :
+                        (exportType === 'sog') ? 'sog' : 'splat';
 
         if (hasFilePicker) {
             try {
@@ -523,7 +530,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
     events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream) => {
         // SOG and viewer exports have their own progress UI, other formats use spinner
-        const useSpinner = fileType !== 'sog' && fileType !== 'htmlViewer' && fileType !== 'packageViewer';
+        const useSpinner = fileType !== 'sog' && fileType !== 'htmlViewer' && fileType !== 'packageViewer' && fileType !== 'viewerSettings';
 
         if (useSpinner) {
             events.fire('startSpinner');
@@ -568,6 +575,9 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 case 'htmlViewer':
                 case 'packageViewer':
                     await serializeViewer(splats, serializeSettings, { ...viewerExportSettings!, events }, fs);
+                    break;
+                case 'viewerSettings':
+                    await serializeViewerSettings(viewerExportSettings!.experienceSettings, fs, filename);
                     break;
             }
 

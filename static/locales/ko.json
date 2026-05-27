@@ -13,6 +13,7 @@
     "menu.file.export.splat": "Splat (.splat)",
     "menu.file.export.sog": "SOG (.sog)",
     "menu.file.export.viewer": "뷰어 앱",
+    "menu.file.export.viewerSettings": "뷰어 설정 (.json)",
     "menu.select": "선택",
     "menu.select.all": "모두",
     "menu.select.none": "없음",

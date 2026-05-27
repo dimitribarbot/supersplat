@@ -13,6 +13,7 @@
     "menu.file.export.splat": "Splat (.splat)",
     "menu.file.export.sog": "SOG (.sog)",
     "menu.file.export.viewer": "Application de visualisation",
+    "menu.file.export.viewerSettings": "Paramètres de visualisation (.json)",
     "menu.select": "Sélection",
     "menu.select.all": "Tout",
     "menu.select.none": "Aucune",
