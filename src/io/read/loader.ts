@@ -3,6 +3,7 @@
  */
 
 import {
+    combine,
     getInputFormat,
     readFile,
     sortMortonOrder,
@@ -116,6 +117,14 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
         fileSystem
     });
 
+    // Some formats return multiple tables. LCC returns the main scene geometry in
+    // tables[0] and, when present, the environment (skybox) splats from
+    // environment.bin in a subsequent table. Merge them into a single table so the
+    // environment is included. combine() unions columns by name/type, zero-filling
+    // any column absent from a table (e.g. normals, which the environment lacks),
+    // and preserves the shared source transform.
+    const table = tables.length > 1 ? combine(tables) : tables[0];
+
     // Reorder data into morton order for better render performance.
     // Skip reordering for:
     // - SOG format (already in morton order)
@@ -123,17 +132,16 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
     // - When skipReorder is true (ssproj files are already ordered, animation frames need speed)
     const isCompressedPly = lowerFilename.endsWith('.compressed.ply');
     if (inputFormat !== 'sog' && !isCompressedPly && !skipReorder) {
-        const indices = new Uint32Array(tables[0].numRows);
+        const indices = new Uint32Array(table.numRows);
         for (let i = 0; i < indices.length; i++) {
             indices[i] = i;
         }
-        sortMortonOrder(tables[0], indices);
-        tables[0].permuteRowsInPlace(indices);
+        sortMortonOrder(table, indices);
+        table.permuteRowsInPlace(indices);
     }
 
-    // Convert to GSplatData (use first table, as most formats return single table)
-    // LCC may return multiple tables for different LOD levels - we use the first (highest detail)
-    return { gsplatData: dataTableToGSplatData(tables[0]), transform: tables[0].transform };
+    // Convert to GSplatData
+    return { gsplatData: dataTableToGSplatData(table), transform: table.transform };
 };
 
 /**

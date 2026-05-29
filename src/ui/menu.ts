@@ -199,6 +199,12 @@ class Menu extends Container {
                 await events.invoke('scene.import');
             }
         }, {
+            text: localize('menu.file.import-folder', { ellipsis: true }),
+            icon: createSvg(sceneImport),
+            onSelect: async () => {
+                await events.invoke('scene.importFolder');
+            }
+        }, {
             text: localize('menu.file.export'),
             icon: createSvg(sceneExport),
             subMenu: exportMenuPanel

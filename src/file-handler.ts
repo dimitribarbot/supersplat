@@ -319,14 +319,36 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             events.fire('timeline.frame', 0);
         } else if (isSog(filenames) || isLcc(filenames)) {
             if (isLcc(filenames)) {
-                const response = await events.invoke('showPopup', {
-                    type: 'okcancel',
-                    header: 'LCC',
-                    message: localize('popup.lcc-upload-warning'),
-                    link: `${window.location.origin}/upload`
-                });
-                if (response.action === 'cancel') {
+                // an LCC needs its sibling data files (index.bin, data.bin, ...).
+                // A lone .lcc - e.g. picked through the file dialog - can't be
+                // loaded, so guide the user to the folder import (or drag & drop)
+                // instead of failing with a 404 on the missing data.
+                const hasData = filenames.some(f => f.endsWith('index.bin')) &&
+                    filenames.some(f => f.endsWith('data.bin'));
+                if (!hasData) {
+                    await events.invoke('showPopup', {
+                        type: 'info',
+                        header: 'LCC',
+                        message: localize('popup.lcc-folder-required')
+                    });
                     return result;
+                }
+
+                // Only suggest the supersplat upload page when running on the
+                // superspl.at domain - the modal and its /upload link are
+                // irrelevant elsewhere (e.g. localhost or self-hosted instances).
+                const { hostname } = window.location;
+                const isSuperSplatDomain = hostname === 'superspl.at' || hostname.endsWith('.superspl.at');
+                if (isSuperSplatDomain) {
+                    const response = await events.invoke('showPopup', {
+                        type: 'okcancel',
+                        header: 'LCC',
+                        message: localize('popup.lcc-upload-warning'),
+                        link: `${window.location.origin}/upload`
+                    });
+                    if (response.action === 'cancel') {
+                        return result;
+                    }
                 }
             }
             const model = await importSplatModel(files, animationFrame);
@@ -392,6 +414,31 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         };
         document.body.append(fileSelector);
     }
+
+    // folder selector for importing multi-file formats (e.g. LCC) by their
+    // containing folder. webkitdirectory works across browsers - including those
+    // without the File System Access API such as Brave and Firefox.
+    const folderSelector = document.createElement('input');
+    folderSelector.setAttribute('id', 'folder-selector');
+    folderSelector.setAttribute('type', 'file');
+    folderSelector.setAttribute('webkitdirectory', 'true');
+    folderSelector.setAttribute('multiple', 'true');
+    folderSelector.style.display = 'none';
+
+    folderSelector.onchange = () => {
+        const files: ImportFile[] = [];
+        for (let i = 0; i < folderSelector.files.length; i++) {
+            const file = folderSelector.files[i];
+            // strip the selected folder name so paths match a folder drag & drop
+            const filename = file.webkitRelativePath ?
+                file.webkitRelativePath.split('/').slice(1).join('/') :
+                file.name;
+            files.push({ filename, contents: file });
+        }
+        if (files.length > 0) importFiles(files);
+        folderSelector.value = '';
+    };
+    document.body.append(folderSelector);
 
     // create the file drag & drop handler
     CreateDropHandler(dropTarget, (entries, shift) => {
@@ -461,6 +508,11 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 }
             }
         }
+    });
+
+    // import a multi-file format (e.g. LCC) by selecting its containing folder
+    events.function('scene.importFolder', () => {
+        folderSelector.click();
     });
 
     // open a folder
