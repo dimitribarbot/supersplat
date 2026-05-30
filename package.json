@@ -19,7 +19,8 @@
         "serve": "serve dist -C -l 3333",
         "develop": "cross-env BUILD_TYPE=debug concurrently --kill-others \"npm run watch\" \"npm run serve\"",
         "develop:auto-launch": "concurrently --kill-others \"xdg-open 'http://localhost:3333/'\" \"npm run watch\" \"npm run serve\"",
-        "lint": "eslint src"
+        "lint": "eslint src",
+        "test": "vitest run"
     },
     "engines": {
         "node": ">=20.19.0"
@@ -56,6 +57,7 @@
         "sass": "1.100.0",
         "serve": "14.2.6",
         "tslib": "2.8.1",
-        "typescript": "6.0.3"
+        "typescript": "6.0.3",
+        "vitest": "^4.1.7"
     }
 }

@@ -1,18 +1,8 @@
 import {
     Column,
-    combine,
     DataTable,
-    logger as splatTransformLogger,
-    MemoryFileSystem,
-    simplifyGaussians,
     Transform,
-    writeHtml,
-    writeLod,
-    writeSog as writeSogInternal,
-    ZipFileSystem,
     type FileSystem,
-    type LogEvent,
-    type Renderer,
     type Writer
 } from '@playcanvas/splat-transform';
 import {
@@ -32,6 +22,7 @@ import { Events } from './events';
 import { ProgressWriter } from './io';
 import { SHRotation } from './sh-utils';
 import { Splat } from './splat';
+import { writeSogCore, writeViewerCore } from './splat-export-core';
 import { State } from './splat-state';
 
 type SerializeSettings = {
@@ -1226,293 +1217,12 @@ const extractDataTable = (splats: Splat[], settings: SerializeSettings): DataTab
     return dataTable;
 };
 
-// Bridge splat-transform progress events to supersplat's events.
-//
-// An optional getPrefix supplies a phase label (e.g. "Building detail level 2",
-// "Packaging streaming chunks") for multi-pass operations like streaming LOD
-// export. splat-transform also emits an {index,total} counter on the scopes
-// that wrap its repeated work units - decimation iterations
-// (`logger.group('Decimate iteration', {index,total})`) and per-chunk SOG
-// writes (`logger.group('<lod>_<i>', {index,total})`). When a prefix is present
-// we fold the outermost active counter into each per-step message, so the
-// otherwise-identical low-level GPU bars read as distinct numbered steps
-// (e.g. "Packaging streaming chunks (5/40): k-means") instead of cycling
-// through bare repeated labels. Exporters that pass no prefix keep their
-// original output.
-const createProgressRenderer = (header: string, events?: Events, getPrefix?: () => string, countSteps?: () => boolean): Renderer => {
-    // Active scopes carrying a counter, ordered outermost-first. The outermost
-    // is the meaningful unit (e.g. the chunk number during packaging); inner SOG
-    // sub-steps are ignored so the count stays stable across a unit. The counter
-    // is only surfaced when countSteps() is true, because splat-transform's
-    // decimation-iteration total is an estimate that can be exceeded - that
-    // phase carries its level number in the prefix instead.
-    const counters: { depth: number; index: number; total: number }[] = [];
-
-    const stepText = (name: string): string => {
-        const prefix = getPrefix?.();
-        if (!prefix) {
-            return name;
-        }
-        const counter = countSteps?.() ? counters[0] : undefined;
-        return `${prefix}${counter ? ` (${counter.index}/${counter.total})` : ''}: ${name}`;
-    };
-
-    return {
-        handle: (event: LogEvent) => {
-            switch (event.kind) {
-                case 'scopeStart':
-                    if (getPrefix && event.index !== undefined && event.total !== undefined) {
-                        counters.push({ depth: event.depth, index: event.index, total: event.total });
-                    }
-                    if (event.depth === 0) {
-                        events?.fire('progressStart', header);
-                    } else if (getPrefix) {
-                        events?.fire('progressUpdate', { text: stepText(event.name), progress: 0 });
-                    } else {
-                        events?.fire('progressUpdate', {
-                            text: event.index !== undefined && event.total !== undefined ?
-                                `Step ${event.index} of ${event.total}: ${event.name}` :
-                                event.name,
-                            progress: 0
-                        });
-                    }
-                    break;
-                case 'scopeEnd':
-                    while (counters.length > 0 && counters[counters.length - 1].depth >= event.depth) {
-                        counters.pop();
-                    }
-                    if (event.depth === 0) {
-                        events?.fire('progressEnd');
-                    }
-                    break;
-                case 'barStart':
-                    events?.fire('progressUpdate', { text: stepText(event.name), progress: 0 });
-                    break;
-                case 'barTick':
-                    events?.fire('progressUpdate', {
-                        progress: event.total > 0 ? 100 * event.current / event.total : 0
-                    });
-                    break;
-                case 'barEnd':
-                    events?.fire('progressUpdate', { progress: 100 });
-                    break;
-                case 'message':
-                    if (event.level === 'error') console.error(event.text);
-                    else if (event.level === 'warn') console.warn(event.text);
-                    else if (event.level === 'info') console.info(event.text);
-                    else if (event.level === 'debug') console.debug(event.text);
-                    break;
-                case 'output':
-                    console.log(event.text);
-                    break;
-            }
-        }
-    };
-};
-
-// Streaming LOD export tuning. LOD 0 is the full-resolution, fully-edited
-// scene. Each subsequent level decimates the FULL scene (not the previous
-// level) down to a quarter of the running target, so every level is an
-// independent representation of the whole scene at lower density. Levels stop
-// once the next would fall below MIN_LOD_SPLATS or once MAX_LOD_LEVELS exist.
-const MAX_LOD_LEVELS = 4;
-const LOD_DECIMATION_FACTOR = 4;
-const MIN_LOD_SPLATS = 64 * 1024;
-
-// Build a single DataTable carrying a per-gaussian `lod` column (0 = finest),
-// suitable for writeLod. Decimation runs against the untagged lod0 so the
-// merge math never sees the synthetic `lod` column; lod0 is tagged last.
-// Consumes lod0: a `lod` column is added to it in place (cloning the
-// full-resolution table here would needlessly duplicate the largest dataset),
-// so callers must not reuse the passed table after this call.
-const buildStreamingLodTable = async (
-    lod0: DataTable,
-    onPhase?: (label: string) => void
-): Promise<DataTable> => {
-    const levels: DataTable[] = [];
-
-    // Count the coarser levels we'll generate up front so the phase label can
-    // show an accurate "level N of M" (M = number of decimated levels).
-    let levelCount = 0;
-    for (let level = 1, t = lod0.numRows; level < MAX_LOD_LEVELS; ++level) {
-        t = Math.floor(t / LOD_DECIMATION_FACTOR);
-        if (t < MIN_LOD_SPLATS) {
-            break;
-        }
-        levelCount++;
-    }
-
-    let target = lod0.numRows;
-    for (let level = 1; level < MAX_LOD_LEVELS; ++level) {
-        target = Math.floor(target / LOD_DECIMATION_FACTOR);
-        if (target < MIN_LOD_SPLATS) {
-            break;
-        }
-        onPhase?.(`Building detail level ${level} of ${levelCount}`);
-        const simplified = await simplifyGaussians(lod0, target, createGpuDevice);
-        simplified.addColumn(new Column('lod', new Float32Array(simplified.numRows).fill(level)));
-        levels.push(simplified);
-    }
-
-    lod0.addColumn(new Column('lod', new Float32Array(lod0.numRows).fill(0)));
-    levels.unshift(lod0);
-
-    // All levels share lod0's Transform.PLY (clone preserves it), so combine
-    // concatenates rows without any coordinate-space conversion.
-    return combine(levels);
-};
-
-// Produce a streaming viewer ZIP: a viewer shell (from unbundled writeHtml)
-// repointed at lod-meta.json, plus the writeLod streaming bundle.
-// Not exported; called only from serializeViewer below.
-const serializeStreamingViewer = async (
-    dataTable: DataTable,
-    viewerSettingsJson: ExperienceSettings,
-    fs: FileSystem,
-    events?: Events
-): Promise<void> => {
-    // Phase label prefixed onto splat-transform's low-level progress steps so
-    // the repeated decimation and chunk-compression passes read clearly.
-    // `counted` enables the splat-transform per-unit counter (chunk number)
-    // only during chunk packaging; decimation carries its level in the label.
-    let phase = '';
-    let counted = false;
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting streaming viewer', events, () => phase, () => counted));
-
-    const memFs = new MemoryFileSystem();
-
-    // A 1-row placeholder keeps writeHtml's throwaway content SOG cheap to
-    // produce (we only want its index.html/css/js/settings.json shell).
-    phase = 'Preparing viewer';
-    const placeholder = dataTable.clone({ rows: [0] });
-    await writeHtml({
-        filename: 'index.html',
-        dataTable: placeholder,
-        viewerSettingsJson,
-        bundle: false,
-        iterations: 10,
-        createDevice: createGpuDevice
-    }, memFs);
-
-    // Streaming bundle: lod-meta.json + per-LOD SOG chunk folders. Decimation's
-    // per-pass count is an estimate, so the level number lives in the label and
-    // the per-step counter stays off here.
-    const lodTable = await buildStreamingLodTable(dataTable, (label) => {
-        phase = label;
-    });
-
-    // Chunk packaging emits one accurate {index,total} per chunk - surface it.
-    phase = 'Packaging streaming chunks';
-    counted = true;
-    await writeLod({
-        filename: 'lod-meta.json',
-        dataTable: lodTable,
-        envDataTable: null,
-        iterations: 10,
-        createDevice: createGpuDevice,
-        chunkCount: 512,   // ~gaussians per chunk, in thousands (splat-transform default)
-        chunkExtent: 16    // ~chunk size in world units / metres (splat-transform default)
-    }, memFs);
-
-    // Drop the throwaway content SOG and repoint the viewer at the LOD bundle.
-    // Unbundled writeHtml hardcodes the content fetch to the (now discarded) SOG
-    // and leaves the default contentUrl pointing at it too. Repoint both: the
-    // fetch so the bytes load, and the default contentUrl so the loader selects
-    // the octree streaming parser (it keys the parser off the URL basename) when
-    // no ?content= override is supplied.
-    memFs.results.delete('index.sog');
-    const rawHtml = memFs.results.get('index.html');
-    if (!rawHtml) {
-        throw new Error('Streaming export failed: writeHtml did not produce index.html');
-    }
-    const html = new TextDecoder().decode(rawHtml);
-    const repointedFetch = html.replace('fetch("index.sog")', 'fetch("./lod-meta.json")');
-    if (repointedFetch === html) {
-        throw new Error('Streaming export failed: could not repoint viewer content fetch to lod-meta.json (writeHtml output format changed)');
-    }
-    const repointed = repointedFetch.replace('./scene.sog', './lod-meta.json');
-    if (repointed === repointedFetch) {
-        throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (writeHtml output format changed)');
-    }
-    memFs.results.set('index.html', new TextEncoder().encode(repointed));
-
-    // ZIP every emitted file. Keys are normalised to relative paths so the
-    // viewer's relative chunk references resolve from the archive root
-    // regardless of how writeLod composed its output paths.
-    const zipWriter = await fs.createWriter('output.zip');
-    const zipFs = new ZipFileSystem(zipWriter);
-    try {
-        for (const [filename, data] of memFs.results.entries()) {
-            const entry = filename.replace(/^\/+/, '');
-            const writer = await zipFs.createWriter(entry);
-            await writer.write(data);
-            await writer.close();
-        }
-    } finally {
-        await zipFs.close();
-    }
-};
-
 const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSettings, options: ViewerExportSettings, fs: FileSystem): Promise<void> => {
     const { experienceSettings, events } = options;
-
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting HTML', events));
-
-    // Extract splat data to DataTable
     const dataTable = extractDataTable(splats, serializeSettings);
-
-    // splat-transform's writers leave their top-level scope open on error
-    // (their contract is for the caller to unwind), so we explicitly
-    // unwind here to deliver a matching depth-0 `scopeEnd(failed)` to the
-    // renderer. That fires `progressEnd` and dismisses the dialog before
-    // any error popup is shown.
-    try {
-        if (options.type === 'html') {
-            // Bundled HTML - writeHtml handles everything
-            await writeHtml({
-                filename: 'output.html',
-                dataTable,
-                viewerSettingsJson: experienceSettings,
-                bundle: true,
-                iterations: 10,
-                createDevice: createGpuDevice
-            }, fs);
-        } else if (options.streaming) {
-            // Streaming ZIP - decimate into LOD levels and write a lod-meta.json bundle
-            await serializeStreamingViewer(dataTable, experienceSettings, fs, events);
-        } else {
-            // Package - use unbundled mode into a MemoryFileSystem, then ZIP
-            const memFs = new MemoryFileSystem();
-            await writeHtml({
-                filename: 'index.html',
-                dataTable,
-                viewerSettingsJson: experienceSettings,
-                bundle: false,
-                iterations: 10,
-                createDevice: createGpuDevice
-            }, memFs);
-
-            // Create ZIP from memory filesystem results. The try/finally
-            // ensures zipFs (and its underlying writer) is closed even if a
-            // write throws partway through, so we don't leak the output file.
-            const zipWriter = await fs.createWriter('output.zip');
-            const zipFs = new ZipFileSystem(zipWriter);
-            try {
-                for (const [filename, data] of memFs.results.entries()) {
-                    const writer = await zipFs.createWriter(filename);
-                    await writer.write(data);
-                    await writer.close();
-                }
-            } finally {
-                await zipFs.close();
-            }
-        }
-    } catch (err) {
-        splatTransformLogger.unwindAll(true);
-        throw err;
-    }
+    const viewerType = options.type === 'html' ? 'html' : (options.streaming ? 'streaming' : 'package');
+    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events);
 };
-
 const serializeViewerSettings = async (
     experienceSettings: ExperienceSettings,
     fs: FileSystem,
@@ -1536,29 +1246,8 @@ type SogSettings = SerializeSettings & {
 
 const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSystem): Promise<void> => {
     const { iterations = 10, events } = settings;
-
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SOG', events));
-
-    // Extract splat data to DataTable
     const dataTable = extractDataTable(splats, settings);
-
-    // splat-transform's writers leave their top-level scope open on error
-    // (their contract is for the caller to unwind), so we explicitly
-    // unwind here to deliver a matching depth-0 `scopeEnd(failed)` to the
-    // renderer. That fires `progressEnd` and dismisses the dialog before
-    // any error popup is shown.
-    try {
-        await writeSogInternal({
-            filename: 'output.sog',
-            dataTable,
-            bundle: true,
-            iterations,
-            createDevice: createGpuDevice
-        }, fs);
-    } catch (err) {
-        splatTransformLogger.unwindAll(true);
-        throw err;
-    }
+    await writeSogCore(dataTable, iterations, createGpuDevice, fs, events);
 };
 
 export {

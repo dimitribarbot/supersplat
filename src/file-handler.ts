@@ -1,8 +1,10 @@
+import { MemoryFileSystem } from '@playcanvas/splat-transform';
 import { path, Quat, Vec3 } from 'playcanvas';
 
 import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
+import { runServerExport } from './export-server-client';
 import { BrowserFileSystem, MappedReadFileSystem } from './io';
 import { Scene } from './scene';
 import { Splat } from './splat';
@@ -29,6 +31,9 @@ interface SceneExportOptions {
 
     // viewer
     viewerExportSettings?: ViewerExportSettings;
+
+    // route export through the server when available (see export-server-client)
+    useServer?: boolean;
 }
 
 const filePickerTypes: { [key: string]: FilePickerAcceptType } = {
@@ -580,7 +585,92 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         }
     });
 
+    // Route an export through the export server: ship the browser-prepared uncompressed
+    // PLY, let the server run the same writers on its GPU, and save the result locally.
+    // Returns true if it handled the export (success or shown error), false to fall back
+    // to the local path.
+    const writeViaServer = async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream): Promise<boolean> => {
+        // Only formats the server actually produces are routed here.
+        if (fileType !== 'compressedPly' && fileType !== 'sog' && fileType !== 'htmlViewer' && fileType !== 'packageViewer') {
+            return false;
+        }
+
+        // SOG/viewer exports report granular progress from the server; drive the
+        // progress bar like the local path does. compressedPly has no granular
+        // progress, so it keeps the spinner.
+        const useSpinner = fileType === 'compressedPly';
+        if (useSpinner) {
+            events.fire('startSpinner');
+        } else {
+            events.fire('progressStart', localize('popup.export.exporting-on-server'));
+        }
+        try {
+            // let the spinner / progress UI activate
+            await new Promise<void>((resolve) => {
+                setTimeout(resolve);
+            });
+
+            const { filename, splatIdx, serializeSettings } = options;
+            const splats = splatIdx === 'all' ? getSplats() : [getSplats()[splatIdx]];
+
+            // Apply the SAME pre-extraction filtering the local path uses, so the PLY we
+            // ship is extracted identically and the server output matches a local export.
+            if (fileType === 'compressedPly' || fileType === 'sog') {
+                serializeSettings.minOpacity = 1 / 255;
+                serializeSettings.removeInvalid = true;
+            }
+
+            // Prepare the uncompressed float32 PLY in memory (browser-side extraction).
+            const memFs = new MemoryFileSystem();
+            await serializePly(splats, serializeSettings, memFs, 'scene.ply');
+            const plyBytes = memFs.results.get('scene.ply');
+            if (!plyBytes) {
+                return false; // nothing to export (0 gaussians) -> fall back to the local no-op path
+            }
+
+            // gzip the PLY for transport
+            const plyGz = await new Response(
+                new Blob([plyBytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
+            ).blob();
+
+            // Send to the server; it returns the finished file.
+            const wire = { ...options, fileType };
+            const result = await runServerExport(plyGz, wire, (p) => {
+                if (!useSpinner) {
+                    events.fire('progressUpdate', { text: p.message, progress: p.value });
+                }
+            });
+
+            // Save through the same path the local export uses (stream or download).
+            const outFs = new BrowserFileSystem(filename, stream);
+            const writer = outFs.createWriter(filename);
+            await writer.write(new Uint8Array(await result.arrayBuffer()));
+            await writer.close();
+
+            return true;
+        } catch (error) {
+            await events.invoke('showPopup', {
+                type: 'error',
+                header: localize('popup.error-loading'),
+                message: `${error.message ?? error} while exporting on server`
+            });
+            return true; // handled (error surfaced); do not silently fall back to local
+        } finally {
+            if (useSpinner) {
+                events.fire('stopSpinner');
+            } else {
+                events.fire('progressEnd');
+            }
+        }
+    };
+
     events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream) => {
+        if (options.useServer) {
+            const handled = await writeViaServer(fileType, options, stream);
+            if (handled) return;
+            // not handled (unsupported format) -> fall through to the local export
+        }
+
         // SOG and viewer exports have their own progress UI, other formats use spinner
         const useSpinner = fileType !== 'sog' && fileType !== 'htmlViewer' && fileType !== 'packageViewer' && fileType !== 'viewerSettings';
 

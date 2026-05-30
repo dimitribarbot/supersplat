@@ -3,6 +3,7 @@ import { BooleanInput, Button, ColorPicker, Container, Element, Label, SelectInp
 import { Pose } from '../camera-poses';
 import { localize } from './localization';
 import { Events } from '../events';
+import { probeExportCapabilities } from '../export-server-client';
 import { ExportType, SceneExportOptions } from '../file-handler';
 import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
 import sceneExport from './svg/export.svg';
@@ -252,6 +253,26 @@ class ExportPopup extends Container {
         streamingRow.append(streamingLabel);
         streamingRow.append(streamingToggle);
 
+        // export on server (shown only when the server supports the selected type)
+
+        const serverRow = new Container({
+            class: 'row'
+        });
+
+        const serverLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.use-server')
+        });
+
+        const serverToggle = new BooleanInput({
+            class: 'boolean',
+            type: 'toggle',
+            value: true
+        });
+
+        serverRow.append(serverLabel);
+        serverRow.append(serverToggle);
+
         // filename
 
         const filenameRow = new Container({
@@ -281,6 +302,7 @@ class ExportPopup extends Container {
         content.append(bandsRow);
         content.append(iterationsRow);
         content.append(streamingRow);
+        content.append(serverRow);
         content.append(filenameRow);
 
         // footer
@@ -334,12 +356,39 @@ class ExportPopup extends Container {
 
         let currentExportType: ExportType;
 
+        // server export capabilities (probed once, asynchronously). Until the probe
+        // resolves the server row stays hidden; it appears on the next popup open or
+        // export-type change once capabilities are known.
+        type Capabilities = Awaited<ReturnType<typeof probeExportCapabilities>>;
+        let capabilities: Capabilities = null;
+        probeExportCapabilities().then((caps) => {
+            capabilities = caps;
+        });
+
         const updateStreamingVisibility = () => {
             streamingRow.hidden = currentExportType !== 'viewer' || viewerTypeSelect.value !== 'zip';
         };
 
+        const updateServerVisibility = () => {
+            const serverSupports = (() => {
+                if (!capabilities?.enabled) return false;
+                if (currentExportType === 'splat') return false;             // always client-side
+                if (currentExportType === 'viewerSettings') return false;    // pure JSON, no server benefit
+                if (currentExportType === 'viewer') {
+                    return capabilities.formats.includes('htmlViewer') || capabilities.formats.includes('packageViewer');
+                }
+                if (currentExportType === 'ply') {
+                    return compressBoolean.value && capabilities.formats.includes('compressedPly');
+                }
+                return capabilities.formats.includes(currentExportType);
+            })();
+            serverRow.hidden = !serverSupports;
+            serverToggle.value = serverSupports;   // default on when shown
+        };
+
         compressBoolean.on('change', () => {
             updateExtension(compressBoolean.value ? '.compressed.ply' : '.ply');
+            updateServerVisibility();
         });
 
         viewerTypeSelect.on('change', () => {
@@ -355,14 +404,14 @@ class ExportPopup extends Container {
             currentExportType = exportType;
 
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, serverRow, filenameRow
             ];
 
             const activeRows = {
-                ply: [compressRow, bandsRow, filenameRow],
+                ply: [compressRow, bandsRow, serverRow, filenameRow],
                 splat: [filenameRow],
-                sog: [bandsRow, iterationsRow, filenameRow],
-                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, filenameRow],
+                sog: [bandsRow, iterationsRow, serverRow, filenameRow],
+                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, serverRow, filenameRow],
                 viewerSettings: [animationRow, loopRow, colorRow, fovRow, filenameRow]
             }[exportType];
 
@@ -381,6 +430,9 @@ class ExportPopup extends Container {
             // streaming (viewer zip only)
             streamingToggle.value = true;
             updateStreamingVisibility();
+
+            // server-export row: only when the server actually supports the selected type
+            updateServerVisibility();
 
             // filename
             filenameEntry.value = splatNames[0];
@@ -440,7 +492,8 @@ class ExportPopup extends Container {
                     serializeSettings: {
                         maxSHBands: bandsSlider.value
                     },
-                    compressedPly: compressBoolean.value
+                    compressedPly: compressBoolean.value,
+                    useServer: !serverRow.hidden && serverToggle.value
                 };
             };
 
@@ -448,7 +501,8 @@ class ExportPopup extends Container {
                 return {
                     filename: filenameEntry.value,
                     splatIdx: 'all',
-                    serializeSettings: { }
+                    serializeSettings: { },
+                    useServer: !serverRow.hidden && serverToggle.value
                 };
             };
 
@@ -459,7 +513,8 @@ class ExportPopup extends Container {
                     serializeSettings: {
                         maxSHBands: bandsSlider.value
                     },
-                    sogIterations: iterationsSlider.value
+                    sogIterations: iterationsSlider.value,
+                    useServer: !serverRow.hidden && serverToggle.value
                 };
             };
 
@@ -532,7 +587,8 @@ class ExportPopup extends Container {
                         type: viewerTypeSelect.value,
                         streaming: streamingToggle.value,
                         experienceSettings
-                    }
+                    },
+                    useServer: !serverRow.hidden && serverToggle.value
                 };
             };
 
