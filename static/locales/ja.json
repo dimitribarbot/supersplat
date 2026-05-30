@@ -216,6 +216,7 @@
     "popup.export.loop-mode.repeat": "リピート",
     "popup.export.loop-mode.pingpong": "ピンポン",
     "popup.export.compress-ply": "PLYを圧縮",
+    "popup.export.streaming": "ストリーミング",
     "popup.export.splats-select": "Splat",
     "popup.export.splats-select.all": "すべてのSplat",
     "popup.export.iterations": "Iterations",

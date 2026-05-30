@@ -232,6 +232,26 @@ class ExportPopup extends Container {
         iterationsRow.append(iterationsLabel);
         iterationsRow.append(iterationsSlider);
 
+        // viewer: streaming (zip only)
+
+        const streamingRow = new Container({
+            class: 'row'
+        });
+
+        const streamingLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.streaming')
+        });
+
+        const streamingToggle = new BooleanInput({
+            class: 'boolean',
+            type: 'toggle',
+            value: true
+        });
+
+        streamingRow.append(streamingLabel);
+        streamingRow.append(streamingToggle);
+
         // filename
 
         const filenameRow = new Container({
@@ -260,6 +280,7 @@ class ExportPopup extends Container {
         content.append(compressRow);
         content.append(bandsRow);
         content.append(iterationsRow);
+        content.append(streamingRow);
         content.append(filenameRow);
 
         // footer
@@ -311,12 +332,19 @@ class ExportPopup extends Container {
             filenameEntry.value = removeKnownExtension(filenameEntry.value) + ext;
         };
 
+        let currentExportType: ExportType;
+
+        const updateStreamingVisibility = () => {
+            streamingRow.hidden = currentExportType !== 'viewer' || viewerTypeSelect.value !== 'zip';
+        };
+
         compressBoolean.on('change', () => {
             updateExtension(compressBoolean.value ? '.compressed.ply' : '.ply');
         });
 
         viewerTypeSelect.on('change', () => {
             updateExtension(viewerTypeSelect.value === 'html' ? '.html' : '.zip');
+            updateStreamingVisibility();
         });
 
         animationToggle.on('change', (value: boolean) => {
@@ -324,15 +352,17 @@ class ExportPopup extends Container {
         });
 
         const reset = (exportType: ExportType, splatNames: string[], hasPoses: boolean) => {
+            currentExportType = exportType;
+
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, filenameRow
             ];
 
             const activeRows = {
                 ply: [compressRow, bandsRow, filenameRow],
                 splat: [filenameRow],
                 sog: [bandsRow, iterationsRow, filenameRow],
-                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, filenameRow],
+                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, filenameRow],
                 viewerSettings: [animationRow, loopRow, colorRow, fovRow, filenameRow]
             }[exportType];
 
@@ -347,6 +377,10 @@ class ExportPopup extends Container {
 
             // sog
             iterationsSlider.value = 10;
+
+            // streaming (viewer zip only)
+            streamingToggle.value = true;
+            updateStreamingVisibility();
 
             // filename
             filenameEntry.value = splatNames[0];
@@ -496,6 +530,7 @@ class ExportPopup extends Container {
                     },
                     viewerExportSettings: {
                         type: viewerTypeSelect.value,
+                        streaming: streamingToggle.value,
                         experienceSettings
                     }
                 };

@@ -216,6 +216,7 @@
     "popup.export.loop-mode.repeat": "重复",
     "popup.export.loop-mode.pingpong": "乒乓",
     "popup.export.compress-ply": "压缩 PLY",
+    "popup.export.streaming": "流式传输",
     "popup.export.splats-select": "Splat",
     "popup.export.splats-select.all": "所有 Splat",
     "popup.export.iterations": "Iterations",

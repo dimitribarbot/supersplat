@@ -216,6 +216,7 @@
     "popup.export.loop-mode.repeat": "Повтор",
     "popup.export.loop-mode.pingpong": "Пинг-понг",
     "popup.export.compress-ply": "Сжать PLY",
+    "popup.export.streaming": "Потоковая передача",
     "popup.export.splats-select": "Сплаты",
     "popup.export.splats-select.all": "Все сплаты",
     "popup.export.iterations": "Iterations",
