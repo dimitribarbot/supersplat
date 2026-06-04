@@ -115,55 +115,70 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
 };
 
 // Streaming LOD export tuning. LOD 0 is the full-resolution, fully-edited
-// scene. Each subsequent level decimates the FULL scene (not the previous
-// level) down to a quarter of the running target, so every level is an
-// independent representation of the whole scene at lower density. Levels stop
-// once the next would fall below MIN_LOD_SPLATS or once MAX_LOD_LEVELS exist.
-const MAX_LOD_LEVELS = 4;
-const LOD_DECIMATION_FACTOR = 4;
-const MIN_LOD_SPLATS = 64 * 1024;
+// scene. Each subsequent level halves the PREVIOUS level (a true LOD chain:
+// LOD1 = 50% of LOD0, LOD2 = 50% of LOD1, ...). The chain continues until a
+// level first falls below MIN_LOD_SPLATS - that sub-floor level is built and
+// kept as the terminal (coarsest) level, so the lowest LOD lands around the
+// floor. There is no hard cap on the number of levels.
+const LOD_DECIMATION_FACTOR = 2;
+const MIN_LOD_SPLATS = 1024 * 1024;
 
 // Build a single DataTable carrying a per-gaussian `lod` column (0 = finest),
-// suitable for writeLod. Decimation runs against the untagged lod0 so the
-// merge math never sees the synthetic `lod` column; lod0 is tagged last.
-// Consumes lod0: a `lod` column is added to it in place (cloning the
-// full-resolution table here would needlessly duplicate the largest dataset),
-// so callers must not reuse the passed table after this call.
+// suitable for writeLod. Decimation chains off the untagged previous level, so
+// the synthetic `lod` column is only added after all decimation completes (the
+// merge/simplify math must never see it). Consumes lod0: a `lod` column is
+// added to it in place (cloning the full-resolution table here would needlessly
+// duplicate the largest dataset), so callers must not reuse the passed table
+// after this call.
 const buildStreamingLodTable = async (
     lod0: DataTable,
     createDevice: DeviceCreator,
     onPhase?: (label: string) => void
 ): Promise<DataTable> => {
-    const levels: DataTable[] = [];
-
     // Count the coarser levels we'll generate up front so the phase label can
-    // show an accurate "level N of M" (M = number of decimated levels).
+    // show an accurate "level N of M" (M = number of decimated levels). Mirror
+    // the build loop's stop condition: keep halving and count each level until
+    // one first drops below the floor (that sub-floor level is the last kept).
     let levelCount = 0;
-    for (let level = 1, t = lod0.numRows; level < MAX_LOD_LEVELS; ++level) {
+    for (let t = lod0.numRows; ;) {
         t = Math.floor(t / LOD_DECIMATION_FACTOR);
-        if (t < MIN_LOD_SPLATS) {
+        if (t < 1) {
             break;
         }
         levelCount++;
+        if (t < MIN_LOD_SPLATS) {
+            break;
+        }
     }
 
-    let target = lod0.numRows;
-    for (let level = 1; level < MAX_LOD_LEVELS; ++level) {
+    // Chain decimation off the previous (untagged) level. levels[0] is lod0.
+    const levels: DataTable[] = [lod0];
+    let prev = lod0;
+    let level = 1;
+    for (let target = lod0.numRows; ;) {
         target = Math.floor(target / LOD_DECIMATION_FACTOR);
-        if (target < MIN_LOD_SPLATS) {
+        if (target < 1) {
             break;
         }
         onPhase?.(`Building detail level ${level} of ${levelCount}`);
-        const simplified = await simplifyGaussians(lod0, target, createDevice);
-        simplified.addColumn(new Column('lod', new Float32Array(simplified.numRows).fill(level)));
+        const simplified = await simplifyGaussians(prev, target, createDevice);
         levels.push(simplified);
+        prev = simplified;
+        if (target < MIN_LOD_SPLATS) {
+            break;  // current level dropped below the floor: terminal level
+        }
+        level++;
     }
 
-    lod0.addColumn(new Column('lod', new Float32Array(lod0.numRows).fill(0)));
-    levels.unshift(lod0);
+    // Tag every level with its `lod` index (0 = lod0) only now that all
+    // decimation is done, so simplifyGaussians never chains off a table
+    // carrying the synthetic `lod` column.
+    for (let i = 0; i < levels.length; ++i) {
+        levels[i].addColumn(new Column('lod', new Float32Array(levels[i].numRows).fill(i)));
+    }
 
-    // All levels share lod0's Transform.PLY (clone preserves it), so combine
-    // concatenates rows without any coordinate-space conversion.
+    // All levels descend from lod0's Transform.PLY (clone preserves it), so
+    // combine concatenates rows without any coordinate-space conversion.
     return combine(levels);
 };
 
