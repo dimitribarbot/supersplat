@@ -1,6 +1,8 @@
 import { WebPCodec } from '@playcanvas/splat-transform';
 import { Color, createGraphicsDevice } from 'playcanvas';
 
+import { AnnotationOverlay } from './annotation-overlay';
+import { registerAnnotationsEvents } from './annotations';
 import { registerCameraPosesEvents } from './camera-poses';
 import { CommandQueue } from './command-queue';
 import { registerDocEvents } from './doc';
@@ -17,6 +19,7 @@ import { getSceneConfig } from './scene-config';
 import { registerSelectionEvents } from './selection';
 import { ShortcutManager } from './shortcut-manager';
 import { registerTimelineEvents } from './timeline';
+import { AnnotationTool } from './tools/annotation-tool';
 import { BoxSelection } from './tools/box-selection';
 import { BrushSelection } from './tools/brush-selection';
 import { EyedropperSelection } from './tools/eyedropper-selection';
@@ -102,6 +105,7 @@ const main = async () => {
     // register events that only need the events object (before UI is created)
     registerTimelineEvents(events);
     registerCameraPosesEvents(events);
+    registerAnnotationsEvents(events);
     registerTrackManagerEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);
@@ -241,6 +245,11 @@ const main = async () => {
     toolManager.register('rotate', new RotateTool(events, scene));
     toolManager.register('scale', new ScaleTool(events, scene));
     toolManager.register('measure', new MeasureTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
+    toolManager.register('annotation', new AnnotationTool(events, scene, editorUI.canvasContainer));
+
+    /* eslint-disable no-new */
+    new AnnotationOverlay(events, scene, editorUI.canvasContainer);
+    /* eslint-enable no-new */
 
     const boundDimensionsOverlay = new BoundDimensionsOverlay(events, scene, editorUI.canvasContainer);
 

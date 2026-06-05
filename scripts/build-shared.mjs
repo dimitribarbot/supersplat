@@ -1,14 +1,15 @@
 // Compiles the environment-agnostic shared export core (src/events.ts +
-// src/splat-export-core.ts) to repo-root dist-shared/ as ESM, then performs the
-// post-emit fixups required for Node to load it at runtime:
+// src/splat-export-core.ts, plus whatever they import) to repo-root dist-shared/
+// as ESM, then performs the post-emit fixups required for Node to load it at
+// runtime:
 //
 //   1. Writes dist-shared/package.json {"type":"module"} so the emitted .js are
 //      treated as ESM regardless of the repo root's (CommonJS) package.json.
-//   2. If the emit contains a relative `from './events'` import, rewrites it to
-//      `from './events.js'` because Node's ESM resolver requires explicit file
-//      extensions. With the current source, splat-export-core only imports
-//      `Events` as a type, so TypeScript elides the import entirely and there is
-//      nothing to rewrite; the fixup is therefore best-effort, not mandatory.
+//   2. Appends `.js` to every extensionless relative import in the emitted files
+//      (e.g. `from './events'` or `from './viewer-companion/annotation-links'`),
+//      because Node's ESM resolver requires explicit file extensions on relative
+//      specifiers. TypeScript emits the source specifiers verbatim under Bundler
+//      resolution, so without this rewrite Node throws "Cannot find module".
 //
 // ESM (not CommonJS) is deliberate: the installed playcanvas build does not
 // expose its API through `require()` (repo-root `require('playcanvas')` returns
@@ -19,7 +20,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const tsconfig = join(repoRoot, 'tsconfig.shared.json');
@@ -32,11 +33,32 @@ execFileSync(tscBin, ['-p', tsconfig], { stdio: 'inherit', cwd: repoRoot, shell:
 
 writeFileSync(join(distDir, 'package.json'), `${JSON.stringify({ type: 'module' }, null, 2)}\n`);
 
-const coreFile = join(distDir, 'splat-export-core.js');
-const src = readFileSync(coreFile, 'utf8');
-const fixed = src.replace(/from (['"])\.\/events\1/g, 'from $1./events.js$1');
-if (fixed !== src) {
-    writeFileSync(coreFile, fixed);
+// Append `.js` to extensionless relative import/export specifiers so Node's ESM
+// resolver can load them. Covers static `from '...'` and dynamic `import('...')`.
+const addJsExtensions = (code) => {
+    return code.replace(
+        /(\bfrom\s*|\bimport\s*\(\s*)(['"])(\.\.?\/[^'"]+?)\2/g,
+        (full, prefix, quote, spec) => (
+            /\.(?:js|mjs|cjs|json)$/.test(spec) ? full : `${prefix}${quote}${spec}.js${quote}`
+        )
+    );
+};
+
+// Walk every emitted .js file (the export core lives in subdirectories too).
+const jsFiles = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+        return jsFiles(full);
+    }
+    return entry.name.endsWith('.js') ? [full] : [];
+});
+
+for (const file of jsFiles(distDir)) {
+    const src = readFileSync(file, 'utf8');
+    const fixed = addJsExtensions(src);
+    if (fixed !== src) {
+        writeFileSync(file, fixed);
+    }
 }
 
 console.log('build-shared: dist-shared ready (ESM)');

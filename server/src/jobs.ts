@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { runExport, type ExportOptions } from './run-export.js';
-import { getDeviceCreator } from './gpu.js';
+import { runExportViaWorker } from './run-export-worker-host.js';
+import type { ExportOptions } from './run-export.js';
 import type { ProgressEvent } from './progress.js';
 
 type Job = {
@@ -14,6 +14,8 @@ type Job = {
     finishedAt?: number;
     cancelled: boolean;
     cancelTimer?: ReturnType<typeof setTimeout>;
+    // Terminates the running export worker; set once the job starts running.
+    cancel?: () => void;
 };
 
 const jobs = new Map<string, Job>();
@@ -32,16 +34,17 @@ const scheduleAbandonCheck = (job: Job) => {
     const t = setTimeout(() => {
         job.cancelTimer = undefined;
         if (job.listeners.length === 0 && (job.state === 'queued' || job.state === 'running')) {
-            // run-export polls job.cancelled and unwinds at the next progress tick.
             job.cancelled = true;
+            job.cancel?.();   // terminate the worker thread if the export is running
         }
     }, ABANDON_GRACE_MS);
     t.unref();
     job.cancelTimer = t;
 };
 
-// Single shared GPU device => GPU work must run one job at a time. A promise
-// chain serializes all jobs (concurrency 1).
+// Each job's worker stands up its own GPU device (and Dawn busy-poll pins a CPU
+// core while alive), so we run one job at a time. A promise chain serializes all
+// jobs (concurrency 1).
 let chain: Promise<void> = Promise.resolve();
 
 const push = (job: Job, e: ProgressEvent) => {
@@ -59,14 +62,18 @@ export const createJob = (plyGz: Buffer, options: ExportOptions): string => {
             return;
         }
         job.state = 'running';
+        // The export runs in a worker thread so its heavy synchronous GPU/CPU work
+        // (and Dawn's busy-poll) never blocks this event loop — keeping SSE
+        // progress frames flushing in real time. The worker's device lives and
+        // dies with the worker, reinforcing the "no idle device" invariant.
+        const running = runExportViaWorker({
+            plyGz,
+            options,
+            onProgress: (e: ProgressEvent) => push(job, e)
+        });
+        job.cancel = running.cancel;
         try {
-            const res = await runExport({
-                plyGz,
-                options,
-                sink: { emit: e => push(job, e) },
-                getDeviceCreator,
-                isCancelled: () => job.cancelled
-            });
+            const res = await running.promise;
             job.result = res.files;
             job.state = 'done';
             job.finishedAt = Date.now();

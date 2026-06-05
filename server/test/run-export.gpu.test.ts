@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { gzipSync } from 'node:zlib';
 import { Column, DataTable, Transform, writeFile, MemoryFileSystem } from '@playcanvas/splat-transform';
-import { probeGpu, getDeviceCreator } from '../src/gpu.js';
+import { probeGpu, createGpuSession } from '../src/gpu.js';
 import { runExport } from '../src/run-export.js';
 
 const NAMES = ['x', 'y', 'z', 'scale_0', 'scale_1', 'scale_2', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
@@ -20,15 +20,20 @@ describe('runExport GPU formats', () => {
   it('produces a non-empty SOG via the GPU', async () => {
     if (!gpu) { console.warn('No GPU available; skipping SOG GPU test'); return; }
     const plyGz = await makePlyGz();
-    const res = await runExport({
-      plyGz,
-      options: { fileType: 'sog', filename: 'out.sog', sogIterations: 2 },
-      sink: { emit() {} },
-      getDeviceCreator
-    });
-    expect(res.files).toHaveLength(1);
-    expect(res.files[0].name).toBe('out.sog');
-    expect(res.files[0].data.length).toBeGreaterThan(0);
+    const session = createGpuSession();
+    try {
+      const res = await runExport({
+        plyGz,
+        options: { fileType: 'sog', filename: 'out.sog', sogIterations: 2 },
+        sink: { emit() {} },
+        getDeviceCreator: session.getDeviceCreator
+      });
+      expect(res.files).toHaveLength(1);
+      expect(res.files[0].name).toBe('out.sog');
+      expect(res.files[0].data.length).toBeGreaterThan(0);
+    } finally {
+      await session.dispose();
+    }
   }, 120000);
 
   it('aborts a running streaming export when cancellation is requested mid-run', async () => {
@@ -51,17 +56,22 @@ describe('runExport GPU formats', () => {
         }
       }
     };
-    await expect(runExport({
-      plyGz,
-      options: {
-        fileType: 'packageViewer',
-        filename: 'out.zip',
-        viewerExportSettings: { type: 'zip', streaming: true, experienceSettings }
-      },
-      sink,
-      getDeviceCreator,
-      isCancelled: () => cancel
-    })).rejects.toThrow(/cancel/i);
-    expect(progressed).toBe(true);
+    const session = createGpuSession();
+    try {
+      await expect(runExport({
+        plyGz,
+        options: {
+          fileType: 'packageViewer',
+          filename: 'out.zip',
+          viewerExportSettings: { type: 'zip', streaming: true, experienceSettings }
+        },
+        sink,
+        getDeviceCreator: session.getDeviceCreator,
+        isCancelled: () => cancel
+      })).rejects.toThrow(/cancel/i);
+      expect(progressed).toBe(true);
+    } finally {
+      await session.dispose();
+    }
   }, 180000);
 });

@@ -1,7 +1,7 @@
 import { Column, DataTable, Transform, writeFile, MemoryFileSystem } from '@playcanvas/splat-transform';
 import { gzipSync, inflateRawSync } from 'node:zlib';
 import { describe, it, expect, beforeAll, vi } from 'vitest';
-import { probeGpu, getDeviceCreator } from '../src/gpu.js';
+import { probeGpu, createGpuSession } from '../src/gpu.js';
 import { runExport, type RunResult } from '../src/run-export.js';
 import type { ProgressEvent } from '../src/progress.js';
 
@@ -84,6 +84,7 @@ describe('runExport streaming packageViewer (GPU)', () => {
         if (!gpu) return;
         const plyGz = await makePlyGz(2048);
         const spy = vi.spyOn(console, 'log').mockImplementation((...a: any[]) => { logs.push(a.join(' ')); });
+        const session = createGpuSession();
         try {
             res = await runExport({
                 plyGz,
@@ -93,9 +94,10 @@ describe('runExport streaming packageViewer (GPU)', () => {
                     viewerExportSettings: { type: 'zip', streaming: true, experienceSettings }
                 },
                 sink: { emit: e => events.push(e) },
-                getDeviceCreator
+                getDeviceCreator: session.getDeviceCreator
             });
         } finally {
+            await session.dispose();
             spy.mockRestore();
         }
     }, 180000);

@@ -16,6 +16,20 @@ import {
 } from '@playcanvas/splat-transform';
 
 import { Events } from './events';
+import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
+
+// Inject the annotation-link companion into an HTML string before </body>.
+// No-op (returns the input) when there are no annotation links.
+const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string => {
+    const injection = buildAnnotationLinksInjection(viewerSettingsJson?.annotations ?? []);
+    if (!injection) {
+        return html;
+    }
+    if (html.includes('</body>')) {
+        return html.replace('</body>', `${injection}</body>`);
+    }
+    return html + injection;
+};
 
 // Bridge splat-transform progress events to supersplat's events.
 //
@@ -270,7 +284,8 @@ const writeStreamingViewerCore = async (
     if (repointed === repointedFetch) {
         throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (writeHtml output format changed)');
     }
-    memFs.results.set('index.html', new TextEncoder().encode(repointed));
+    const withLinks = injectAnnotationLinks(repointed, viewerSettingsJson);
+    memFs.results.set('index.html', new TextEncoder().encode(withLinks));
 
     // ZIP every emitted file. Keys are normalised to relative paths so the
     // viewer's relative chunk references resolve from the archive root
@@ -313,12 +328,27 @@ const writeViewerCore = async (
     splatTransformLogger.setRenderer(createProgressRenderer('Exporting HTML', events, undefined, undefined, onLog, shouldCancel));
     try {
         if (viewerType === 'html') {
-            await writeHtml({ filename: 'output.html', dataTable, viewerSettingsJson, bundle: true, iterations: 10, createDevice }, fs);
+            const memFs = new MemoryFileSystem();
+            await writeHtml({ filename: 'output.html', dataTable, viewerSettingsJson, bundle: true, iterations: 10, createDevice }, memFs);
+            const raw = memFs.results.get('output.html');
+            if (!raw) {
+                throw new Error('HTML export failed: writeHtml did not produce output.html');
+            }
+            const injected = injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson);
+            const writer = await fs.createWriter('output.html');
+            await writer.write(new TextEncoder().encode(injected));
+            await writer.close();
         } else if (viewerType === 'streaming') {
             await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel);
         } else {
             const memFs = new MemoryFileSystem();
             await writeHtml({ filename: 'index.html', dataTable, viewerSettingsJson, bundle: false, iterations: 10, createDevice }, memFs);
+            const rawIndex = memFs.results.get('index.html');
+            if (!rawIndex) {
+                throw new Error('Package export failed: writeHtml did not produce index.html');
+            }
+            const injected = injectAnnotationLinks(new TextDecoder().decode(rawIndex), viewerSettingsJson);
+            memFs.results.set('index.html', new TextEncoder().encode(injected));
             const zipWriter = await fs.createWriter('output.zip');
             const zipFs = new ZipFileSystem(zipWriter);
             try {

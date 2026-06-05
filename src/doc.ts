@@ -122,6 +122,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
 
             events.invoke('docDeserialize.timeline', document.timeline);
             events.invoke('docDeserialize.poseSets', document.poseSets, document.camera?.fov);
+            events.invoke('docDeserialize.annotations', document.annotations);
             events.invoke('docDeserialize.view', document.view);
             scene.camera.docDeserialize(document.camera);
 
@@ -159,6 +160,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
                 view: events.invoke('docSerialize.view'),
                 poseSets: events.invoke('docSerialize.poseSets'),
                 timeline: events.invoke('docSerialize.timeline'),
+                annotations: events.invoke('docSerialize.annotations'),
                 splats: splats.map(s => s.docSerialize())
             };
 
