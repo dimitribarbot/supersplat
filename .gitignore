@@ -6,3 +6,5 @@ dist
 .cursor
 .idea
 dist-shared/
+.env.local
+*.env.local

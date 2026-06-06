@@ -16,6 +16,7 @@ import { Popup, ShowOptions } from './popup';
 import { Progress } from './progress';
 import { PublishSettingsDialog } from './publish-settings-dialog';
 import { RightToolbar } from './right-toolbar';
+import { S3PublishDialog } from './s3-publish-dialog';
 import { ScenePanel } from './scene-panel';
 import { ShortcutsPopup } from './shortcuts-popup';
 import { Spinner } from './spinner';
@@ -26,6 +27,7 @@ import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
 import { ViewPanel } from './view-panel';
 import { version } from '../../package.json';
+import { probeExportCapabilities } from '../export-server-client';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -185,6 +187,9 @@ class EditorUI {
         // publish settings
         const publishSettingsDialog = new PublishSettingsDialog(events);
 
+        // S3 publish dialog
+        const s3PublishDialog = new S3PublishDialog(events);
+
         // image settings
         const imageSettingsDialog = new ImageSettingsDialog(events);
 
@@ -197,6 +202,7 @@ class EditorUI {
         topContainer.append(popup);
         topContainer.append(exportPopup);
         topContainer.append(publishSettingsDialog);
+        topContainer.append(s3PublishDialog);
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
         topContainer.append(shortcutsPopup);
@@ -225,6 +231,18 @@ class EditorUI {
         });
 
         events.function('show.publishSettingsDialog', async () => {
+            // In server mode with S3 configured, publish to the S3 Space instead
+            // of the PlayCanvas/superspl.at host.
+            const caps = await probeExportCapabilities();
+            if (caps?.publish) {
+                const splats = events.invoke('scene.splats');
+                const options = await s3PublishDialog.show(splats.map((s: any) => s.name));
+                if (options) {
+                    await events.invoke('scene.publishS3', options);
+                }
+                return;
+            }
+
             // show popup if user isn't logged in
             const userStatus = await events.invoke('publish.userStatus');
             if (!userStatus) {

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { runExportViaWorker } from './run-export-worker-host.js';
 import type { ExportOptions } from './run-export.js';
 import type { ProgressEvent } from './progress.js';
+import { publishZip, type PublishDest } from './s3.js';
 
 type Job = {
     id: string;
@@ -9,6 +10,7 @@ type Job = {
     listeners: ((e: ProgressEvent) => void)[];
     buffered: ProgressEvent[];
     result?: { name: string; data: Uint8Array }[];
+    publishResult?: { url?: string; prefix: string };
     error?: string;
     createdAt: number;
     finishedAt?: number;
@@ -52,7 +54,7 @@ const push = (job: Job, e: ProgressEvent) => {
     for (const l of job.listeners) l(e);
 };
 
-export const createJob = (plyGz: Buffer, options: ExportOptions): string => {
+export const createJob = (plyGz: Buffer, options: ExportOptions, publish?: PublishDest): string => {
     const id = `job_${randomBytes(16).toString('hex')}`;
     const job: Job = { id, state: 'queued', listeners: [], buffered: [], createdAt: Date.now(), cancelled: false };
     jobs.set(id, job);
@@ -75,9 +77,15 @@ export const createJob = (plyGz: Buffer, options: ExportOptions): string => {
         try {
             const res = await running.promise;
             job.result = res.files;
+            if (publish) {
+                if (job.cancelled) { jobs.delete(id); return; }
+                if (!res.files[0]) throw new Error('export produced no output to publish');
+                const zipBytes = res.files[0].data;
+                job.publishResult = await publishZip(zipBytes, publish, (e) => push(job, e));
+            }
             job.state = 'done';
             job.finishedAt = Date.now();
-            push(job, { kind: 'done' });
+            push(job, { kind: 'done', ...(job.publishResult ?? {}) });
         } catch (err: any) {
             if (job.cancelled) {   // aborted by the client disconnecting -> discard
                 jobs.delete(id);

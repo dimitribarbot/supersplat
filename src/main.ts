@@ -14,6 +14,7 @@ import { registerIframeApi } from './iframe-api';
 import { registerPlySequenceEvents } from './ply-sequence';
 import { registerPublishEvents } from './publish';
 import { registerRenderEvents } from './render';
+import { registerS3PublishEvents } from './s3-publish';
 import { Scene } from './scene';
 import { getSceneConfig } from './scene-config';
 import { registerSelectionEvents } from './selection';
@@ -110,6 +111,7 @@ const main = async () => {
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);
     registerPublishEvents(events);
+    registerS3PublishEvents(events);
     registerIframeApi(events);
 
     // initialize shortcuts

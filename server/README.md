@@ -62,6 +62,15 @@ routes return 404 until you build).
 - `STATIC_ROOT` — directory to serve the web app from (default: the repo-root `dist/`,
   resolved relative to the server module).
 - `MAX_UPLOAD` — maximum accepted upload size in bytes for the gzipped PLY (default `1073741824`, i.e. 1 GiB). Uploads above this are rejected by the multipart parser.
+- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` —
+  S3-compatible (DigitalOcean Spaces) credentials. When all five are present, the
+  capabilities endpoint reports `publish: true` and the client's Publish menu
+  targets the Space.
+- `S3_PUBLIC_BASE_URL` — base URL for returned public links; set to your CDN
+  endpoint. Falls back to `${S3_ENDPOINT}/${S3_BUCKET}` if unset.
+- `S3_FORCE_PATH_STYLE` — `true`/`false` (default `false`).
+
+Configure these in `server/.env.local` (git-ignored); see `server/.env.local.example`.
 
 ## Endpoints
 
@@ -100,7 +109,16 @@ independently. Place it behind your deployment's own access controls (reverse-pr
 network ACLs, etc.). Job ids are generated with a CSPRNG and upload filenames are
 validated/sanitized, but the endpoints themselves are otherwise open.
 
-## Future work
+## Publish to a Space
 
-Server-side publish to a private DigitalOcean Space is a planned future extension of this
-same server.
+When the `S3_*` env vars are configured, the server exposes:
+
+- `GET /api/export/capabilities` → includes `publish: true`.
+- `GET /api/publish/exists?subfolder=&name=` → `{ exists, count }` overwrite check.
+- `POST /api/publish` (multipart: gzipped PLY + viewer options + `{ subfolder?, name, public, overwrite }`)
+  → `{ jobId }`. Progress streams over `GET /api/publish/:id/events`; the terminal
+  `done` event carries `{ url?, prefix }`.
+
+The server runs the same viewer package (ZIP) export, unpacks it, and uploads each
+file under `<bucket>/<subfolder>/<name>/…` (with `public-read` ACL when requested),
+so streaming and collision data are reachable by URL.

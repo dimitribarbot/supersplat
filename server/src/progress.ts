@@ -1,6 +1,6 @@
 export type ProgressEvent =
     | { kind: 'progress'; message?: string; value?: number }
-    | { kind: 'done' }
+    | { kind: 'done'; url?: string; prefix?: string }
     | { kind: 'error'; message: string };
 
 // Transport-agnostic collector. The export worker pushes ProgressEvents in;

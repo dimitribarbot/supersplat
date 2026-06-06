@@ -267,7 +267,7 @@ class ExportPopup extends Container {
         const collisionToggle = new BooleanInput({
             class: 'boolean',
             type: 'toggle',
-            value: false
+            value: true
         });
 
         collisionRow.append(collisionLabel);
@@ -537,7 +537,7 @@ class ExportPopup extends Container {
             updateStreamingVisibility();
 
             // collision detection (viewer zip only)
-            collisionToggle.value = false;
+            collisionToggle.value = true;
             environmentSelect.value = 'indoor';
             radiusSlider.value = 50;
             voxelSizeSlider.value = 0.05;
