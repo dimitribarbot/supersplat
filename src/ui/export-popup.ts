@@ -567,7 +567,7 @@ class ExportPopup extends Container {
 
                 const experienceSettings: ExperienceSettings = {
                     version: 2,
-                    tonemapping: 'none',
+                    tonemapping: events.invoke('camera.tonemapping') ?? 'none',
                     highPrecisionRendering: false,
                     background: { color: bgColor },
                     postEffectSettings: defaultPostEffectSettings,
