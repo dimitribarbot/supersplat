@@ -15,7 +15,7 @@ export type ExportOptions = {
     filename: string;
     serializeSettings?: { maxSHBands?: number };
     sogIterations?: number;
-    viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any };
+    viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number } };
 };
 
 export type RunResult = {
@@ -163,7 +163,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     }
 
     if (options.fileType === 'htmlViewer') {
-        await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled);
+        await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision);
         const data = memFs.results.get('output.html')!;
         console.log(`Created ${options.filename} (${fmtSize(data.length)})`);
         return { files: [{ name: options.filename, data }] };
@@ -171,7 +171,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
 
     // packageViewer
     const viewerType = options.viewerExportSettings!.streaming ? 'streaming' : 'package';
-    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled);
+    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision);
     flushChunk();
     return { files: [{ name: options.filename, data: memFs.results.get('output.zip')! }] };
 };

@@ -253,6 +253,93 @@ class ExportPopup extends Container {
         streamingRow.append(streamingLabel);
         streamingRow.append(streamingToggle);
 
+        // viewer: collision detection (zip only)
+
+        const collisionRow = new Container({
+            class: 'row'
+        });
+
+        const collisionLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.collision')
+        });
+
+        const collisionToggle = new BooleanInput({
+            class: 'boolean',
+            type: 'toggle',
+            value: false
+        });
+
+        collisionRow.append(collisionLabel);
+        collisionRow.append(collisionToggle);
+
+        // viewer: collision environment (shown only when collision is enabled)
+
+        const environmentRow = new Container({
+            class: 'row'
+        });
+
+        const environmentLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.environment')
+        });
+
+        const environmentSelect = new SelectInput({
+            class: 'select',
+            defaultValue: 'indoor',
+            options: [
+                { v: 'indoor', t: localize('popup.export.environment.indoor') },
+                { v: 'outdoor', t: localize('popup.export.environment.outdoor') }
+            ]
+        });
+
+        environmentRow.append(environmentLabel);
+        environmentRow.append(environmentSelect);
+
+        // viewer: collision radius (shown only when collision is enabled)
+
+        const radiusRow = new Container({
+            class: 'row'
+        });
+
+        const radiusLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.collision-radius')
+        });
+
+        const radiusSlider = new SliderInput({
+            class: 'slider',
+            min: 5,
+            max: 500,
+            precision: 0,
+            value: 50
+        });
+
+        radiusRow.append(radiusLabel);
+        radiusRow.append(radiusSlider);
+
+        // viewer: collision voxel size (shown only when collision is enabled)
+
+        const voxelSizeRow = new Container({
+            class: 'row'
+        });
+
+        const voxelSizeLabel = new Label({
+            class: 'label',
+            text: localize('popup.export.voxel-size')
+        });
+
+        const voxelSizeSlider = new SliderInput({
+            class: 'slider',
+            min: 0.02,
+            max: 0.5,
+            precision: 2,
+            value: 0.05
+        });
+
+        voxelSizeRow.append(voxelSizeLabel);
+        voxelSizeRow.append(voxelSizeSlider);
+
         // export on server (shown only when the server supports the selected type)
 
         const serverRow = new Container({
@@ -302,6 +389,10 @@ class ExportPopup extends Container {
         content.append(bandsRow);
         content.append(iterationsRow);
         content.append(streamingRow);
+        content.append(collisionRow);
+        content.append(environmentRow);
+        content.append(radiusRow);
+        content.append(voxelSizeRow);
         content.append(serverRow);
         content.append(filenameRow);
 
@@ -369,6 +460,15 @@ class ExportPopup extends Container {
             streamingRow.hidden = currentExportType !== 'viewer' || viewerTypeSelect.value !== 'zip';
         };
 
+        const updateCollisionVisibility = () => {
+            const isZipViewer = currentExportType === 'viewer' && viewerTypeSelect.value === 'zip';
+            collisionRow.hidden = !isZipViewer;
+            const showSub = !isZipViewer || !collisionToggle.value;
+            environmentRow.hidden = showSub;
+            radiusRow.hidden = showSub;
+            voxelSizeRow.hidden = showSub;
+        };
+
         const updateServerVisibility = () => {
             const serverSupports = (() => {
                 if (!capabilities?.enabled) return false;
@@ -394,6 +494,11 @@ class ExportPopup extends Container {
         viewerTypeSelect.on('change', () => {
             updateExtension(viewerTypeSelect.value === 'html' ? '.html' : '.zip');
             updateStreamingVisibility();
+            updateCollisionVisibility();
+        });
+
+        collisionToggle.on('change', () => {
+            updateCollisionVisibility();
         });
 
         animationToggle.on('change', (value: boolean) => {
@@ -404,14 +509,14 @@ class ExportPopup extends Container {
             currentExportType = exportType;
 
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, serverRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, collisionRow, environmentRow, radiusRow, voxelSizeRow, serverRow, filenameRow
             ];
 
             const activeRows = {
                 ply: [compressRow, bandsRow, serverRow, filenameRow],
                 splat: [filenameRow],
                 sog: [bandsRow, iterationsRow, serverRow, filenameRow],
-                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, serverRow, filenameRow],
+                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, collisionRow, environmentRow, radiusRow, voxelSizeRow, serverRow, filenameRow],
                 viewerSettings: [animationRow, loopRow, colorRow, fovRow, filenameRow]
             }[exportType];
 
@@ -430,6 +535,13 @@ class ExportPopup extends Container {
             // streaming (viewer zip only)
             streamingToggle.value = true;
             updateStreamingVisibility();
+
+            // collision detection (viewer zip only)
+            collisionToggle.value = false;
+            environmentSelect.value = 'indoor';
+            radiusSlider.value = 50;
+            voxelSizeSlider.value = 0.05;
+            updateCollisionVisibility();
 
             // server-export row: only when the server actually supports the selected type
             updateServerVisibility();
@@ -586,6 +698,7 @@ class ExportPopup extends Container {
                     viewerExportSettings: {
                         type: viewerTypeSelect.value,
                         streaming: streamingToggle.value,
+                        collision: (viewerTypeSelect.value === 'zip' && collisionToggle.value) ? { environment: environmentSelect.value as 'indoor' | 'outdoor', radius: radiusSlider.value, voxelSize: voxelSizeSlider.value } : undefined,
                         experienceSettings
                     },
                     useServer: !serverRow.hidden && serverToggle.value

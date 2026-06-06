@@ -131,6 +131,7 @@ type ViewerExportSettings = {
     type: 'html' | 'zip';
     streaming?: boolean;
     experienceSettings: ExperienceSettings;
+    collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number };   // undefined = disabled
     events?: Events;
 };
 
@@ -1218,10 +1219,10 @@ const extractDataTable = (splats: Splat[], settings: SerializeSettings): DataTab
 };
 
 const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSettings, options: ViewerExportSettings, fs: FileSystem): Promise<void> => {
-    const { experienceSettings, events } = options;
+    const { experienceSettings, events, collision } = options;
     const dataTable = extractDataTable(splats, serializeSettings);
     const viewerType = options.type === 'html' ? 'html' : (options.streaming ? 'streaming' : 'package');
-    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events);
+    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision);
 };
 const serializeViewerSettings = async (
     experienceSettings: ExperienceSettings,

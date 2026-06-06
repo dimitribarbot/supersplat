@@ -35,6 +35,19 @@ const companionRuntime = `
   var links = window.__supersplatAnnotationLinks || [];
   if (!links.length) return;
 
+  // Localize the "Open link" label by the viewer's browser language (the
+  // exported file is standalone, with no access to the editor's i18next). Keys
+  // are primary subtags; a navigator.language like 'pt-BR'/'zh-CN' falls back to
+  // its base subtag, then to English.
+  var openLinkLabels = {
+    en: 'Open link', de: 'Link \\u00f6ffnen', es: 'Abrir enlace', fr: 'Ouvrir le lien',
+    ja: '\\u30ea\\u30f3\\u30af\\u3092\\u958b\\u304f', ko: '\\ub9c1\\ud06c \\uc5f4\\uae30',
+    pt: 'Abrir link', ru: '\\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u044c \\u0441\\u0441\\u044b\\u043b\\u043a\\u0443',
+    zh: '\\u6253\\u5f00\\u94fe\\u63a5'
+  };
+  var navLang = (navigator.language || 'en').toLowerCase();
+  var openLinkText = (openLinkLabels[navLang] || openLinkLabels[navLang.split('-')[0]] || openLinkLabels.en) + ' \\u2197';
+
   var byLabel = {};
   links.forEach(function (l) { byLabel[String(l.label)] = l; });
 
@@ -61,7 +74,7 @@ const companionRuntime = `
     var a = document.createElement('a');
     a.className = 'ss-annotation-link';
     a.href = href;
-    a.textContent = 'Open link \\u2197';
+    a.textContent = openLinkText;
     if (link.newTab) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
     // keep the tooltip open (the viewer closes it on document click) and let
     // the navigation proceed normally

@@ -8,6 +8,7 @@ import {
     writeHtml,
     writeLod,
     writeSog,
+    writeVoxel,
     ZipFileSystem,
     type DeviceCreator,
     type FileSystem,
@@ -15,6 +16,7 @@ import {
     type Renderer
 } from '@playcanvas/splat-transform';
 
+import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subsetRowsWithinRadius, voxelResolutionLadder, type CollisionEnvironment } from './collision-voxel-options';
 import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
 
@@ -196,6 +198,88 @@ const buildStreamingLodTable = async (
     return combine(levels);
 };
 
+// Coarsest voxel size the auto-fit ladder will try before giving up.
+const COLLISION_VOXEL_FLOOR = 0.4;
+
+// Voxelize a sphere of `radius` around the start seed into memFs as
+// index.voxel.json + index.voxel.bin. Auto-coarsens the voxel size (ladder up to
+// COLLISION_VOXEL_FLOOR) to work around splat-transform's 2^24 solid-block Set
+// limit in filterAndFillBlocks. Must run before the streaming LOD build consumes
+// the table. writeVoxel does not mutate its input; failures throw before any
+// output file is written and after the GPU pass is cleaned up, so retrying is
+// safe. Throws a clear, actionable error if even the floor resolution fails.
+const writeCollisionVoxel = async (
+    memFs: MemoryFileSystem,
+    dataTable: DataTable,
+    viewerSettingsJson: any,
+    createDevice: DeviceCreator,
+    collision: { environment: CollisionEnvironment; radius?: number; voxelSize?: number }
+): Promise<void> => {
+    const radius = collision.radius ?? 50;
+    const baseVoxelSize = collision.voxelSize ?? 0.05;
+    const seed = collisionSeedFromSettings(viewerSettingsJson);
+    const seedPly = seedToPlySpace(seed);
+
+    const x = dataTable.getColumnByName('x')?.data as Float32Array;
+    const y = dataTable.getColumnByName('y')?.data as Float32Array;
+    const z = dataTable.getColumnByName('z')?.data as Float32Array;
+    if (!x || !y || !z) {
+        throw new Error('Collision generation failed: data table is missing position columns');
+    }
+
+    const indices = subsetRowsWithinRadius(x, y, z, seedPly, radius);
+    if (indices.length === 0) {
+        throw new Error(`Collision generation failed - no splats within ${radius} m of the start position.`);
+    }
+    const subset = indices.length === dataTable.numRows ? dataTable : dataTable.clone({ rows: indices });
+
+    const ladder = voxelResolutionLadder(baseVoxelSize, COLLISION_VOXEL_FLOOR);
+    for (let i = 0; i < ladder.length; i++) {
+        const voxelResolution = ladder[i];
+        try {
+            await writeVoxel({
+                filename: 'index.voxel.json',
+                dataTable: subset,
+                voxelResolution,
+                opacityCutoff: 0.1,
+                createDevice,
+                ...collisionVoxelOptions(collision.environment, seed)
+            }, memFs);
+            return;
+        } catch (err) {
+            if (i < ladder.length - 1) {
+                console.warn(`Collision voxelization failed at ${voxelResolution} m voxels (${(err as Error)?.message ?? err}); retrying at ${ladder[i + 1]} m.`);
+                continue;
+            }
+            // Final rung: log the exact underlying error for diagnosis, then
+            // surface an actionable summary.
+            console.error('Collision voxelization failed (underlying error):', err);
+            if ((err as any)?.cause !== undefined) {
+                console.error('  cause:', (err as any).cause);
+            }
+            throw new Error(`Collision generation failed - the region is still too large to voxelize at ${voxelResolution} m voxels. Reduce the collision radius or increase the voxel size. (${(err as Error)?.message ?? err})`);
+        }
+    }
+};
+
+// Repoint the viewer's default collisionUrl at the bundled voxel file so the
+// exported viewer auto-loads collision without a ?voxel= query param. Guarded
+// like the other index.html repoints: throw if the source string is missing
+// (writeHtml output format changed).
+const repointCollisionUrl = (memFs: MemoryFileSystem): void => {
+    const rawHtml = memFs.results.get('index.html');
+    if (!rawHtml) {
+        throw new Error('Collision export failed: writeHtml did not produce index.html');
+    }
+    const html = new TextDecoder().decode(rawHtml);
+    const search = 'url.searchParams.get(\'collision\') ?? url.searchParams.get(\'voxel\')';
+    const repointed = html.replace(search, `${search} ?? './index.voxel.json'`);
+    if (repointed === html) {
+        throw new Error('Collision export failed: could not repoint viewer collisionUrl (writeHtml output format changed)');
+    }
+    memFs.results.set('index.html', new TextEncoder().encode(repointed));
+};
+
 // Produce a streaming viewer ZIP: a viewer shell (from unbundled writeHtml)
 // repointed at lod-meta.json, plus the writeLod streaming bundle.
 // Module-private: only called by writeViewerCore.
@@ -210,7 +294,8 @@ const writeStreamingViewerCore = async (
     fs: FileSystem,
     events?: Events,
     onLog?: (level: string, text: string) => void,
-    shouldCancel?: () => boolean
+    shouldCancel?: () => boolean,
+    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number }
 ): Promise<void> => {
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
@@ -234,6 +319,13 @@ const writeStreamingViewerCore = async (
         iterations: 10,
         createDevice
     }, memFs);
+
+    // Voxelize the full-resolution table now, before buildStreamingLodTable
+    // consumes/mutates it.
+    if (collision) {
+        phase = 'Generating collision data';
+        await writeCollisionVoxel(memFs, dataTable, viewerSettingsJson, createDevice, collision);
+    }
 
     // Streaming bundle: lod-meta.json + per-LOD SOG chunk folders. Decimation's
     // per-pass count is an estimate, so the level number lives in the label and
@@ -286,6 +378,9 @@ const writeStreamingViewerCore = async (
     }
     const withLinks = injectAnnotationLinks(repointed, viewerSettingsJson);
     memFs.results.set('index.html', new TextEncoder().encode(withLinks));
+    if (collision) {
+        repointCollisionUrl(memFs);
+    }
 
     // ZIP every emitted file. Keys are normalised to relative paths so the
     // viewer's relative chunk references resolve from the archive root
@@ -323,7 +418,8 @@ const writeViewerCore = async (
     fs: FileSystem,
     events?: Events,
     onLog?: (level: string, text: string) => void,
-    shouldCancel?: () => boolean
+    shouldCancel?: () => boolean,
+    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number }
 ): Promise<void> => {
     splatTransformLogger.setRenderer(createProgressRenderer('Exporting HTML', events, undefined, undefined, onLog, shouldCancel));
     try {
@@ -339,16 +435,22 @@ const writeViewerCore = async (
             await writer.write(new TextEncoder().encode(injected));
             await writer.close();
         } else if (viewerType === 'streaming') {
-            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel);
+            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision);
         } else {
             const memFs = new MemoryFileSystem();
             await writeHtml({ filename: 'index.html', dataTable, viewerSettingsJson, bundle: false, iterations: 10, createDevice }, memFs);
+            if (collision) {
+                await writeCollisionVoxel(memFs, dataTable, viewerSettingsJson, createDevice, collision);
+            }
             const rawIndex = memFs.results.get('index.html');
             if (!rawIndex) {
                 throw new Error('Package export failed: writeHtml did not produce index.html');
             }
             const injected = injectAnnotationLinks(new TextDecoder().decode(rawIndex), viewerSettingsJson);
             memFs.results.set('index.html', new TextEncoder().encode(injected));
+            if (collision) {
+                repointCollisionUrl(memFs);
+            }
             const zipWriter = await fs.createWriter('output.zip');
             const zipFs = new ZipFileSystem(zipWriter);
             try {
