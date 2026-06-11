@@ -275,7 +275,12 @@ class Camera extends Element {
     }
 
     // transform the world space coordinate to normalized screen coordinate
-    worldToScreen(world: Vec3, screen: Vec3) {
+    // Project a world position to normalized screen coordinates (0-1 range in
+    // screen.x/y). Returns true when the point is in front of the camera. Points
+    // behind the camera have a negative clip-space w, so the perspective divide
+    // (v4.x / v4.w) mirrors them to a bogus on-screen position; callers should
+    // cull markers when this returns false rather than draw the mirrored point.
+    worldToScreen(world: Vec3, screen: Vec3): boolean {
         const { camera } = this;
         m.mul2(camera.projectionMatrix, camera.viewMatrix);
 
@@ -285,6 +290,8 @@ class Camera extends Element {
         screen.x = v4.x / v4.w * 0.5 + 0.5;
         screen.y = 1.0 - (v4.y / v4.w * 0.5 + 0.5);
         screen.z = v4.z / v4.w;
+
+        return v4.w > 0;
     }
 
     add() {

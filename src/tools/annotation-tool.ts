@@ -161,7 +161,10 @@ class AnnotationTool {
             for (let i = 0; i < annotations.length; i++) {
                 const a = annotations[i];
                 p.set(a.position[0], a.position[1], a.position[2]);
-                scene.camera.worldToScreen(p, screen);
+                // skip annotations behind the camera (mirrored projection)
+                if (!scene.camera.worldToScreen(p, screen)) {
+                    continue;
+                }
                 screen.x *= canvasContainer.dom.clientWidth;
                 screen.y *= canvasContainer.dom.clientHeight;
                 if (Math.abs(screen.x - offsetX) < 8 && Math.abs(screen.y - offsetY) < 8) {

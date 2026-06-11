@@ -12,9 +12,9 @@ const p = new Vec3();
 // every annotation whenever scene overlays are visible, regardless of which tool
 // is active. Replaces the old 3D "jack" marker (annotation-gizmos.ts).
 //
-// Known limitation (matches the Distance tool): markers for points behind the
-// camera can project to mirrored positions, because camera.worldToScreen does
-// not expose clip-w for a reliable cull.
+// Markers for annotations behind the camera are culled: camera.worldToScreen
+// returns false for them (negative clip-w), so we hide the marker rather than
+// drawing it at its mirrored projection.
 class AnnotationOverlay {
     constructor(events: Events, scene: Scene, canvasContainer: Container) {
         const parent = canvasContainer.dom;
@@ -60,12 +60,15 @@ class AnnotationOverlay {
             }
         };
 
-        // project a world position to pixel coords within the canvas
+        // project a world position to pixel coords within the canvas. Returns
+        // false when the point is behind the camera (its projection is mirrored
+        // and must not be drawn or hit-tested).
         const project = (pos: [number, number, number], out: Vec3) => {
             p.set(pos[0], pos[1], pos[2]);
-            scene.camera.worldToScreen(p, out);
+            const inFront = scene.camera.worldToScreen(p, out);
             out.x *= parent.clientWidth;
             out.y *= parent.clientHeight;
+            return inFront;
         };
 
         const draw = () => {
@@ -81,7 +84,15 @@ class AnnotationOverlay {
 
             annotations.forEach((a, i) => {
                 const { circle, label } = markers[i];
-                project(a.position, p);
+                // hide markers for annotations behind the camera — their projection
+                // is mirrored and would otherwise appear to swing around the viewport
+                if (!project(a.position, p)) {
+                    circle.setAttribute('visibility', 'hidden');
+                    label.setAttribute('visibility', 'hidden');
+                    return;
+                }
+                circle.setAttribute('visibility', 'visible');
+                label.setAttribute('visibility', 'visible');
                 circle.setAttribute('cx', `${p.x}`);
                 circle.setAttribute('cy', `${p.y}`);
                 circle.classList.toggle('selected', a.id === selectedId);
@@ -111,7 +122,9 @@ class AnnotationOverlay {
             const annotations = events.invoke('annotations.list') as AnnotationData[];
             for (let i = 0; i < annotations.length; i++) {
                 const a = annotations[i];
-                project(a.position, p);
+                if (!project(a.position, p)) {
+                    continue;
+                }
                 if (Math.abs(p.x - offsetX) < 8 && Math.abs(p.y - offsetY) < 8) {
                     return a;
                 }
@@ -163,7 +176,9 @@ class AnnotationOverlay {
                 if (a.id === selectedId) {
                     continue;
                 }
-                project(a.position, p);
+                if (!project(a.position, p)) {
+                    continue;
+                }
                 if (Math.abs(p.x - e.offsetX) < 8 && Math.abs(p.y - e.offsetY) < 8) {
                     hit = a;
                     break;
