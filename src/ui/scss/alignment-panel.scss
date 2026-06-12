@@ -1,0 +1,126 @@
+@use 'colors.scss' as *;
+
+#alignment-panel {
+    bottom: 80px;
+    right: 102px;
+    width: 520px;
+    max-height: 560px;
+    flex-direction: column;
+
+    &:not(.pcui-hidden) {
+        display: flex;
+    }
+
+    .panel-header-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px 4px;
+
+        svg {
+            width: 16px;
+            height: 16px;
+            color: $clr-hilight;
+        }
+    }
+
+    .alignment-controls {
+        padding: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+
+    .alignment-control-row {
+        display: grid;
+        grid-template-columns: 58px 1fr;
+        align-items: center;
+        column-gap: 6px;
+    }
+
+    .alignment-control-label {
+        color: $text-secondary;
+    }
+
+    .alignment-select {
+        margin: 0;
+        min-width: 0;
+    }
+
+    .alignment-button-row {
+        display: flex;
+        flex-direction: row;
+        gap: 6px;
+        padding: 4px 6px;
+    }
+
+    .alignment-button {
+        flex: 1;
+        margin: 0;
+
+        &.active {
+            background-color: $clr-hilight;
+            color: $clr-active;
+        }
+    }
+
+    #alignment-pair-list-outer {
+        overflow-y: auto;
+        max-height: 260px;
+        margin: 4px 6px;
+        border: 1px solid $bcg-primary;
+    }
+
+    #alignment-pair-list {
+        width: 100%;
+        border-collapse: collapse;
+        color: $text-primary;
+
+        th,
+        td {
+            padding: 4px;
+            border-bottom: 1px solid $bcg-primary;
+            text-align: left;
+            white-space: nowrap;
+            font-family: monospace;
+            font-size: 11px;
+        }
+
+        th {
+            color: $text-secondary;
+            background-color: $bcg-dark;
+            font-family: inherit;
+        }
+    }
+
+    .alignment-row-actions {
+        display: flex;
+        gap: 2px;
+
+        button {
+            width: 22px;
+            height: 20px;
+            padding: 0;
+            border: 1px solid $bcg-primary;
+            background: $bcg-dark;
+            color: $text-primary;
+            cursor: pointer;
+
+            &:disabled {
+                color: $text-darkest;
+                cursor: default;
+            }
+        }
+    }
+
+    .alignment-result-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 8px;
+    }
+
+    .alignment-result-label {
+        color: $text-secondary;
+        font-family: monospace;
+    }
+}

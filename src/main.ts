@@ -1,6 +1,7 @@
 import { WebPCodec } from '@playcanvas/splat-transform';
 import { Color, createGraphicsDevice } from 'playcanvas';
 
+import { AlignmentManager } from './alignment';
 import { AnnotationOverlay } from './annotation-overlay';
 import { registerAnnotationsEvents } from './annotations';
 import { registerCameraPosesEvents } from './camera-poses';
@@ -21,6 +22,7 @@ import { getSceneConfig } from './scene-config';
 import { registerSelectionEvents } from './selection';
 import { ShortcutManager } from './shortcut-manager';
 import { registerTimelineEvents } from './timeline';
+import { AlignmentTool } from './tools/alignment-tool';
 import { AnnotationTool } from './tools/annotation-tool';
 import { BoxSelection } from './tools/box-selection';
 import { BrushSelection } from './tools/brush-selection';
@@ -38,6 +40,7 @@ import { SphereSelection } from './tools/sphere-selection';
 import { ToolManager } from './tools/tool-manager';
 import { registerTrackManagerEvents } from './track-manager';
 import { registerTransformHandlerEvents } from './transform-handler';
+import { AlignmentPanel } from './ui/alignment-panel';
 import { BoundDimensionsOverlay } from './ui/bound-dimensions-overlay';
 import { EditorUI } from './ui/editor';
 import { localizeInit } from './ui/localization';
@@ -252,6 +255,12 @@ const main = async () => {
     toolManager.register('measure', new MeasureTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
     toolManager.register('annotation', new AnnotationTool(events, scene, editorUI.canvasContainer));
     toolManager.register('offLimitsZones', new OffLimitsZoneTool(events, scene, editorUI.canvasContainer));
+
+    const alignmentManager = new AlignmentManager(events, scene);
+    toolManager.register('align', new AlignmentTool(events, scene, alignmentManager, editorUI.canvasContainer));
+
+    const alignmentPanel = new AlignmentPanel(events, scene, alignmentManager);
+    editorUI.canvasContainer.append(alignmentPanel);
 
     /* eslint-disable no-new */
     new AnnotationOverlay(events, scene, editorUI.canvasContainer);

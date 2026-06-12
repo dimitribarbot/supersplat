@@ -3,6 +3,7 @@ import { Button, Element, Container } from '@playcanvas/pcui';
 import { Events } from '../events';
 import { ShortcutManager } from '../shortcut-manager';
 import { localize, formatTooltipWithShortcut } from './localization';
+import alignSvg from './svg/align.svg';
 import annotationsSvg from './svg/annotations.svg';
 import offLimitsSvg from './svg/off-limits.svg';
 import redoSvg from './svg/redo.svg';
@@ -117,6 +118,11 @@ class BottomToolbar extends Container {
             icon: 'E358'
         });
 
+        const align = new Button({
+            id: 'bottom-toolbar-align',
+            class: 'bottom-toolbar-tool'
+        });
+
         const annotation = new Button({
             id: 'bottom-toolbar-annotation',
             class: 'bottom-toolbar-tool'
@@ -149,6 +155,7 @@ class BottomToolbar extends Container {
         box.dom.appendChild(createSvg(boxSvg));
         lasso.dom.appendChild(createSvg(lassoSvg));
         eyedropper.dom.appendChild(createSvg(eyedropperSvg));
+        align.dom.appendChild(createSvg(alignSvg));
         annotation.dom.appendChild(createSvg(annotationsSvg));
         offLimits.dom.appendChild(createSvg(offLimitsSvg));
         // crop.dom.appendChild(createSvg(cropSvg));
@@ -172,6 +179,7 @@ class BottomToolbar extends Container {
         this.append(scale);
         this.append(new Element({ class: 'bottom-toolbar-separator' }));
         this.append(measure);
+        this.append(align);
         this.append(annotation);
         this.append(offLimits);
         this.append(coordSpace);
@@ -191,6 +199,7 @@ class BottomToolbar extends Container {
         rotate.dom.addEventListener('click', () => events.fire('tool.rotate'));
         scale.dom.addEventListener('click', () => events.fire('tool.scale'));
         measure.dom.addEventListener('click', () => events.fire('tool.measure'));
+        align.dom.addEventListener('click', () => events.fire('tool.align'));
         annotation.dom.addEventListener('click', () => events.fire('tool.annotation'));
         offLimits.dom.addEventListener('click', () => events.fire('tool.offLimitsZones'));
         coordSpace.dom.addEventListener('click', () => events.fire('tool.toggleCoordSpace'));
@@ -215,6 +224,7 @@ class BottomToolbar extends Container {
             rotate.class[toolName === 'rotate' ? 'add' : 'remove']('active');
             scale.class[toolName === 'scale' ? 'add' : 'remove']('active');
             measure.class[toolName === 'measure' ? 'add' : 'remove']('active');
+            align.class[toolName === 'align' ? 'add' : 'remove']('active');
             annotation.class[toolName === 'annotation' ? 'add' : 'remove']('active');
             offLimits.class[toolName === 'offLimitsZones' ? 'add' : 'remove']('active');
             eyedropper.class[toolName === 'eyedropperSelection' ? 'add' : 'remove']('active');
@@ -255,6 +265,7 @@ class BottomToolbar extends Container {
         tooltips.register(rotate, tooltip('tooltip.bottom-toolbar.rotate', 'tool.rotate'));
         tooltips.register(scale, tooltip('tooltip.bottom-toolbar.scale', 'tool.scale'));
         tooltips.register(measure, tooltip('tooltip.bottom-toolbar.measure'));
+        tooltips.register(align, tooltip('tooltip.bottom-toolbar.align'));
         tooltips.register(annotation, tooltip('tooltip.bottom-toolbar.annotations'));
         tooltips.register(offLimits, tooltip('tooltip.bottom-toolbar.off-limits'));
         tooltips.register(coordSpace, tooltip('tooltip.bottom-toolbar.local-space', 'tool.toggleCoordSpace'));
