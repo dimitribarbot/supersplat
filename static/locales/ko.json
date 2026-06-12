@@ -60,6 +60,7 @@
     "panel.annotations.text": "텍스트",
     "panel.annotations.url": "링크 URL",
     "panel.annotations.new-tab": "새 탭에서 열기",
+    "offLimitsZones.defaultMessage": "장면의 끝에 도달했습니다.",
     "panel.view-options": "보기 옵션",
     "panel.view-options.colors": "색상",
     "panel.view-options.background-color": "배경 색상",

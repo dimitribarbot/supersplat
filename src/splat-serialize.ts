@@ -124,6 +124,8 @@ type ExperienceSettings = {
     animTracks: AnimTrack[],
     cameras: Camera[],
     annotations: Annotation[],
+    offLimitsZones: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number }[],
+    offLimitsMessage: string,
     startMode: 'default' | 'animTrack' | 'annotation'
 };
 

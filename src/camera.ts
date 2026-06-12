@@ -2,6 +2,10 @@ import {
     math,
     ADDRESS_CLAMP_TO_EDGE,
     ASPECT_MANUAL,
+    BLENDEQUATION_ADD,
+    BLENDMODE_ONE,
+    BLENDMODE_ONE_MINUS_SRC_ALPHA,
+    BLENDMODE_ZERO,
     FILTER_NEAREST,
     PIXELFORMAT_RGBA8,
     PIXELFORMAT_RGBA16F,
@@ -14,6 +18,7 @@ import {
     TONEMAP_HEJL,
     TONEMAP_LINEAR,
     TONEMAP_NEUTRAL,
+    BlendState,
     BoundingBox,
     Color,
     Entity,
@@ -21,6 +26,7 @@ import {
     Ray,
     RenderPass,
     RenderPassForward,
+    RenderPassPicker,
     RenderTarget,
     Texture,
     Vec3,
@@ -93,12 +99,17 @@ class Camera extends Element {
     splatTarget: RenderTarget;
     colorTarget: RenderTarget;
     workTarget: RenderTarget;
+    zoneDepthBuffer: Texture;
+    zoneDepthTarget: RenderTarget;
 
     // Render passes
     clearPass: RenderPass;
     mainPass: RenderPassForward;
     splatPass: RenderPassForward;
     gizmoPass: RenderPassForward;
+    zonePass: RenderPassForward;
+    zoneDepthPass: RenderPassPicker;
+    zoneDepthBlend: BlendState;
     finalPass: SimpleRenderPass;
 
     // overridden target size
@@ -303,6 +314,7 @@ class Camera extends Element {
         this.mainCamera.camera.layers = [
             scene.worldLayer.id,
             scene.splatLayer.id,
+            scene.offLimitsLayer.id,
             scene.gizmoLayer.id
         ];
 
@@ -319,6 +331,7 @@ class Camera extends Element {
         this.mainPass = new RenderPassForward(device, composition, app.scene, renderer);
         this.splatPass = new RenderPassForward(device, composition, app.scene, renderer);
         this.gizmoPass = new RenderPassForward(device, composition, app.scene, renderer);
+        this.zonePass = new RenderPassForward(device, composition, app.scene, renderer);
         this.finalPass = new SimpleRenderPass(device,
             new ShaderQuad(device, vertexShader, fragmentShader, 'final-blit'), {
                 vars: () => {
@@ -431,6 +444,7 @@ class Camera extends Element {
         this.mainPass?.destroy();
         this.splatPass?.destroy();
         this.gizmoPass?.destroy();
+        this.zonePass?.destroy();
         this.finalPass?.destroy();
         this.camera.framePasses = null;
 
@@ -518,6 +532,17 @@ class Camera extends Element {
                 autoResolve: false
             });
 
+            // off-limits zone depth: per-frame splat depth (R = alpha-weighted
+            // normalized depth, A = transmittance), sampled by the wall shader.
+            const zoneDepthBuffer = createTexture('zoneDepth', width, height, PIXELFORMAT_RGBA16F);
+            this.zoneDepthBuffer = zoneDepthBuffer;
+            this.zoneDepthTarget = new RenderTarget({
+                colorBuffer: zoneDepthBuffer,
+                depth: false,
+                flipY: false,
+                autoResolve: false
+            });
+
             // create work buffer (used for picking, overlay output, and other operations)
             this.workTarget = new RenderTarget({
                 colorBuffer: workBuffer,
@@ -544,6 +569,13 @@ class Camera extends Element {
             this.splatPass.addLayer(this.camera, scene.splatLayer, false, false);
             this.splatPass.addLayer(this.camera, scene.splatLayer, true, false);
 
+            // configure zone pass - off-limits walls, drawn into the main target
+            // AFTER the splats (so it blends over splat color) with NO clears
+            // (so the shared depth/color from earlier passes is preserved).
+            this.zonePass.init(this.mainTarget);
+            this.zonePass.addLayer(this.camera, scene.offLimitsLayer, false, false);
+            this.zonePass.addLayer(this.camera, scene.offLimitsLayer, true, false);
+
             // configure gizmo pass
             this.gizmoPass.init(this.mainTarget);
             this.gizmoPass.addLayer(this.camera, scene.gizmoLayer, false, false);
@@ -554,7 +586,7 @@ class Camera extends Element {
             this.finalPass.init(null);
 
             // assign render passes to camera
-            this.camera.framePasses = [this.clearPass, this.mainPass, this.splatPass, this.gizmoPass, this.finalPass];
+            this.camera.framePasses = [this.clearPass, this.mainPass, this.splatPass, this.zonePass, this.gizmoPass, this.finalPass];
         } else {
             // resize existing render targets
             const { splatTarget, colorTarget, workTarget } = this;
@@ -563,6 +595,7 @@ class Camera extends Element {
             workTarget.resize(width, height);
             colorTarget.resize(width, height);
             splatTarget.resize(width, height);
+            this.zoneDepthTarget.resize(width, height);
         }
 
         this.camera.horizontalFov = width > height;
@@ -626,9 +659,45 @@ class Camera extends Element {
         }
     }
 
+    // Render all splats in depth-estimation mode into zoneDepthTarget.
+    // R = sum(normalizedDepth * alpha), A = transmittance; the wall shader
+    // reconstructs depth = R / (1 - A). Mirrors Picker.prepareDepth but keeps
+    // every splat enabled and targets a persistent buffer.
+    renderZoneDepth() {
+        const { scene } = this;
+        const { app, splatLayer } = scene;
+        const device = scene.graphicsDevice;
+
+        if (!this.zoneDepthPass) {
+            this.zoneDepthPass = new RenderPassPicker(device, app.renderer);
+            this.zoneDepthBlend = new BlendState(
+                true,
+                BLENDEQUATION_ADD, BLENDMODE_ONE, BLENDMODE_ONE_MINUS_SRC_ALPHA,
+                BLENDEQUATION_ADD, BLENDMODE_ZERO, BLENDMODE_ONE_MINUS_SRC_ALPHA
+            );
+        }
+
+        device.scope.resolve('pickOp').setValue(2);   // 'set' - don't skip visible splats
+        device.scope.resolve('pickMode').setValue(1); // depth estimation
+
+        this.zoneDepthPass.blendState = this.zoneDepthBlend;
+        this.zoneDepthPass.init(this.zoneDepthTarget);
+        this.zoneDepthPass.setClearColor(new Color(0, 0, 0, 1)); // depth 0, transmittance 1 (nothing)
+        this.zoneDepthPass.update(this.camera, app.scene, [splatLayer], new Map(), false);
+        this.zoneDepthPass.render();
+    }
+
     onPreRender() {
         this.rebuildRenderTargets();
         this.updateCameraUniforms();
+
+        // Off-limits walls need a per-frame splat depth texture to test against.
+        // Only pay the extra splat render when at least one zone exists.
+        const hasZones = (this.scene.events.invoke('offLimitsZones.list') as unknown[])?.length > 0;
+        if (hasZones) {
+            this.renderZoneDepth();
+            this.scene.graphicsDevice.scope.resolve('zoneDepthTex').setValue(this.zoneDepthBuffer);
+        }
     }
 
     onPostRender() {

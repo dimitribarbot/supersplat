@@ -60,6 +60,7 @@
     "panel.annotations.text": "テキスト",
     "panel.annotations.url": "リンクURL",
     "panel.annotations.new-tab": "新しいタブで開く",
+    "offLimitsZones.defaultMessage": "シーンの終わりに到達しました。",
     "panel.view-options": "表示オプション",
     "panel.view-options.colors": "色",
     "panel.view-options.background-color": "背景色",

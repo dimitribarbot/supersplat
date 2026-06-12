@@ -76,6 +76,7 @@ class Scene {
     worldLayer: Layer;
     splatLayer: Layer;
     gizmoLayer: Layer;
+    offLimitsLayer: Layer;
     sceneState = [new SceneState(), new SceneState()];
     elements: Element[] = [];
     boundStorage = new BoundingBox();
@@ -205,8 +206,13 @@ class Scene {
         // gizmo layer
         this.gizmoLayer = new Layer({ name: 'Gizmo' });
 
+        // off-limits zone layer: renders AFTER splats so the wall can blend over
+        // them and be manually depth-tested against the splat depth texture.
+        this.offLimitsLayer = new Layer({ name: 'OffLimits' });
+
         const layers = this.app.scene.layers;
         layers.push(this.splatLayer);
+        layers.push(this.offLimitsLayer);
         layers.push(this.gizmoLayer);
 
         this.dataProcessor = new DataProcessor(this.app.graphicsDevice);

@@ -60,6 +60,7 @@
     "panel.annotations.text": "Texto",
     "panel.annotations.url": "URL del enlace",
     "panel.annotations.new-tab": "Abrir en pestaña nueva",
+    "offLimitsZones.defaultMessage": "Has llegado al final de la escena.",
     "panel.view-options": "Opciones de vista",
     "panel.view-options.colors": "Colores",
     "panel.view-options.background-color": "Color de fondo",

@@ -60,6 +60,7 @@
     "panel.annotations.text": "文本",
     "panel.annotations.url": "链接 URL",
     "panel.annotations.new-tab": "在新标签页中打开",
+    "offLimitsZones.defaultMessage": "您已到达场景的尽头。",
     "panel.view-options": "视图选项",
     "panel.view-options.colors": "颜色",
     "panel.view-options.background-color": "背景颜色",

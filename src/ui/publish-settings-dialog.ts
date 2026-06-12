@@ -373,6 +373,8 @@ class PublishSettingsDialog extends Container {
                         animTracks,
                         cameras,
                         annotations: events.invoke('annotations.export') ?? [],
+                        offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
+                        offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
                         startMode: includeAnimation ? 'animTrack' : 'default'
                     };
 

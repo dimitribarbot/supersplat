@@ -185,6 +185,8 @@ class S3PublishDialog extends Container {
                     animTracks,
                     cameras,
                     annotations: events.invoke('annotations.export') ?? [],
+                    offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
+                    offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
                     startMode: animation.value ? 'animTrack' : 'default'
                 };
                 return {

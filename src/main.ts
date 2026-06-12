@@ -11,6 +11,7 @@ import { registerEditorEvents } from './editor';
 import { Events } from './events';
 import { initFileHandler } from './file-handler';
 import { registerIframeApi } from './iframe-api';
+import { registerOffLimitsZonesEvents } from './off-limits-zones';
 import { registerPlySequenceEvents } from './ply-sequence';
 import { registerPublishEvents } from './publish';
 import { registerRenderEvents } from './render';
@@ -28,6 +29,7 @@ import { FloodSelection } from './tools/flood-selection';
 import { LassoSelection } from './tools/lasso-selection';
 import { MeasureTool } from './tools/measure-tool';
 import { MoveTool } from './tools/move-tool';
+import { OffLimitsZoneTool } from './tools/off-limits-zone-tool';
 import { PolygonSelection } from './tools/polygon-selection';
 import { RectSelection } from './tools/rect-selection';
 import { RotateTool } from './tools/rotate-tool';
@@ -107,6 +109,7 @@ const main = async () => {
     registerTimelineEvents(events);
     registerCameraPosesEvents(events);
     registerAnnotationsEvents(events);
+    registerOffLimitsZonesEvents(events);
     registerTrackManagerEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);
@@ -248,6 +251,7 @@ const main = async () => {
     toolManager.register('scale', new ScaleTool(events, scene));
     toolManager.register('measure', new MeasureTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
     toolManager.register('annotation', new AnnotationTool(events, scene, editorUI.canvasContainer));
+    toolManager.register('offLimitsZones', new OffLimitsZoneTool(events, scene, editorUI.canvasContainer));
 
     /* eslint-disable no-new */
     new AnnotationOverlay(events, scene, editorUI.canvasContainer);

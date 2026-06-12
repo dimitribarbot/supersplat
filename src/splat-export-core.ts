@@ -19,6 +19,7 @@ import {
 import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subsetRowsWithinRadius, voxelResolutionLadder, type CollisionEnvironment } from './collision-voxel-options';
 import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
+import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 
 // Inject the annotation-link companion into an HTML string before </body>.
 // No-op (returns the input) when there are no annotation links.
@@ -31,6 +32,32 @@ const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string =>
         return html.replace('</body>', `${injection}</body>`);
     }
     return html + injection;
+};
+
+// Inject the off-limits-zones companion into an HTML string before </body>.
+// No-op (returns the input) when there are no zones.
+const injectOffLimitsZones = (html: string, viewerSettingsJson: any): string => {
+    const injection = buildOffLimitsZonesInjection(
+        viewerSettingsJson?.offLimitsZones ?? [],
+        viewerSettingsJson?.offLimitsMessage ?? ''
+    );
+    if (!injection) {
+        return html;
+    }
+    // The exported viewer keeps its PlayCanvas app + camera in a private module
+    // closure (no `pc`/app global), so the companion cannot reach the camera on
+    // its own. Publish the viewer instance from its own bootstrap line; the
+    // companion then clamps the camera via viewer.cameraManager. Soft replace:
+    // if this anchor ever changes upstream the companion just no-ops (blocking
+    // disabled) rather than corrupting the export.
+    const bootstrap = 'const viewer = await main(canvas, settingsJson, config);';
+    const withHandle = html.includes(bootstrap) ?
+        html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
+        html;
+    if (withHandle.includes('</body>')) {
+        return withHandle.replace('</body>', `${injection}</body>`);
+    }
+    return withHandle + injection;
 };
 
 // Bridge splat-transform progress events to supersplat's events.
@@ -377,7 +404,8 @@ const writeStreamingViewerCore = async (
         throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (writeHtml output format changed)');
     }
     const withLinks = injectAnnotationLinks(repointed, viewerSettingsJson);
-    memFs.results.set('index.html', new TextEncoder().encode(withLinks));
+    const withZones = injectOffLimitsZones(withLinks, viewerSettingsJson);
+    memFs.results.set('index.html', new TextEncoder().encode(withZones));
     if (collision) {
         repointCollisionUrl(memFs);
     }
@@ -430,7 +458,7 @@ const writeViewerCore = async (
             if (!raw) {
                 throw new Error('HTML export failed: writeHtml did not produce output.html');
             }
-            const injected = injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson);
+            const injected = injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson), viewerSettingsJson);
             const writer = await fs.createWriter('output.html');
             await writer.write(new TextEncoder().encode(injected));
             await writer.close();
@@ -446,7 +474,7 @@ const writeViewerCore = async (
             if (!rawIndex) {
                 throw new Error('Package export failed: writeHtml did not produce index.html');
             }
-            const injected = injectAnnotationLinks(new TextDecoder().decode(rawIndex), viewerSettingsJson);
+            const injected = injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(rawIndex), viewerSettingsJson), viewerSettingsJson);
             memFs.results.set('index.html', new TextEncoder().encode(injected));
             if (collision) {
                 repointCollisionUrl(memFs);

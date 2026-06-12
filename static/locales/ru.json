@@ -60,6 +60,7 @@
     "panel.annotations.text": "Текст",
     "panel.annotations.url": "URL ссылки",
     "panel.annotations.new-tab": "Открыть в новой вкладке",
+    "offLimitsZones.defaultMessage": "Вы достигли конца сцены.",
     "panel.view-options": "Параметры просмотра",
     "panel.view-options.colors": "Цвета",
     "panel.view-options.background-color": "Цвет фона",
