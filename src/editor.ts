@@ -237,17 +237,29 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     // handle camera align events
     events.on('camera.align', (axis: string) => {
-        switch (axis) {
-            case 'px': scene.camera.setAzimElev(90, 0); break;
-            case 'py': scene.camera.setAzimElev(0, -90); break;
-            case 'pz': scene.camera.setAzimElev(0, 0); break;
-            case 'nx': scene.camera.setAzimElev(270, 0); break;
-            case 'ny': scene.camera.setAzimElev(0, 90); break;
-            case 'nz': scene.camera.setAzimElev(180, 0); break;
+        const angles: Record<string, [number, number]> = {
+            px: [90, 0],
+            py: [0, -90],
+            pz: [0, 0],
+            nx: [270, 0],
+            ny: [0, 90],
+            nz: [180, 0]
+        };
+        const a = angles[axis];
+        if (!a) {
+            return;
         }
 
-        // switch to ortho mode
-        scene.camera.ortho = true;
+        if (scene.camera.controlMode === 'fly') {
+            // Walkthrough: snap the orientation around the current camera
+            // position and stay in perspective, so the axis view is centered on
+            // where you are and fly movement (including up/down) stays visible.
+            scene.camera.setAzimElevKeepPosition(a[0], a[1]);
+        } else {
+            scene.camera.setAzimElev(a[0], a[1]);
+            // switch to ortho for a distortion-free technical view
+            scene.camera.ortho = true;
+        }
     });
 
     // returns true if the selected splat has selected gaussians

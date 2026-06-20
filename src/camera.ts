@@ -244,6 +244,26 @@ class Camera extends Element {
         this.lookCameraPos = cameraPos;
     }
 
+    // Snap the camera to an absolute orientation while keeping its world
+    // position fixed (rotate in place). setAzimElev alone orbits around the
+    // focal point; this instead recomputes the focal point so the camera does
+    // not move, and keeps perspective projection. Used by the view-cube in fly
+    // mode so axis views stay centered on the current position and fly movement
+    // (including up/down) remains visible.
+    setAzimElevKeepPosition(azim: number, elev: number) {
+        const d = this.distance * this.sceneRadius / this.fovFactor;
+
+        Camera.calcForwardVec(forwardVec, this.azim, this.elevation);
+        const cameraPos = this.focalPoint.add(forwardVec.clone().mulScalar(d));
+
+        Camera.calcForwardVec(forwardVec, azim, elev);
+        const focalPoint = cameraPos.clone().sub(forwardVec.clone().mulScalar(d));
+
+        this.setAzimElev(azim, elev);
+        this.focalPointTween.goto(focalPoint, this.scene.config.controls.dampingFactor);
+        this.lookCameraPos = cameraPos;
+    }
+
     setAzimElev(azim: number, elev: number, dampingFactorFactor: number = 1) {
         // clamp
         azim = mod(azim, 360);
