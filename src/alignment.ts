@@ -1,5 +1,6 @@
 import { Mat4, Quat, Vec3 } from 'playcanvas';
 
+import { solveAlignmentRaw } from './alignment-solve';
 import { EntityTransformOp } from './edit-ops';
 import { Events } from './events';
 import { Scene } from './scene';
@@ -31,112 +32,20 @@ const tmpMatA = new Mat4();
 const tmpMatB = new Mat4();
 const tmpMatC = new Mat4();
 const tmpVecA = new Vec3();
-const tmpVecB = new Vec3();
-const tmpVecC = new Vec3();
 
-const transformPoint = (rotation: Quat, scale: number, translation: Vec3, point: Vec3, result: Vec3) => {
-    result.copy(point);
-    rotation.transformVector(result, result);
-    result.mulScalar(scale).add(translation);
-    return result;
-};
-
-const largestEigenVector4 = (m: number[][]) => {
-    const q = [1, 0, 0, 0];
-    const next = [0, 0, 0, 0];
-
-    for (let iter = 0; iter < 128; iter++) {
-        for (let r = 0; r < 4; r++) {
-            next[r] = m[r][0] * q[0] + m[r][1] * q[1] + m[r][2] * q[2] + m[r][3] * q[3];
-        }
-
-        const len = Math.hypot(next[0], next[1], next[2], next[3]) || 1;
-        for (let i = 0; i < 4; i++) {
-            q[i] = next[i] / len;
-        }
-    }
-
-    return q;
-};
-
+// thin wrapper over the playcanvas-free solver: pass world points straight
+// through (Vec3 satisfies Vec3Like) and lift the raw result back into Quat/Vec3.
 const solveAlignment = (source: Vec3[], target: Vec3[], mode: AlignmentMode): AlignmentSolveResult | null => {
-    const n = Math.min(source.length, target.length);
-    if (n < 3) {
+    const raw = solveAlignmentRaw(source, target, mode);
+    if (!raw) {
         return null;
     }
-
-    const sourceCentroid = new Vec3();
-    const targetCentroid = new Vec3();
-    for (let i = 0; i < n; i++) {
-        sourceCentroid.add(source[i]);
-        targetCentroid.add(target[i]);
-    }
-    sourceCentroid.mulScalar(1 / n);
-    targetCentroid.mulScalar(1 / n);
-
-    let sxx = 0, sxy = 0, sxz = 0;
-    let syx = 0, syy = 0, syz = 0;
-    let szx = 0, szy = 0, szz = 0;
-    let sourceVariance = 0;
-
-    for (let i = 0; i < n; i++) {
-        const x = source[i].x - sourceCentroid.x;
-        const y = source[i].y - sourceCentroid.y;
-        const z = source[i].z - sourceCentroid.z;
-        const u = target[i].x - targetCentroid.x;
-        const v = target[i].y - targetCentroid.y;
-        const w = target[i].z - targetCentroid.z;
-
-        sxx += x * u; sxy += x * v; sxz += x * w;
-        syx += y * u; syy += y * v; syz += y * w;
-        szx += z * u; szy += z * v; szz += z * w;
-        sourceVariance += x * x + y * y + z * z;
-    }
-
-    if (sourceVariance <= 1e-16) {
-        return null;
-    }
-
-    const trace = sxx + syy + szz;
-    const nmat = [
-        [trace, syz - szy, szx - sxz, sxy - syx],
-        [syz - szy, sxx - syy - szz, sxy + syx, szx + sxz],
-        [szx - sxz, sxy + syx, -sxx + syy - szz, syz + szy],
-        [sxy - syx, szx + sxz, syz + szy, -sxx - syy + szz]
-    ];
-
-    const q = largestEigenVector4(nmat);
-    const rotation = new Quat(q[1], q[2], q[3], q[0]).normalize();
-
-    let scaleNumerator = 0;
-    for (let i = 0; i < n; i++) {
-        tmpVecA.sub2(source[i], sourceCentroid);
-        rotation.transformVector(tmpVecA, tmpVecB);
-        tmpVecC.sub2(target[i], targetCentroid);
-        scaleNumerator += tmpVecC.dot(tmpVecB);
-    }
-
-    const scale = mode === 'similarity' ? Math.max(1e-8, scaleNumerator / sourceVariance) : 1;
-    const translation = new Vec3();
-    rotation.transformVector(sourceCentroid, translation);
-    translation.mulScalar(scale);
-    translation.sub2(targetCentroid, translation);
-
-    const residuals: number[] = [];
-    let residualSum = 0;
-    for (let i = 0; i < n; i++) {
-        transformPoint(rotation, scale, translation, source[i], tmpVecA);
-        const residual = tmpVecA.distance(target[i]);
-        residuals.push(residual);
-        residualSum += residual * residual;
-    }
-
     return {
-        rotation,
-        translation,
-        scale,
-        rms: Math.sqrt(residualSum / n),
-        residuals
+        rotation: new Quat(raw.rotation[0], raw.rotation[1], raw.rotation[2], raw.rotation[3]).normalize(),
+        translation: new Vec3(raw.translation[0], raw.translation[1], raw.translation[2]),
+        scale: raw.scale,
+        rms: raw.rms,
+        residuals: raw.residuals
     };
 };
 
