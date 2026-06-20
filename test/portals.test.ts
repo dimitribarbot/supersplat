@@ -1,0 +1,89 @@
+import { describe, it, expect } from 'vitest';
+
+import { AddPortalOp, RemovePortalOp, SetStartSplatOp, PortalData, registerPortalsEvents } from '../src/portals';
+
+// Minimal Events double: function/invoke registry + on/fire listeners.
+const makeEvents = () => {
+    const fns = new Map<string, (...args: any[]) => any>();
+    const listeners = new Map<string, ((...args: any[]) => void)[]>();
+    return {
+        function(name: string, fn: (...args: any[]) => any) { fns.set(name, fn); },
+        invoke(name: string, ...args: any[]) { return fns.get(name)?.(...args); },
+        on(name: string, fn: (...args: any[]) => void) {
+            const arr = listeners.get(name) ?? [];
+            arr.push(fn);
+            listeners.set(name, arr);
+        },
+        fire(name: string, ...args: any[]) { (listeners.get(name) ?? []).forEach(fn => fn(...args)); }
+    } as any;
+};
+
+const portal = (over: Partial<PortalData> = {}): PortalData => ({
+    id: 'portal_0',
+    position: [0, 0, 0],
+    rotation: [0, 0, 0, 1],
+    width: 2,
+    height: 2,
+    frontUid: 1,
+    backUid: 2,
+    ...over
+});
+
+describe('portals events', () => {
+    it('adds, lists, and selects a portal', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        const p = portal();
+        new AddPortalOp(events, p).do();
+        expect(events.invoke('portals.list')).toEqual([p]);
+        expect(events.invoke('portals.selected')).toBe('portal_0');
+        expect(events.invoke('portals.count')).toBe(1);
+    });
+
+    it('add op undo removes the portal', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        const op = new AddPortalOp(events, portal());
+        op.do();
+        op.undo();
+        expect(events.invoke('portals.list')).toEqual([]);
+    });
+
+    it('remove op undo restores at the original index', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new AddPortalOp(events, portal({ id: 'portal_0' })).do();
+        new AddPortalOp(events, portal({ id: 'portal_1' })).do();
+        const remove = new RemovePortalOp(events, events.invoke('portals.byId', 'portal_0'), 0);
+        remove.do();
+        expect((events.invoke('portals.list') as PortalData[]).map(p => p.id)).toEqual(['portal_1']);
+        remove.undo();
+        expect((events.invoke('portals.list') as PortalData[]).map(p => p.id)).toEqual(['portal_0', 'portal_1']);
+    });
+
+    it('serializes and deserializes including the start splat', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new AddPortalOp(events, portal({ id: 'portal_5' })).do();
+        new SetStartSplatOp(events, null, 7).do();
+        const serialized = events.invoke('docSerialize.portals');
+        const start = events.invoke('portals.startSplat');
+
+        const events2 = makeEvents();
+        registerPortalsEvents(events2);
+        events2.invoke('docDeserialize.portals', serialized, start);
+        expect(events2.invoke('portals.list')).toEqual([portal({ id: 'portal_5' })]);
+        expect(events2.invoke('portals.startSplat')).toBe(7);
+        expect(events2.invoke('portals.newId')).toBe('portal_6');
+    });
+
+    it('deserialize fills missing rotation/size/uid defaults', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.invoke('docDeserialize.portals', [{ id: 'portal_0', position: [0, 0, 0] }], undefined);
+        expect(events.invoke('portals.byId', 'portal_0')).toEqual({
+            id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 1, height: 1, frontUid: null, backUid: null
+        });
+        expect(events.invoke('portals.startSplat')).toBeNull();
+    });
+});

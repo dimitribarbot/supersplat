@@ -339,5 +339,15 @@
     "offLimitsZones.width": "宽度",
     "offLimitsZones.height": "高度",
     "offLimitsZones.message": "消息",
-    "tooltip.bottom-toolbar.off-limits": "禁区"
+    "tooltip.bottom-toolbar.off-limits": "禁区",
+    "portals.add": "添加",
+    "portals.move": "移动",
+    "portals.rotate": "旋转",
+    "portals.width": "宽度",
+    "portals.height": "高度",
+    "portals.front": "正面场景",
+    "portals.back": "背面场景",
+    "portals.start": "起始场景",
+    "tooltip.bottom-toolbar.portals": "传送门",
+    "tooltip.scene.walkthrough": "漫游"
 }

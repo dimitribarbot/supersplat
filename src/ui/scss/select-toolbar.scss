@@ -21,5 +21,9 @@
         height: 38px;
         padding: 0px 16px;
         border-radius: 2px;
+
+        &.active {
+            background-color: $clr-hilight !important;
+        }
     }
 }

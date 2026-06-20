@@ -339,5 +339,15 @@
     "offLimitsZones.width": "Ширина",
     "offLimitsZones.height": "Высота",
     "offLimitsZones.message": "Сообщение",
-    "tooltip.bottom-toolbar.off-limits": "Запретные зоны"
+    "tooltip.bottom-toolbar.off-limits": "Запретные зоны",
+    "portals.add": "Добавить",
+    "portals.move": "Переместить",
+    "portals.rotate": "Повернуть",
+    "portals.width": "Ширина",
+    "portals.height": "Высота",
+    "portals.front": "Передняя сцена",
+    "portals.back": "Задняя сцена",
+    "portals.start": "Начальная сцена",
+    "tooltip.bottom-toolbar.portals": "Порталы",
+    "tooltip.scene.walkthrough": "Прогулка"
 }

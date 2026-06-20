@@ -124,6 +124,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             events.invoke('docDeserialize.poseSets', document.poseSets, document.camera?.fov);
             events.invoke('docDeserialize.annotations', document.annotations);
             events.invoke('docDeserialize.offLimitsZones', document.offLimitsZones, document.offLimitsMessage);
+            events.invoke('docDeserialize.portals', document.portals, document.portalsStartSplat);
             events.invoke('docDeserialize.view', document.view);
             scene.camera.docDeserialize(document.camera);
 
@@ -164,6 +165,8 @@ const registerDocEvents = (scene: Scene, events: Events) => {
                 annotations: events.invoke('docSerialize.annotations'),
                 offLimitsZones: events.invoke('docSerialize.offLimitsZones'),
                 offLimitsMessage: events.invoke('offLimitsZones.message'),
+                portals: events.invoke('docSerialize.portals'),
+                portalsStartSplat: events.invoke('portals.startSplat'),
                 splats: splats.map(s => s.docSerialize())
             };
 

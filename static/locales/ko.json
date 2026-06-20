@@ -339,5 +339,15 @@
     "offLimitsZones.width": "너비",
     "offLimitsZones.height": "높이",
     "offLimitsZones.message": "메시지",
-    "tooltip.bottom-toolbar.off-limits": "출입 금지 구역"
+    "tooltip.bottom-toolbar.off-limits": "출입 금지 구역",
+    "portals.add": "추가",
+    "portals.move": "이동",
+    "portals.rotate": "회전",
+    "portals.width": "너비",
+    "portals.height": "높이",
+    "portals.front": "전면 장면",
+    "portals.back": "후면 장면",
+    "portals.start": "시작 장면",
+    "tooltip.bottom-toolbar.portals": "포털",
+    "tooltip.scene.walkthrough": "둘러보기"
 }

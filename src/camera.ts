@@ -691,10 +691,12 @@ class Camera extends Element {
         this.rebuildRenderTargets();
         this.updateCameraUniforms();
 
-        // Off-limits walls need a per-frame splat depth texture to test against.
-        // Only pay the extra splat render when at least one zone exists.
-        const hasZones = (this.scene.events.invoke('offLimitsZones.list') as unknown[])?.length > 0;
-        if (hasZones) {
+        // Off-limits walls and portals share the zone shader, which needs a
+        // per-frame splat depth texture to test against. Only pay the extra
+        // splat render when at least one zone or portal exists.
+        const zoneCount = (this.scene.events.invoke('offLimitsZones.list') as unknown[])?.length ?? 0;
+        const portalCount = (this.scene.events.invoke('portals.list') as unknown[])?.length ?? 0;
+        if (zoneCount > 0 || portalCount > 0) {
             this.renderZoneDepth();
             this.scene.graphicsDevice.scope.resolve('zoneDepthTex').setValue(this.zoneDepthBuffer);
         }

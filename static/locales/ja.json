@@ -339,5 +339,15 @@
     "offLimitsZones.width": "幅",
     "offLimitsZones.height": "高さ",
     "offLimitsZones.message": "メッセージ",
-    "tooltip.bottom-toolbar.off-limits": "立入禁止ゾーン"
+    "tooltip.bottom-toolbar.off-limits": "立入禁止ゾーン",
+    "portals.add": "追加",
+    "portals.move": "移動",
+    "portals.rotate": "回転",
+    "portals.width": "幅",
+    "portals.height": "高さ",
+    "portals.front": "前面シーン",
+    "portals.back": "背面シーン",
+    "portals.start": "開始シーン",
+    "tooltip.bottom-toolbar.portals": "ポータル",
+    "tooltip.scene.walkthrough": "ウォークスルー"
 }

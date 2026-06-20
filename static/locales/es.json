@@ -339,5 +339,15 @@
     "offLimitsZones.width": "Ancho",
     "offLimitsZones.height": "Alto",
     "offLimitsZones.message": "Mensaje",
-    "tooltip.bottom-toolbar.off-limits": "Zonas restringidas"
+    "tooltip.bottom-toolbar.off-limits": "Zonas restringidas",
+    "portals.add": "Añadir",
+    "portals.move": "Mover",
+    "portals.rotate": "Rotar",
+    "portals.width": "Ancho",
+    "portals.height": "Alto",
+    "portals.front": "Escena frontal",
+    "portals.back": "Escena trasera",
+    "portals.start": "Escena inicial",
+    "tooltip.bottom-toolbar.portals": "Portales",
+    "tooltip.scene.walkthrough": "Recorrido"
 }

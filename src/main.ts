@@ -13,6 +13,8 @@ import { Events } from './events';
 import { initFileHandler } from './file-handler';
 import { registerIframeApi } from './iframe-api';
 import { registerOffLimitsZonesEvents } from './off-limits-zones';
+import { registerPortalsEvents } from './portals';
+import { registerPortalsRuntime } from './portals-runtime';
 import { registerPlySequenceEvents } from './ply-sequence';
 import { registerPublishEvents } from './publish';
 import { registerRenderEvents } from './render';
@@ -33,6 +35,7 @@ import { MeasureTool } from './tools/measure-tool';
 import { MoveTool } from './tools/move-tool';
 import { OffLimitsZoneTool } from './tools/off-limits-zone-tool';
 import { PolygonSelection } from './tools/polygon-selection';
+import { PortalTool } from './tools/portal-tool';
 import { RectSelection } from './tools/rect-selection';
 import { RotateTool } from './tools/rotate-tool';
 import { ScaleTool } from './tools/scale-tool';
@@ -113,6 +116,7 @@ const main = async () => {
     registerCameraPosesEvents(events);
     registerAnnotationsEvents(events);
     registerOffLimitsZonesEvents(events);
+    registerPortalsEvents(events);
     registerTrackManagerEvents(events);
     registerTransformHandlerEvents(events);
     registerPlySequenceEvents(events);
@@ -255,6 +259,7 @@ const main = async () => {
     toolManager.register('measure', new MeasureTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
     toolManager.register('annotation', new AnnotationTool(events, scene, editorUI.canvasContainer));
     toolManager.register('offLimitsZones', new OffLimitsZoneTool(events, scene, editorUI.canvasContainer));
+    toolManager.register('portals', new PortalTool(events, scene, editorUI.canvasContainer));
 
     const alignmentManager = new AlignmentManager(events, scene);
     toolManager.register('align', new AlignmentTool(events, scene, alignmentManager, editorUI.canvasContainer));
@@ -273,6 +278,7 @@ const main = async () => {
     window.scene = scene;
 
     // register events that need scene or other dependencies
+    registerPortalsRuntime(events, scene);
     registerEditorEvents(events, editHistory, scene);
     registerSelectionEvents(events, scene);
     registerDocEvents(scene, events);

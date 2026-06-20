@@ -339,5 +339,15 @@
     "offLimitsZones.width": "Breite",
     "offLimitsZones.height": "Höhe",
     "offLimitsZones.message": "Nachricht",
-    "tooltip.bottom-toolbar.off-limits": "Sperrzonen"
+    "tooltip.bottom-toolbar.off-limits": "Sperrzonen",
+    "portals.add": "Hinzufügen",
+    "portals.move": "Verschieben",
+    "portals.rotate": "Drehen",
+    "portals.width": "Breite",
+    "portals.height": "Höhe",
+    "portals.front": "Vordere Szene",
+    "portals.back": "Hintere Szene",
+    "portals.start": "Startszene",
+    "tooltip.bottom-toolbar.portals": "Portale",
+    "tooltip.scene.walkthrough": "Rundgang"
 }

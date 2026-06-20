@@ -6,6 +6,7 @@ import { localize, formatTooltipWithShortcut } from './localization';
 import alignSvg from './svg/align.svg';
 import annotationsSvg from './svg/annotations.svg';
 import offLimitsSvg from './svg/off-limits.svg';
+import portalSvg from './svg/portal.svg';
 import redoSvg from './svg/redo.svg';
 import brushSvg from './svg/select-brush.svg';
 import eyedropperSvg from './svg/select-eyedropper.svg';
@@ -133,6 +134,11 @@ class BottomToolbar extends Container {
             class: 'bottom-toolbar-tool'
         });
 
+        const portals = new Button({
+            id: 'bottom-toolbar-portals',
+            class: 'bottom-toolbar-tool'
+        });
+
         const coordSpace = new Button({
             id: 'bottom-toolbar-coord-space',
             class: 'bottom-toolbar-toggle',
@@ -158,6 +164,7 @@ class BottomToolbar extends Container {
         align.dom.appendChild(createSvg(alignSvg));
         annotation.dom.appendChild(createSvg(annotationsSvg));
         offLimits.dom.appendChild(createSvg(offLimitsSvg));
+        portals.dom.appendChild(createSvg(portalSvg));
         // crop.dom.appendChild(createSvg(cropSvg));
 
         this.append(undo);
@@ -182,6 +189,7 @@ class BottomToolbar extends Container {
         this.append(align);
         this.append(annotation);
         this.append(offLimits);
+        this.append(portals);
         this.append(coordSpace);
         this.append(origin);
 
@@ -202,6 +210,7 @@ class BottomToolbar extends Container {
         align.dom.addEventListener('click', () => events.fire('tool.align'));
         annotation.dom.addEventListener('click', () => events.fire('tool.annotation'));
         offLimits.dom.addEventListener('click', () => events.fire('tool.offLimitsZones'));
+        portals.dom.addEventListener('click', () => events.fire('tool.portals'));
         coordSpace.dom.addEventListener('click', () => events.fire('tool.toggleCoordSpace'));
         origin.dom.addEventListener('click', () => events.fire('pivot.toggleOrigin'));
 
@@ -227,6 +236,7 @@ class BottomToolbar extends Container {
             align.class[toolName === 'align' ? 'add' : 'remove']('active');
             annotation.class[toolName === 'annotation' ? 'add' : 'remove']('active');
             offLimits.class[toolName === 'offLimitsZones' ? 'add' : 'remove']('active');
+            portals.class[toolName === 'portals' ? 'add' : 'remove']('active');
             eyedropper.class[toolName === 'eyedropperSelection' ? 'add' : 'remove']('active');
         });
 
@@ -268,6 +278,7 @@ class BottomToolbar extends Container {
         tooltips.register(align, tooltip('tooltip.bottom-toolbar.align'));
         tooltips.register(annotation, tooltip('tooltip.bottom-toolbar.annotations'));
         tooltips.register(offLimits, tooltip('tooltip.bottom-toolbar.off-limits'));
+        tooltips.register(portals, tooltip('tooltip.bottom-toolbar.portals'));
         tooltips.register(coordSpace, tooltip('tooltip.bottom-toolbar.local-space', 'tool.toggleCoordSpace'));
         tooltips.register(origin, tooltip('tooltip.bottom-toolbar.bound-center'));
         tooltips.register(eyedropper, tooltip('tooltip.bottom-toolbar.eyedropper', 'tool.eyedropperSelection'));

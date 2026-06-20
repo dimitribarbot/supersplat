@@ -5,6 +5,7 @@ import { localize } from './localization';
 import { SplatList } from './splat-list';
 import sceneImportSvg from './svg/import.svg';
 import sceneNewSvg from './svg/new.svg';
+import portalSvg from './svg/portal-small.svg';
 import soloSvg from './svg/solo.svg';
 import { Tooltips } from './tooltips';
 import { Transform } from './transform';
@@ -57,7 +58,48 @@ class ScenePanel extends Container {
             } else {
                 soloToggle.class.remove('active');
             }
+            if (soloActive && walkthroughActive) {
+                walkthroughActive = false;
+                walkthroughToggle.class.remove('active');
+                events.fire('portals.walkthrough', false);
+            }
             events.fire('scene.solo', soloActive);
+        });
+
+        let walkthroughActive = false;
+
+        const walkthroughToggle = new Container({
+            class: 'panel-header-button'
+        });
+        walkthroughToggle.dom.appendChild(createSvg(portalSvg));
+
+        const refreshWalkthroughEnabled = () => {
+            const count = events.invoke('portals.count') as number;
+            walkthroughToggle.class[count > 0 ? 'remove' : 'add']('disabled');
+        };
+
+        walkthroughToggle.on('click', () => {
+            const count = events.invoke('portals.count') as number;
+            if (count === 0) {
+                return; // disabled until at least one portal exists
+            }
+            walkthroughActive = !walkthroughActive;
+            walkthroughToggle.class[walkthroughActive ? 'add' : 'remove']('active');
+            if (walkthroughActive && soloActive) {
+                soloActive = false;
+                soloToggle.class.remove('active');
+                events.fire('scene.solo', false);
+            }
+            events.fire('portals.walkthrough', walkthroughActive);
+        });
+
+        events.on('portals.changed', refreshWalkthroughEnabled);
+        refreshWalkthroughEnabled();
+
+        events.on('scene.clear', () => {
+            walkthroughActive = false;
+            walkthroughToggle.class.remove('active');
+            refreshWalkthroughEnabled();
         });
 
         const sceneImport = new Container({
@@ -73,6 +115,7 @@ class ScenePanel extends Container {
         sceneHeader.append(sceneIcon);
         sceneHeader.append(sceneLabel);
         sceneHeader.append(soloToggle);
+        sceneHeader.append(walkthroughToggle);
         sceneHeader.append(sceneImport);
         sceneHeader.append(sceneNew);
 
@@ -85,6 +128,7 @@ class ScenePanel extends Container {
         });
 
         tooltips.register(soloToggle, localize('tooltip.scene.solo'), 'top');
+        tooltips.register(walkthroughToggle, localize('tooltip.scene.walkthrough'), 'top');
         tooltips.register(sceneImport, 'Import Scene', 'top');
         tooltips.register(sceneNew, 'New Scene', 'top');
 
