@@ -16,6 +16,8 @@ export type ExportOptions = {
     serializeSettings?: { maxSHBands?: number };
     sogIterations?: number;
     viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number } };
+    // per-extra-scene metadata for a portal walkthrough (index-aligned to extraPlyGz)
+    portalExtras?: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; collisionUrl: string | null; streaming: boolean }[];
 };
 
 export type RunResult = {
@@ -32,6 +34,7 @@ export type RunExportArgs = {
     // Polled cooperatively: when it returns true, the export aborts at the next
     // checkpoint / progress tick (see the shared core's shouldCancel handling).
     isCancelled?: () => boolean;
+    extraPlyGz?: Buffer[];
 };
 
 // Human-readable byte size for friendly server logs (spaced units, e.g. "6.0 MB").
@@ -51,7 +54,7 @@ const READ_OPTS = {
     lodChunkExtent: 16
 };
 
-export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCancelled }: RunExportArgs): Promise<RunResult> => {
+export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCancelled, extraPlyGz }: RunExportArgs): Promise<RunResult> => {
     const ensureLive = () => {
         if (isCancelled?.()) throw new Error('export cancelled');
     };
@@ -162,8 +165,33 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
         return { files: [{ name: options.filename, data }] };
     }
 
+    // Parse one DataTable per uploaded extra portal scene, in upload order
+    // (== bundle index 1..N), and pair each with its client-resolved metadata.
+    const buildExtraScenes = async () => {
+        const metas = options.portalExtras ?? [];
+        const plys = extraPlyGz ?? [];
+        if (metas.length === 0 || plys.length === 0) return undefined;
+        const scenes = [];
+        for (let i = 0; i < metas.length; i++) {
+            const raw = Buffer.from(gunzipSync(plys[i]));
+            const erfs = new MemoryReadFileSystem();
+            erfs.set('extra.ply', new Uint8Array(raw));
+            const t = (await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs }))[0];
+            (t as any).transform = Transform.PLY;
+            scenes.push({
+                dataTable: t,
+                streaming: metas[i].streaming,
+                collisionUrl: metas[i].collisionUrl,
+                environment: metas[i].environment,
+                seed: metas[i].seed
+            });
+        }
+        return scenes;
+    };
+
     if (options.fileType === 'htmlViewer') {
-        await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision);
+        const extraScenes = await buildExtraScenes();
+        await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes);
         const data = memFs.results.get('output.html')!;
         console.log(`Created ${options.filename} (${fmtSize(data.length)})`);
         return { files: [{ name: options.filename, data }] };
@@ -171,7 +199,8 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
 
     // packageViewer
     const viewerType = options.viewerExportSettings!.streaming ? 'streaming' : 'package';
-    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision);
+    const extraScenes = await buildExtraScenes();
+    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes);
     flushChunk();
     return { files: [{ name: options.filename, data: memFs.results.get('output.zip')! }] };
 };

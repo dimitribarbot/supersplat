@@ -348,6 +348,9 @@
     "portals.front": "前面シーン",
     "portals.back": "背面シーン",
     "portals.start": "開始シーン",
+    "portals.entrypoint": "エントリーポイント",
+    "portals.entrypoint.set": "カメラから設定",
+    "portals.entrypoint.clear": "クリア",
     "tooltip.bottom-toolbar.portals": "ポータル",
     "tooltip.scene.walkthrough": "ウォークスルー"
 }

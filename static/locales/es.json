@@ -348,6 +348,9 @@
     "portals.front": "Escena frontal",
     "portals.back": "Escena trasera",
     "portals.start": "Escena inicial",
+    "portals.entrypoint": "Punto de entrada",
+    "portals.entrypoint.set": "Establecer desde cámara",
+    "portals.entrypoint.clear": "Borrar",
     "tooltip.bottom-toolbar.portals": "Portales",
     "tooltip.scene.walkthrough": "Recorrido"
 }

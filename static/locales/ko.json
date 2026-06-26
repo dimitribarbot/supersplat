@@ -348,6 +348,9 @@
     "portals.front": "전면 장면",
     "portals.back": "후면 장면",
     "portals.start": "시작 장면",
+    "portals.entrypoint": "진입점",
+    "portals.entrypoint.set": "카메라에서 설정",
+    "portals.entrypoint.clear": "지우기",
     "tooltip.bottom-toolbar.portals": "포털",
     "tooltip.scene.walkthrough": "둘러보기"
 }

@@ -348,6 +348,9 @@
     "portals.front": "正面场景",
     "portals.back": "背面场景",
     "portals.start": "起始场景",
+    "portals.entrypoint": "入口点",
+    "portals.entrypoint.set": "从相机设置",
+    "portals.entrypoint.clear": "清除",
     "tooltip.bottom-toolbar.portals": "传送门",
     "tooltip.scene.walkthrough": "漫游"
 }

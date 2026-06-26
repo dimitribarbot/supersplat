@@ -348,6 +348,9 @@
     "portals.front": "Vordere Szene",
     "portals.back": "Hintere Szene",
     "portals.start": "Startszene",
+    "portals.entrypoint": "Einstiegspunkt",
+    "portals.entrypoint.set": "Von Kamera übernehmen",
+    "portals.entrypoint.clear": "Löschen",
     "tooltip.bottom-toolbar.portals": "Portale",
     "tooltip.scene.walkthrough": "Rundgang"
 }

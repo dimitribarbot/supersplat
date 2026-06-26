@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { AddPortalOp, RemovePortalOp, SetStartSplatOp, PortalData, registerPortalsEvents } from '../src/portals';
+import { AddPortalOp, RemovePortalOp, SetStartSplatOp, PortalData, registerPortalsEvents, UpdatePortalEntrypointOp } from '../src/portals';
 
 // Minimal Events double: function/invoke registry + on/fire listeners.
 const makeEvents = () => {
@@ -85,5 +85,54 @@ describe('portals events', () => {
             id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 1, height: 1, frontUid: null, backUid: null
         });
         expect(events.invoke('portals.startSplat')).toBeNull();
+    });
+});
+
+describe('portal entrypoints', () => {
+    it('set + query a per-scene entrypoint', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new UpdatePortalEntrypointOp(events, 7, null, [1, 2, 3]).do();
+        expect(events.invoke('portals.entrypoint', 7)).toEqual([1, 2, 3]);
+        expect(events.invoke('portals.entrypoint', 8)).toBeNull();
+    });
+
+    it('clearing (newPos null) removes the entrypoint', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new UpdatePortalEntrypointOp(events, 7, null, [1, 2, 3]).do();
+        new UpdatePortalEntrypointOp(events, 7, [1, 2, 3], null).do();
+        expect(events.invoke('portals.entrypoint', 7)).toBeNull();
+    });
+
+    it('undo restores the previous entrypoint value', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        const op = new UpdatePortalEntrypointOp(events, 7, null, [1, 2, 3]);
+        op.do();
+        op.undo();
+        expect(events.invoke('portals.entrypoint', 7)).toBeNull();
+    });
+
+    it('exportEntrypoints returns a uid->position record', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new UpdatePortalEntrypointOp(events, 7, null, [1, 2, 3]).do();
+        expect(events.invoke('portals.exportEntrypoints')).toEqual({ '7': [1, 2, 3] });
+    });
+
+    it('deserialize restores entrypoints from the 3rd arg', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.invoke('docDeserialize.portals', [], null, { '7': [4, 5, 6] });
+        expect(events.invoke('portals.entrypoint', 7)).toEqual([4, 5, 6]);
+    });
+
+    it('scene.clear wipes entrypoints', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new UpdatePortalEntrypointOp(events, 7, null, [1, 2, 3]).do();
+        events.fire('scene.clear');
+        expect(events.invoke('portals.entrypoint', 7)).toBeNull();
     });
 });

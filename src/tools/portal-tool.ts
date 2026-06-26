@@ -1,10 +1,10 @@
 import { Button, Container, Label, NumericInput, SelectInput } from '@playcanvas/pcui';
-import { Quat, RotateGizmo, TranslateGizmo, Vec3 } from 'playcanvas';
+import { Entity, Quat, RotateGizmo, TranslateGizmo, Vec3 } from 'playcanvas';
 
 import { ElementType } from '../element';
 import { Events } from '../events';
 import { PortalShape } from '../portal-shape';
-import { AddPortalOp, RemovePortalOp, SetStartSplatOp, UpdatePortalOp, PortalData } from '../portals';
+import { AddPortalOp, RemovePortalOp, SetStartSplatOp, UpdatePortalEntrypointOp, UpdatePortalOp, PortalData } from '../portals';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
 import { localize } from '../ui/localization';
@@ -35,6 +35,11 @@ class PortalTool {
 
     constructor(events: Events, scene: Scene, canvasContainer: Container) {
         let active = false;
+        let selectedEntryUid: number | null = null;
+        let entryGizmoArmed = false;
+        // Below this camera→entrypoint distance the gizmo would attach coincident
+        // with the camera (degenerate, never recovers), so the attach is deferred.
+        const ENTRY_GIZMO_MIN_DIST = 0.5;
 
         // per-portal plane meshes, keyed by portal id
         const shapes = new Map<string, PortalShape>();
@@ -57,19 +62,25 @@ class PortalTool {
         const startLabel = new Label({ text: localize('portals.start') });
         const startInput = new SelectInput({ type: 'number', options: [], width: 140 });
 
+        const entryLabel = new Label({ text: localize('portals.entrypoint') });
+        const entrySceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
+        const entrySetButton = new Button({ text: localize('portals.entrypoint.set'), class: 'select-toolbar-button' });
+        const entryClearButton = new Button({ text: localize('portals.entrypoint.clear'), class: 'select-toolbar-button' });
+
+        const group = (...els: any[]) => {
+            const c = new Container({ class: 'select-toolbar-group' });
+            els.forEach(el => c.append(el));
+            return c;
+        };
         bar.append(addButton);
         bar.append(moveButton);
         bar.append(rotateButton);
-        bar.append(widthLabel);
-        bar.append(widthInput);
-        bar.append(heightLabel);
-        bar.append(heightInput);
-        bar.append(frontLabel);
-        bar.append(frontInput);
-        bar.append(backLabel);
-        bar.append(backInput);
-        bar.append(startLabel);
-        bar.append(startInput);
+        bar.append(group(widthLabel, widthInput));
+        bar.append(group(heightLabel, heightInput));
+        bar.append(group(frontLabel, frontInput));
+        bar.append(group(backLabel, backInput));
+        bar.append(group(startLabel, startInput));
+        bar.append(group(entryLabel, entrySceneInput, entrySetButton, entryClearButton));
         canvasContainer.append(bar);
 
         // --- selection helpers ---
@@ -89,6 +100,16 @@ class PortalTool {
             frontInput.options = options;
             backInput.options = options;
             startInput.options = options;
+
+            // entrypoint dropdown lists only scenes referenced by a portal (the ones exported)
+            const referenced = new Set<number>();
+            (events.invoke('portals.list') as PortalData[]).forEach((p) => {
+                if (p.frontUid !== null) referenced.add(p.frontUid);
+                if (p.backUid !== null) referenced.add(p.backUid);
+            });
+            entrySceneInput.options = splatList()
+                .filter(s => referenced.has(s.uid))
+                .map(s => ({ v: s.uid, t: splatName(s) }));
         };
 
         let suppress = false;
@@ -113,7 +134,19 @@ class PortalTool {
                 backInput.value = z.backUid;
             }
             startInput.value = events.invoke('portals.startSplat') as number | null;
+            // entrypoint: reconcile the authoritative selection against current options
+            const epOptions = entrySceneInput.options as { v: number, t: string }[];
+            if (selectedEntryUid != null && !epOptions.some(o => o.v === selectedEntryUid)) {
+                selectedEntryUid = epOptions.length > 0 ? epOptions[0].v : null;
+            } else if (selectedEntryUid == null && epOptions.length > 0) {
+                selectedEntryUid = epOptions[0].v;
+            }
+            entrySceneInput.value = selectedEntryUid;
+            const hasEp = selectedEntryUid != null && !!events.invoke('portals.entrypoint', selectedEntryUid);
+            entryClearButton.enabled = hasEp;
+            entrySetButton.enabled = selectedEntryUid != null;
             suppress = false;
+            updateEntryGizmo();
         };
 
         const commitSize = (field: 'width' | 'height', value: number) => {
@@ -156,6 +189,29 @@ class PortalTool {
             if (current !== v) {
                 events.fire('edit.add', new SetStartSplatOp(events, current, v));
             }
+        });
+
+        entrySceneInput.on('change', () => {
+            if (suppress) return;
+            selectedEntryUid = entrySceneInput.value as number | null;
+            refreshBar();
+        });
+
+        entrySetButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            if (!active || selectedEntryUid == null) return;
+            const pose = events.invoke('camera.getPose');
+            const p = pose?.position;
+            if (!p) return;
+            const old = events.invoke('portals.entrypoint', selectedEntryUid) as [number, number, number] | null;
+            events.fire('edit.add', new UpdatePortalEntrypointOp(events, selectedEntryUid, old, [p.x, p.y, p.z]));
+        });
+
+        entryClearButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            if (!active || selectedEntryUid == null) return;
+            const old = events.invoke('portals.entrypoint', selectedEntryUid) as [number, number, number] | null;
+            if (old) events.fire('edit.add', new UpdatePortalEntrypointOp(events, selectedEntryUid, old, null));
         });
 
         // --- add a new portal at the current view target ---
@@ -267,15 +323,130 @@ class PortalTool {
         translateGizmo.on('transform:end', onEnd);
         rotateGizmo.on('transform:end', onEnd);
 
+        // entryGizmo declared here so updateGizmoSize can reference it before the overlay section
+        const entryGizmo = new TranslateGizmo(scene.camera.camera, scene.gizmoLayer);
+
         const updateGizmoSize = () => {
             const { camera, canvas } = scene;
             const size = camera.ortho ? 1125 / canvas.clientHeight : 1200 / Math.max(canvas.clientWidth, canvas.clientHeight);
             translateGizmo.size = size;
             rotateGizmo.size = size;
+            entryGizmo.size = size;
         };
         updateGizmoSize();
         events.on('camera.resize', updateGizmoSize);
         events.on('camera.ortho', updateGizmoSize);
+
+        // --- entrypoint dot overlay (SVG, never occluded) ---
+        const epSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        epSvg.classList.add('portal-entrypoint-overlay');
+        epSvg.style.position = 'absolute';
+        epSvg.style.inset = '0';
+        epSvg.style.width = '100%';
+        epSvg.style.height = '100%';
+        epSvg.style.pointerEvents = 'none';
+        canvasContainer.dom.appendChild(epSvg);
+        const epNs = epSvg.namespaceURI;
+        const epDots: { circle: SVGCircleElement, label: SVGTextElement }[] = [];
+        const epWorld = new Vec3();
+        const epScreen = new Vec3();
+
+        const drawEntrypoints = () => {
+            const eps = active ? (events.invoke('portals.exportEntrypoints') as Record<string, [number, number, number]>) : {};
+            const uids = Object.keys(eps);
+            while (epDots.length < uids.length) {
+                const circle = document.createElementNS(epNs, 'circle') as SVGCircleElement;
+                circle.setAttribute('r', '6');
+                circle.setAttribute('fill', '#00ccff');
+                circle.setAttribute('stroke', '#003344');
+                circle.setAttribute('stroke-width', '2');
+                const label = document.createElementNS(epNs, 'text') as SVGTextElement;
+                label.setAttribute('fill', '#ffffff');
+                label.setAttribute('font-size', '11');
+                epSvg.appendChild(circle);
+                epSvg.appendChild(label);
+                epDots.push({ circle, label });
+            }
+            while (epDots.length > uids.length) {
+                const d = epDots.pop();
+                d.circle.remove();
+                d.label.remove();
+            }
+            const cw = canvasContainer.dom.clientWidth;
+            const ch = canvasContainer.dom.clientHeight;
+            uids.forEach((uid, i) => {
+                const pos = eps[uid];
+                epWorld.set(pos[0], pos[1], pos[2]);
+                const inFront = scene.camera.worldToScreen(epWorld, epScreen);
+                const { circle, label } = epDots[i];
+                if (!inFront) {
+                    circle.setAttribute('visibility', 'hidden');
+                    label.setAttribute('visibility', 'hidden');
+                    return;
+                }
+                const x = epScreen.x * cw;
+                const y = epScreen.y * ch;
+                const isSel = parseInt(uid, 10) === selectedEntryUid;
+                circle.setAttribute('visibility', 'visible');
+                label.setAttribute('visibility', 'visible');
+                circle.setAttribute('cx', `${x}`);
+                circle.setAttribute('cy', `${y}`);
+                circle.setAttribute('stroke', isSel ? '#ffffff' : '#003344');
+                circle.setAttribute('stroke-width', isSel ? '3' : '2');
+                label.setAttribute('x', `${x + 9}`);
+                label.setAttribute('y', `${y - 9}`);
+                label.textContent = `⌂ ${uid}`;
+            });
+            // once the camera has moved clear of a just-set entrypoint, attach the
+            // deferred gizmo (see updateEntryGizmo). Cheap: only runs while armed.
+            if (entryGizmoArmed) {
+                updateEntryGizmo();
+            }
+        };
+        events.on('postrender', drawEntrypoints);
+
+        // --- entrypoint translate gizmo ---
+        const entryPivot = new Entity('portalEntrypointPivot');
+        const entryDragStart = new Vec3();
+
+        const updateEntryGizmo = () => {
+            entryGizmo.detach();
+            entryGizmoArmed = false;
+            if (!active || selectedEntryUid == null) return;
+            const pos = events.invoke('portals.entrypoint', selectedEntryUid) as [number, number, number] | null;
+            if (!pos) return;
+            // Defer the attach while the entrypoint is coincident with the camera
+            // (e.g. right after "Set from camera", which captures the eye position):
+            // a gizmo attached at ~zero distance renders degenerate and never
+            // recovers. Arm it; the per-frame check in drawEntrypoints attaches it
+            // once the camera has moved clear.
+            const cp = events.invoke('camera.getPose')?.position;
+            if (cp) {
+                const dx = cp.x - pos[0], dy = cp.y - pos[1], dz = cp.z - pos[2];
+                if (dx * dx + dy * dy + dz * dz < ENTRY_GIZMO_MIN_DIST * ENTRY_GIZMO_MIN_DIST) {
+                    entryGizmoArmed = true;
+                    return;
+                }
+            }
+            entryPivot.setLocalPosition(pos[0], pos[1], pos[2]);
+            entryGizmo.attach(entryPivot);
+            scene.forceRender = true;
+        };
+        entryGizmo.on('render:update', () => { scene.forceRender = true; });
+        entryGizmo.on('transform:start', () => {
+            entryDragStart.copy(entryPivot.getLocalPosition());
+        });
+        entryGizmo.on('transform:move', () => { scene.forceRender = true; });
+        entryGizmo.on('transform:end', () => {
+            if (selectedEntryUid == null) return;
+            const p = entryPivot.getLocalPosition();
+            if (p.x === entryDragStart.x && p.y === entryDragStart.y && p.z === entryDragStart.z) return;
+            events.fire('edit.add', new UpdatePortalEntrypointOp(
+                events, selectedEntryUid,
+                [entryDragStart.x, entryDragStart.y, entryDragStart.z],
+                [p.x, p.y, p.z]
+            ));
+        });
 
         // --- click to select by portal center proximity ---
         const isPrimary = (e: PointerEvent) => (e.pointerType === 'mouse' ? e.button === 0 : e.isPrimary);
@@ -313,6 +484,24 @@ class PortalTool {
             return null;
         };
 
+        // hit-test the entrypoint dots (screen space, ~10px), returns the scene uid or null
+        const entrypointAt = (offsetX: number, offsetY: number): number | null => {
+            const eps = events.invoke('portals.exportEntrypoints') as Record<string, [number, number, number]>;
+            const cw = canvasContainer.dom.clientWidth;
+            const ch = canvasContainer.dom.clientHeight;
+            for (const key of Object.keys(eps)) {
+                const pos = eps[key];
+                epWorld.set(pos[0], pos[1], pos[2]);
+                if (!scene.camera.worldToScreen(epWorld, epScreen)) continue;
+                const x = epScreen.x * cw;
+                const y = epScreen.y * ch;
+                if (Math.abs(x - offsetX) < 10 && Math.abs(y - offsetY) < 10) {
+                    return parseInt(key, 10);
+                }
+            }
+            return null;
+        };
+
         let clicked = false;
         const pointerdown = (e: PointerEvent) => {
             if (!clicked && isPrimary(e)) {
@@ -327,6 +516,14 @@ class PortalTool {
                 return;
             }
             clicked = false;
+            const epHit = entrypointAt(e.offsetX, e.offsetY);
+            if (epHit != null) {
+                selectedEntryUid = epHit;
+                refreshBar();
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
             const hit = zoneAt(e.offsetX, e.offsetY);
             if (hit) {
                 events.fire('portals.select', hit.id);
@@ -385,11 +582,13 @@ class PortalTool {
             syncShapes();
             refreshBar();
             updateGizmos();
+            updateEntryGizmo();
         });
         events.on('portals.selectionChanged', () => {
             syncShapes();
             refreshBar();
             updateGizmos();
+            updateEntryGizmo();
         });
 
         this.activate = () => {
@@ -400,6 +599,7 @@ class PortalTool {
             syncShapes();
             refreshBar();
             updateGizmos();
+            updateEntryGizmo();
         };
 
         this.deactivate = () => {
@@ -411,6 +611,8 @@ class PortalTool {
             bar.hidden = true;
             translateGizmo.detach();
             rotateGizmo.detach();
+            entryGizmo.detach();
+            drawEntrypoints();
         };
     }
 }

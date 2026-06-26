@@ -45,9 +45,12 @@ export const buildApp = async () => {
     app.post('/api/export', async (req, reply) => {
         let plyGz: Buffer | null = null;
         let options: any = null;
+        const extraPlyGz: Buffer[] = [];
         for await (const part of req.parts()) {
             if (part.type === 'file' && part.fieldname === 'ply') {
                 plyGz = await part.toBuffer();
+            } else if (part.type === 'file' && part.fieldname === 'extraPly') {
+                extraPlyGz.push(await part.toBuffer());
             } else if (part.type === 'field' && part.fieldname === 'options') {
                 try {
                     options = JSON.parse(part.value as string);
@@ -63,7 +66,7 @@ export const buildApp = async () => {
         if (!filenameOk) {
             return reply.code(400).send({ error: 'invalid filename: use only letters, digits, dot, underscore, hyphen' });
         }
-        const id = createJob(plyGz, options);
+        const id = createJob(plyGz, options, undefined, extraPlyGz.length ? extraPlyGz : undefined);
         return reply.code(202).send({ jobId: id });
     });
 
@@ -133,9 +136,12 @@ export const buildApp = async () => {
         if (!s3IsConfigured()) return reply.code(503).send({ error: 'publishing not configured' });
         let plyGz: Buffer | null = null;
         let options: any = null;
+        const extraPlyGz: Buffer[] = [];
         for await (const part of req.parts()) {
             if (part.type === 'file' && part.fieldname === 'ply') {
                 plyGz = await part.toBuffer();
+            } else if (part.type === 'file' && part.fieldname === 'extraPly') {
+                extraPlyGz.push(await part.toBuffer());
             } else if (part.type === 'field' && part.fieldname === 'options') {
                 try { options = JSON.parse(part.value as string); } catch { return reply.code(400).send({ error: 'options is not valid JSON' }); }
             }
@@ -153,9 +159,10 @@ export const buildApp = async () => {
             fileType: 'packageViewer' as const,
             filename: 'output.zip',
             serializeSettings: options.serializeSettings,
-            viewerExportSettings: options.viewerExportSettings
+            viewerExportSettings: options.viewerExportSettings,
+            portalExtras: options.portalExtras
         };
-        const id = createJob(plyGz, exportOptions, { prefix, public: !!options.public });
+        const id = createJob(plyGz, exportOptions, { prefix, public: !!options.public }, extraPlyGz.length ? extraPlyGz : undefined);
         return reply.code(202).send({ jobId: id });
     });
 

@@ -23,10 +23,12 @@ export type ServerProgress = { message?: string; value?: number };
 export const runServerExport = async (
     plyGz: Blob,
     options: object & { fileType: string; filename: string },
-    onProgress: (p: ServerProgress) => void
+    onProgress: (p: ServerProgress) => void,
+    extraPlyGz?: Blob[]
 ): Promise<Blob> => {
     const form = new FormData();
     form.append('ply', plyGz, 'scene.ply.gz');
+    (extraPlyGz ?? []).forEach((b, i) => form.append('extraPly', b, `scene-${i + 1}.ply.gz`));
     form.append('options', JSON.stringify(options));
     const startRes = await fetch(`${location.origin}/api/export`, { method: 'POST', body: form });
     if (!startRes.ok) throw new Error(`server export failed to start (${startRes.status})`);

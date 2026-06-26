@@ -126,6 +126,12 @@ type ExperienceSettings = {
     annotations: Annotation[],
     offLimitsZones: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number }[],
     offLimitsMessage: string,
+    // multi-scene portal walkthrough (absent unless portals exist)
+    portals?: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number, front: number | null, back: number | null }[],
+    portalScenes?: string[],
+    portalStart?: number,
+    portalCollision?: (string | null)[],
+    portalEnvironments?: ('indoor' | 'outdoor')[],
     startMode: 'default' | 'animTrack' | 'annotation'
 };
 
@@ -135,6 +141,8 @@ type ViewerExportSettings = {
     experienceSettings: ExperienceSettings;
     collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number };   // undefined = disabled
     events?: Events;
+    // resolved per-scene export inputs for a portal walkthrough (index 0 = primary, omitted)
+    portalScenes?: { splat: Splat; url: string; collisionUrl: string | null; environment: 'indoor' | 'outdoor'; seed: [number, number, number] }[];
 };
 
 type ProgressFunc = (loaded: number, total: number) => void;
@@ -1224,7 +1232,21 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
     const { experienceSettings, events, collision } = options;
     const dataTable = extractDataTable(splats, serializeSettings);
     const viewerType = options.type === 'html' ? 'html' : (options.streaming ? 'streaming' : 'package');
-    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision);
+
+    // Build per-scene extra tables for a portal walkthrough. The primary scene
+    // is index 0 (the passed `splats` / `dataTable`); extra scenes are looked up
+    // by uid against the full scene list so hidden scenes still export.
+    const extraScenes = (experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1)
+        ? options.portalScenes?.map((entry) => ({
+            collisionUrl: entry.collisionUrl,
+            environment: entry.environment,
+            seed: entry.seed,
+            streaming: options.streaming ?? false,
+            dataTable: extractDataTable([entry.splat], serializeSettings)
+        })) ?? []
+        : [];
+
+    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision, extraScenes);
 };
 const serializeViewerSettings = async (
     experienceSettings: ExperienceSettings,

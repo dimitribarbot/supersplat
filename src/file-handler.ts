@@ -6,6 +6,7 @@ import { ElementType } from './element';
 import { Events } from './events';
 import { runServerExport } from './export-server-client';
 import { BrowserFileSystem, MappedReadFileSystem } from './io';
+import { resolvePortalExtras } from './portal-export';
 import { Scene } from './scene';
 import { Splat } from './splat';
 import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeViewer, serializeViewerSettings, SogSettings, ViewerExportSettings } from './splat-serialize';
@@ -163,6 +164,12 @@ type ImportFile = {
 };
 
 const vec = new Vec3();
+
+// Extract the start-camera position from ExperienceSettings as a seed tuple.
+// Returns [0,0,0] when no camera is configured (collision voxel will be seeded at origin).
+const collisionSeedTuple = (es: { cameras?: { initial?: { position?: [number, number, number] } }[] }): [number, number, number] => {
+    return es.cameras?.[0]?.initial?.position ?? [0, 0, 0];
+};
 
 // load inria camera poses from json file
 const loadCameraPoses = async (file: ImportFile, events: Events) => {
@@ -611,13 +618,61 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             });
 
             const { filename, splatIdx, serializeSettings } = options;
-            const splats = splatIdx === 'all' ? getSplats() : [getSplats()[splatIdx]];
+            let splats = splatIdx === 'all' ? getSplats() : [getSplats()[splatIdx]];
 
             // Apply the SAME pre-extraction filtering the local path uses, so the PLY we
             // ship is extracted identically and the server output matches a local export.
             if (fileType === 'compressedPly' || fileType === 'sog') {
                 serializeSettings.minOpacity = 1 / 255;
                 serializeSettings.removeInvalid = true;
+            }
+
+            // Send to the server; it returns the finished file.
+            const wire = { ...options, fileType };
+
+            // Portal walkthrough: the PRIMARY scene is the START scene ALONE (not all
+            // visible splats — that would merge every loaded scene into the primary and
+            // re-emit the others as scenes/N/). Each extra scene also uploads its own
+            // gzipped PLY + the metadata the server needs to assemble extraScenes. This
+            // block runs BEFORE the primary PLY extraction below so it can repoint
+            // `splats` at the start scene.
+            let extraPlyGz: Blob[] | undefined;
+            if (fileType === 'htmlViewer' || fileType === 'packageViewer') {
+                const es = options.viewerExportSettings?.experienceSettings as any;
+                if (es?.portalScenes && es.portalScenes.length > 1) {
+                    const all = events.invoke('scene.allSplats') as Splat[];
+                    const resolved = resolvePortalExtras({
+                        portals: events.invoke('portals.export') ?? [],
+                        startUid: events.invoke('portals.startSplat') ?? null,
+                        availableUids: all.map(s => s.uid),
+                        streaming: !!options.viewerExportSettings!.streaming,
+                        collision: !!es.portalCollision && es.portalCollision.length > 0,
+                        authored: events.invoke('portals.exportEntrypoints') ?? {},
+                        startSeed: collisionSeedTuple(es),
+                        environments: es.portalEnvironments ?? []
+                    });
+                    if (resolved) {
+                        const startUid = resolved.bundle.sceneUids[0];
+                        const startSplat = all.find(s => s.uid === startUid);
+                        if (!startSplat) throw new Error(`Portal export: start scene uid ${startUid} not found among loaded splats.`);
+                        splats = [startSplat];
+                        const blobs: Blob[] = [];
+                        const meta: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; collisionUrl: string | null; streaming: boolean }[] = [];
+                        for (const ex of resolved.extras) {
+                            const splat = all.find(s => s.uid === ex.uid);
+                            if (!splat) throw new Error(`Portal export: scene uid ${ex.uid} not found among loaded splats.`);
+                            const sFs = new MemoryFileSystem();
+                            await serializePly([splat], serializeSettings, sFs, 'scene.ply');
+                            const bytes = sFs.results.get('scene.ply');
+                            if (!bytes) throw new Error(`Portal export: scene uid ${ex.uid} produced no PLY.`);
+                            const gz = await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))).blob();
+                            blobs.push(gz);
+                            meta.push({ seed: ex.seed, environment: ex.environment, collisionUrl: ex.collisionUrl, streaming: !!options.viewerExportSettings!.streaming });
+                        }
+                        extraPlyGz = blobs;
+                        (wire as any).portalExtras = meta;
+                    }
+                }
             }
 
             // Prepare the uncompressed float32 PLY in memory (browser-side extraction).
@@ -633,13 +688,11 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 new Blob([plyBytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
             ).blob();
 
-            // Send to the server; it returns the finished file.
-            const wire = { ...options, fileType };
             const result = await runServerExport(plyGz, wire, (p) => {
                 if (!useSpinner) {
                     events.fire('progressUpdate', { text: p.message, progress: p.value });
                 }
-            });
+            }, extraPlyGz);
 
             // Save through the same path the local export uses (stream or download).
             const outFs = new BrowserFileSystem(filename, stream);
@@ -715,9 +768,51 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     break;
                 }
                 case 'htmlViewer':
-                case 'packageViewer':
-                    await serializeViewer(splats, serializeSettings, { ...viewerExportSettings!, events }, fs);
+                case 'packageViewer': {
+                    const es = viewerExportSettings!.experienceSettings;
+                    let portalScenes: ViewerExportSettings['portalScenes'];
+                    // For a portal export the PRIMARY (index 0) scene is the START scene
+                    // ALONE. Using all visible splats would merge every loaded scene into
+                    // the primary AND re-emit the others as scenes/N/ (duplication + bloat).
+                    let primarySplats = splats;
+                    if (es.portalScenes && es.portalScenes.length > 1) {
+                        const all = events.invoke('scene.allSplats') as Splat[];
+                        const byUid = (uid: number) => all.find(s => s.uid === uid) ?? null;
+                        const resolved = resolvePortalExtras({
+                            portals: events.invoke('portals.export') ?? [],
+                            startUid: events.invoke('portals.startSplat') ?? null,
+                            availableUids: all.map(s => s.uid),
+                            streaming: !!viewerExportSettings!.streaming,
+                            collision: !!es.portalCollision && es.portalCollision.length > 0,
+                            authored: events.invoke('portals.exportEntrypoints') ?? {},
+                            startSeed: collisionSeedTuple(es),
+                            environments: es.portalEnvironments ?? []
+                        });
+                        if (resolved) {
+                            const startUid = resolved.bundle.sceneUids[0];
+                            const startSplat = byUid(startUid);
+                            if (!startSplat) throw new Error(`Portal export: start scene uid ${startUid} not found among loaded splats.`);
+                            primarySplats = [startSplat];
+                            portalScenes = resolved.extras.map((ex) => {
+                                if (ex.estimated && ex.environment === 'indoor') {
+                                    events.fire('progressUpdate', { text: `Scene ${ex.index}: using an estimated collision entrypoint — set one in the portals panel if collision looks wrong.` });
+                                    console.warn(`Portal export: scene index ${ex.index} (uid ${ex.uid}) used an estimated collision entrypoint.`);
+                                }
+                                const splat = byUid(ex.uid);
+                                if (!splat) throw new Error(`Portal export: scene uid ${ex.uid} not found among loaded splats.`);
+                                return {
+                                    splat,
+                                    url: es.portalScenes![ex.index] ?? '',
+                                    collisionUrl: ex.collisionUrl,
+                                    environment: ex.environment,
+                                    seed: ex.seed
+                                };
+                            });
+                        }
+                    }
+                    await serializeViewer(primarySplats, serializeSettings, { ...viewerExportSettings!, events, portalScenes }, fs);
                     break;
+                }
                 case 'viewerSettings':
                     await serializeViewerSettings(viewerExportSettings!.experienceSettings, fs, filename);
                     break;

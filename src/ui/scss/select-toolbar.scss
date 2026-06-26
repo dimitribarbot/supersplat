@@ -4,7 +4,7 @@
     position: absolute;
     left: 50%;
     bottom: 100px;
-    height: 54px;
+    min-height: 54px;
     transform: translate(-50%, 0);
     padding: 0px 8px;
     border-radius: 8px;
@@ -16,6 +16,16 @@
     }
     flex-direction: row;
     align-items: center;
+    flex-wrap: wrap;
+    // size to the one-line content (so it stays on one row whenever it fits),
+    // capped at the viewport width; only then does flex-wrap kick in. Without an
+    // explicit width, `position:absolute; left:50%` shrink-to-fits to ~half the
+    // screen and wraps prematurely even when there is ample room.
+    width: max-content;
+    max-width: calc(100vw - 24px);
+    justify-content: center;
+    row-gap: 6px;
+    column-gap: 6px;
 
     .select-toolbar-button {
         height: 38px;
@@ -26,4 +36,12 @@
             background-color: $clr-hilight !important;
         }
     }
+}
+
+.select-toolbar-group {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap;
 }

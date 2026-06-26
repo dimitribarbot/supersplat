@@ -348,6 +348,9 @@
     "portals.front": "Передняя сцена",
     "portals.back": "Задняя сцена",
     "portals.start": "Начальная сцена",
+    "portals.entrypoint": "Точка входа",
+    "portals.entrypoint.set": "Задать с камеры",
+    "portals.entrypoint.clear": "Очистить",
     "tooltip.bottom-toolbar.portals": "Порталы",
     "tooltip.scene.walkthrough": "Прогулка"
 }

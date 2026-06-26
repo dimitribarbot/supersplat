@@ -48,6 +48,22 @@
             min-height: 60px;
             padding: 12px;
 
+            // per-scene environment list (portals): a vertical stack of full
+            // `.row` children. Must NOT inherit `.row`'s fixed 24px height, or
+            // the stacked scene rows collapse into a single crushed strip.
+            .per-scene-env {
+                padding-bottom: 8px;
+
+                &:not(.pcui-hidden) {
+                    display: flex;
+                    flex-direction: column;
+                }
+
+                .row:last-child {
+                    padding-bottom: 0;
+                }
+            }
+
             .row {
                 height: 24px;
                 line-height: 24px;

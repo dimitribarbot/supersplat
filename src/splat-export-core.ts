@@ -20,6 +20,7 @@ import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subse
 import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
+import { buildPortalsInjection } from './viewer-companion/portals';
 
 // Inject the annotation-link companion into an HTML string before </body>.
 // No-op (returns the input) when there are no annotation links.
@@ -58,6 +59,24 @@ const injectOffLimitsZones = (html: string, viewerSettingsJson: any): string => 
         return withHandle.replace('</body>', `${injection}</body>`);
     }
     return withHandle + injection;
+};
+
+// Inject the portals companion into an HTML string before </body>.
+// No-op (returns the input) when there are no portals. Idempotent with
+// injectOffLimitsZones: if the viewer handle has already been published this
+// function skips the bootstrap replacement to avoid a double-publish.
+const injectPortals = (html: string, viewerSettingsJson: any): string => {
+    const injection = buildPortalsInjection(viewerSettingsJson);
+    if (!injection) {
+        return html;
+    }
+    // Ensure the viewer handle is published (idempotent: only inject if not
+    // already present, since injectOffLimitsZones may have added it first).
+    const bootstrap = 'const viewer = await main(canvas, settingsJson, config);';
+    const withHandle = (html.includes(bootstrap) && !html.includes('window.__supersplatViewer = viewer;'))
+        ? html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`)
+        : html;
+    return withHandle.includes('</body>') ? withHandle.replace('</body>', `${injection}</body>`) : withHandle + injection;
 };
 
 // Bridge splat-transform progress events to supersplat's events.
@@ -289,6 +308,61 @@ const writeCollisionVoxel = async (
     }
 };
 
+// Write one extra portal scene's payload into memFs under `scenes/<index>/`.
+// The collision voxel is only written when collisionUrl is non-null (i.e. the
+// operator enabled collision and this scene has a collision URL). Voxel filenames
+// are renamed from `index.voxel.*` to `scene.voxel.*` so they live alongside the
+// scene bundle under the namespaced key. All produced entries are namespaced under
+// `scenes/<index>/` in the caller's memFs.
+const writePortalScene = async (
+    memFs: MemoryFileSystem,
+    index: number,
+    scene: { dataTable: DataTable; streaming: boolean; collisionUrl: string | null; environment: 'indoor' | 'outdoor'; seed: [number, number, number] },
+    createDevice: DeviceCreator,
+    radius: number,
+    voxelSize: number,
+    onPhase?: (label: string, counted: boolean) => void
+): Promise<void> => {
+    const base = `scenes/${index}`;
+    const sub = new MemoryFileSystem();
+    if (scene.streaming) {
+        const lodTable = await buildStreamingLodTable(scene.dataTable.clone(), createDevice, (label) => {
+            onPhase?.(label, false);   // decimation passes carry their level in the label
+        });
+        onPhase?.('Packaging streaming chunks', true);
+        await writeLod({
+            filename: '/lod-meta.json',
+            dataTable: lodTable,
+            envDataTable: null,
+            iterations: 10,
+            createDevice,
+            chunkCount: 512,
+            chunkExtent: 16
+        }, sub);
+    } else {
+        await writeSog({ filename: 'scene.sog', dataTable: scene.dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' }, sub);
+    }
+    if (scene.collisionUrl) {
+        onPhase?.('Generating collision data', false);
+        // Synthesise a minimal settings object that places the seed at cameras[0].initial.position
+        // so collisionSeedFromSettings picks it up for the per-scene voxel.
+        const fakeSettings = { cameras: [{ initial: { position: scene.seed } }] };
+        await writeCollisionVoxel(sub, scene.dataTable, fakeSettings, createDevice, { environment: scene.environment, radius, voxelSize });
+        // writeCollisionVoxel emits index.voxel.json / index.voxel.bin — rename to scene.voxel.*
+        for (const name of ['index.voxel.json', 'index.voxel.bin']) {
+            const data = sub.results.get(name);
+            if (data) {
+                sub.results.set(name.replace('index.', 'scene.'), data);
+                sub.results.delete(name);
+            }
+        }
+    }
+    // Namespace every emitted key under scenes/<index>/
+    for (const [name, data] of sub.results.entries()) {
+        memFs.results.set(`${base}/${name.replace(/^\/+/, '')}`, data);
+    }
+};
+
 // Repoint the viewer's default collisionUrl at the bundled voxel file so the
 // exported viewer auto-loads collision without a ?voxel= query param. Guarded
 // like the other index.html repoints: throw if the source string is missing
@@ -322,7 +396,8 @@ const writeStreamingViewerCore = async (
     events?: Events,
     onLog?: (level: string, text: string) => void,
     shouldCancel?: () => boolean,
-    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number }
+    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
+    extraScenes?: ExtraPortalScene[]
 ): Promise<void> => {
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
@@ -330,13 +405,18 @@ const writeStreamingViewerCore = async (
     // only during chunk packaging; decimation carries its level in the label.
     let phase = '';
     let counted = false;
+    // When a portal walkthrough adds extra scenes, prefix the primary's phases
+    // with "Scene 1/N: " so its progress reads consistently with the extras
+    // (which carry "Scene 2/N: …" etc.). No prefix for a single-scene export.
+    const total = 1 + (extraScenes?.length ?? 0);
+    const pp = total > 1 ? `Scene 1/${total}: ` : '';
     splatTransformLogger.setRenderer(createProgressRenderer('Exporting streaming viewer', events, () => phase, () => counted, onLog, shouldCancel));
 
     const memFs = new MemoryFileSystem();
 
     // A 1-row placeholder keeps writeHtml's throwaway content SOG cheap to
     // produce (we only want its index.html/css/js/settings.json shell).
-    phase = 'Preparing viewer';
+    phase = `${pp}Preparing viewer`;
     const placeholder = dataTable.clone({ rows: [0] });
     await writeHtml({
         filename: 'index.html',
@@ -350,7 +430,7 @@ const writeStreamingViewerCore = async (
     // Voxelize the full-resolution table now, before buildStreamingLodTable
     // consumes/mutates it.
     if (collision) {
-        phase = 'Generating collision data';
+        phase = `${pp}Generating collision data`;
         await writeCollisionVoxel(memFs, dataTable, viewerSettingsJson, createDevice, collision);
     }
 
@@ -358,11 +438,11 @@ const writeStreamingViewerCore = async (
     // per-pass count is an estimate, so the level number lives in the label and
     // the per-step counter stays off here.
     const lodTable = await buildStreamingLodTable(dataTable, createDevice, (label) => {
-        phase = label;
+        phase = `${pp}${label}`;
     });
 
     // Chunk packaging emits one accurate {index,total} per chunk - surface it.
-    phase = 'Packaging streaming chunks';
+    phase = `${pp}Packaging streaming chunks`;
     counted = true;
     await writeLod({
         // Absolute root so splat-transform's pathe `resolve(outputDir, ...)` for
@@ -405,9 +485,27 @@ const writeStreamingViewerCore = async (
     }
     const withLinks = injectAnnotationLinks(repointed, viewerSettingsJson);
     const withZones = injectOffLimitsZones(withLinks, viewerSettingsJson);
-    memFs.results.set('index.html', new TextEncoder().encode(withZones));
+    const withPortals = injectPortals(withZones, viewerSettingsJson);
+    memFs.results.set('index.html', new TextEncoder().encode(withPortals));
     if (collision) {
         repointCollisionUrl(memFs);
+    }
+
+    // Write each extra portal scene's streaming bundle (lod-meta.json + chunk
+    // folders) + per-scene voxel into the SAME memFs under scenes/N/, before the
+    // single zip pass below. Mirrors the package branch; uses the shared
+    // collision radius / voxel size (defaulting when collision is off but a
+    // scene still carries a collision URL — writePortalScene guards on it).
+    if (extraScenes && extraScenes.length > 0) {
+        const collRadius = collision?.radius ?? 50;
+        const collVoxelSize = collision?.voxelSize ?? 0.05;
+        for (let i = 0; i < extraScenes.length; i++) {
+            const scenePrefix = `Scene ${i + 2}/${extraScenes.length + 1}`;
+            await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, (label, c) => {
+                phase = `${scenePrefix}: ${label}`;
+                counted = c;
+            });
+        }
     }
 
     // ZIP every emitted file. Keys are normalised to relative paths so the
@@ -438,6 +536,14 @@ const writeSogCore = async (dataTable: DataTable, iterations: number, createDevi
     }
 };
 
+type ExtraPortalScene = {
+    dataTable: DataTable;
+    streaming: boolean;
+    collisionUrl: string | null;
+    environment: 'indoor' | 'outdoor';
+    seed: [number, number, number];
+};
+
 const writeViewerCore = async (
     dataTable: DataTable,
     viewerSettingsJson: any,
@@ -447,25 +553,52 @@ const writeViewerCore = async (
     events?: Events,
     onLog?: (level: string, text: string) => void,
     shouldCancel?: () => boolean,
-    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number }
+    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
+    extraScenes?: ExtraPortalScene[]
 ): Promise<void> => {
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting HTML', events, undefined, undefined, onLog, shouldCancel));
+    // Scene-prefixed progress support: when extra portal scenes are present, we
+    // label the primary write as "Scene 1/total" and each extra as "Scene N/total".
+    const total = 1 + (extraScenes?.length ?? 0);
+    const hasPortalScenes = (extraScenes?.length ?? 0) > 0;
+
+    let scenePrefix = '';
+    const getScenePrefix = () => scenePrefix;
+
+    splatTransformLogger.setRenderer(createProgressRenderer(
+        'Exporting HTML',
+        events,
+        hasPortalScenes ? getScenePrefix : undefined,
+        undefined,
+        onLog,
+        shouldCancel
+    ));
     try {
         if (viewerType === 'html') {
+            // Interim guard: HTML export cannot carry extra portal scenes (the single-file
+            // output has no place for scenes/N/ entries). Throw before any output is
+            // produced so the export fails loudly rather than silently omitting scenes.
+            // Future work: embed scene payloads as data-URIs or use a ZIP-wrapped HTML.
+            if (hasPortalScenes) {
+                throw new Error('Portal multi-scene export is only supported with the Package (ZIP) format. Disable streaming / choose Package format and re-export.');
+            }
             const memFs = new MemoryFileSystem();
             await writeHtml({ filename: 'output.html', dataTable, viewerSettingsJson, bundle: true, iterations: 10, createDevice }, memFs);
             const raw = memFs.results.get('output.html');
             if (!raw) {
                 throw new Error('HTML export failed: writeHtml did not produce output.html');
             }
-            const injected = injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson), viewerSettingsJson);
+            const injected = injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson);
             const writer = await fs.createWriter('output.html');
             await writer.write(new TextEncoder().encode(injected));
             await writer.close();
         } else if (viewerType === 'streaming') {
-            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision);
+            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes);
         } else {
+            // Package (ZIP) path: write primary scene, then extra portal scenes, then ZIP everything.
             const memFs = new MemoryFileSystem();
+            if (hasPortalScenes) {
+                scenePrefix = `Scene 1/${total}`;
+            }
             await writeHtml({ filename: 'index.html', dataTable, viewerSettingsJson, bundle: false, iterations: 10, createDevice }, memFs);
             if (collision) {
                 await writeCollisionVoxel(memFs, dataTable, viewerSettingsJson, createDevice, collision);
@@ -474,10 +607,20 @@ const writeViewerCore = async (
             if (!rawIndex) {
                 throw new Error('Package export failed: writeHtml did not produce index.html');
             }
-            const injected = injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(rawIndex), viewerSettingsJson), viewerSettingsJson);
+            const injected = injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(rawIndex), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson);
             memFs.results.set('index.html', new TextEncoder().encode(injected));
             if (collision) {
                 repointCollisionUrl(memFs);
+            }
+            // Write extra portal scenes under scenes/N/
+            if (hasPortalScenes) {
+                const collRadius = collision?.radius ?? 50;
+                const collVoxelSize = collision?.voxelSize ?? 0.05;
+                for (let i = 0; i < extraScenes!.length; i++) {
+                    const index = i + 1;
+                    scenePrefix = `Scene ${index + 1}/${total}`;
+                    await writePortalScene(memFs, index, extraScenes![i], createDevice, collRadius, collVoxelSize);
+                }
             }
             const zipWriter = await fs.createWriter('output.zip');
             const zipFs = new ZipFileSystem(zipWriter);

@@ -6,6 +6,7 @@ import { Events } from '../events';
 import { probeExportCapabilities } from '../export-server-client';
 import { ExportType, SceneExportOptions } from '../file-handler';
 import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
+import { buildPortalBundle } from '../portal-export';
 import sceneExport from './svg/export.svg';
 
 const createSvg = (svgString: string, args = {}) => {
@@ -296,6 +297,43 @@ class ExportPopup extends Container {
         environmentRow.append(environmentLabel);
         environmentRow.append(environmentSelect);
 
+        // viewer: per-scene environment (portals only). One Interior/Exterior
+        // selector per portal-referenced scene; falls back to the single
+        // environmentSelect above when there are no portals.
+        const perSceneEnvRow = new Container({ class: 'per-scene-env', flex: true, flexDirection: 'column' });
+        const perSceneEnvSelects = new Map<number, SelectInput>();  // sceneIndex -> select
+
+        const rebuildPerSceneEnv = () => {
+            perSceneEnvRow.clear();
+            perSceneEnvSelects.clear();
+            const portalsRaw = events.invoke('portals.export') ?? [];
+            const startUid = events.invoke('portals.startSplat') ?? null;
+            const allSplats = events.invoke('scene.allSplats') ?? [];
+            const availableUids = allSplats.map((s: any) => s.uid);
+            const bundle = events.invoke('portals.count') > 0
+                ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: true })
+                : null;
+            if (!bundle) { perSceneEnvRow.hidden = true; return; }
+            perSceneEnvRow.hidden = false;
+            bundle.sceneUids.forEach((uid, index) => {
+                const splat = allSplats.find((s: any) => s.uid === uid);
+                const name = splat ? `${uid}: ${(splat.asset?.file?.filename ?? splat.name ?? uid)}` : `Scene ${index}`;
+                const row = new Container({ class: 'row' });
+                row.append(new Label({ class: 'label', text: name }));
+                const sel = new SelectInput({
+                    class: 'select',
+                    defaultValue: 'indoor',
+                    options: [
+                        { v: 'indoor', t: localize('popup.export.environment.indoor') },
+                        { v: 'outdoor', t: localize('popup.export.environment.outdoor') }
+                    ]
+                });
+                row.append(sel);
+                perSceneEnvRow.append(row);
+                perSceneEnvSelects.set(index, sel);
+            });
+        };
+
         // viewer: collision radius (shown only when collision is enabled)
 
         const radiusRow = new Container({
@@ -391,6 +429,7 @@ class ExportPopup extends Container {
         content.append(streamingRow);
         content.append(collisionRow);
         content.append(environmentRow);
+        content.append(perSceneEnvRow);
         content.append(radiusRow);
         content.append(voxelSizeRow);
         content.append(serverRow);
@@ -464,9 +503,12 @@ class ExportPopup extends Container {
             const isZipViewer = currentExportType === 'viewer' && viewerTypeSelect.value === 'zip';
             collisionRow.hidden = !isZipViewer;
             const showSub = !isZipViewer || !collisionToggle.value;
-            environmentRow.hidden = showSub;
+            const hasPortals = (events.invoke('portals.count') ?? 0) > 0;
+            environmentRow.hidden = showSub || hasPortals;
             radiusRow.hidden = showSub;
             voxelSizeRow.hidden = showSub;
+            rebuildPerSceneEnv();
+            perSceneEnvRow.hidden = perSceneEnvRow.hidden || showSub;
         };
 
         const updateServerVisibility = () => {
@@ -501,6 +543,10 @@ class ExportPopup extends Container {
             updateCollisionVisibility();
         });
 
+        streamingToggle.on('change', () => {
+            rebuildPerSceneEnv();
+        });
+
         animationToggle.on('change', (value: boolean) => {
             loopSelect.enabled = value;
         });
@@ -509,14 +555,14 @@ class ExportPopup extends Container {
             currentExportType = exportType;
 
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, collisionRow, environmentRow, radiusRow, voxelSizeRow, serverRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, collisionRow, environmentRow, perSceneEnvRow, radiusRow, voxelSizeRow, serverRow, filenameRow
             ];
 
             const activeRows = {
                 ply: [compressRow, bandsRow, serverRow, filenameRow],
                 splat: [filenameRow],
                 sog: [bandsRow, iterationsRow, serverRow, filenameRow],
-                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, collisionRow, environmentRow, radiusRow, voxelSizeRow, serverRow, filenameRow],
+                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, collisionRow, environmentRow, perSceneEnvRow, radiusRow, voxelSizeRow, serverRow, filenameRow],
                 viewerSettings: [animationRow, loopRow, colorRow, fovRow, filenameRow]
             }[exportType];
 
@@ -677,6 +723,16 @@ class ExportPopup extends Container {
 
                 const bgColor = colorPicker.value.slice(0, 3) as [number, number, number];
 
+                // portal multi-scene bundle (absent when no portals)
+                const portalsRaw = events.invoke('portals.export') ?? [];
+                const startUid = events.invoke('portals.startSplat') ?? null;
+                const allSplats = events.invoke('scene.allSplats') ?? [];
+                const availableUids = allSplats.map((s: any) => s.uid);
+                const collisionOn = viewerTypeSelect.value === 'zip' && collisionToggle.value;
+                const bundle = (events.invoke('portals.count') ?? 0) > 0
+                    ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: collisionOn })
+                    : null;
+
                 const experienceSettings: ExperienceSettings = {
                     version: 2,
                     tonemapping: events.invoke('camera.tonemapping') ?? 'none',
@@ -688,6 +744,13 @@ class ExportPopup extends Container {
                     annotations: events.invoke('annotations.export') ?? [],
                     offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
                     offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
+                    ...(bundle ? {
+                        portals: bundle.portals,
+                        portalScenes: bundle.portalScenes,
+                        portalStart: bundle.portalStart,
+                        portalCollision: bundle.portalCollision,
+                        portalEnvironments: bundle.sceneUids.map((_, i) => (perSceneEnvSelects.get(i)?.value ?? 'indoor') as 'indoor' | 'outdoor')
+                    } : {}),
                     startMode: includeAnimation ? 'animTrack' : 'default'
                 };
 

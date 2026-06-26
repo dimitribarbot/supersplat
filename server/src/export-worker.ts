@@ -11,7 +11,7 @@ if (!parentPort) {
 }
 const port = parentPort;
 
-type StartMsg = { type: 'start'; plyGz: Uint8Array; options: ExportOptions };
+type StartMsg = { type: 'start'; plyGz: Uint8Array; options: ExportOptions; extraPlyGz?: Uint8Array[] };
 
 port.on('message', async (msg: StartMsg) => {
     if (msg?.type !== 'start') return;
@@ -26,7 +26,8 @@ port.on('message', async (msg: StartMsg) => {
             plyGz: Buffer.from(msg.plyGz.buffer, msg.plyGz.byteOffset, msg.plyGz.byteLength),
             options: msg.options,
             sink: { emit: (e: ProgressEvent) => port.postMessage({ type: 'progress', event: e }) },
-            getDeviceCreator: session.getDeviceCreator
+            getDeviceCreator: session.getDeviceCreator,
+            extraPlyGz: (msg.extraPlyGz ?? []).map(u => Buffer.from(u.buffer, u.byteOffset, u.byteLength))
         });
         await session.dispose();
 

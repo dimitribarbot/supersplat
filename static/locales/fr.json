@@ -350,6 +350,9 @@
     "portals.front": "Scène avant",
     "portals.back": "Scène arrière",
     "portals.start": "Scène de départ",
+    "portals.entrypoint": "Point d'entrée",
+    "portals.entrypoint.set": "Définir depuis la caméra",
+    "portals.entrypoint.clear": "Effacer",
     "tooltip.bottom-toolbar.portals": "Portails",
     "tooltip.scene.walkthrough": "Visite"
 }

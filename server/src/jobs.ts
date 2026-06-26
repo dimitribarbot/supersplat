@@ -54,7 +54,7 @@ const push = (job: Job, e: ProgressEvent) => {
     for (const l of job.listeners) l(e);
 };
 
-export const createJob = (plyGz: Buffer, options: ExportOptions, publish?: PublishDest): string => {
+export const createJob = (plyGz: Buffer, options: ExportOptions, publish?: PublishDest, extraPlyGz?: Buffer[]): string => {
     const id = `job_${randomBytes(16).toString('hex')}`;
     const job: Job = { id, state: 'queued', listeners: [], buffered: [], createdAt: Date.now(), cancelled: false };
     jobs.set(id, job);
@@ -71,7 +71,8 @@ export const createJob = (plyGz: Buffer, options: ExportOptions, publish?: Publi
         const running = runExportViaWorker({
             plyGz,
             options,
-            onProgress: (e: ProgressEvent) => push(job, e)
+            onProgress: (e: ProgressEvent) => push(job, e),
+            extraPlyGz
         });
         job.cancel = running.cancel;
         try {

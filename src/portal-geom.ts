@@ -60,10 +60,19 @@ const segmentCrossesRect = (prev: Vec3, cur: Vec3, rect: PortalRect): { side: 'f
 
 // Walk all portals, apply each crossing in order along the segment, and return
 // the resulting active splat uid (or the unchanged current uid if none cross).
-const resolveActiveSplat = (prev: Vec3, cur: Vec3, portals: PortalRect[], currentUid: number | null): number | null => {
+//
+// `cross` defaults to segmentCrossesRect and exists only so the exported-viewer
+// companion can stringify this function (resolveActiveSplat.toString()) and inject
+// it into a SEPARATE scope: after terser minification this body would otherwise
+// call segmentCrossesRect by its mangled top-level name (e.g. `ZD`), which is not
+// declared inside the injected IIFE -> ReferenceError that kills the runtime's
+// rAF loop. The companion passes segmentCrossesRect explicitly (so the stringified
+// default is never evaluated); the editor preview (portals-runtime.ts) and the
+// unit tests run in-bundle and use the default.
+const resolveActiveSplat = (prev: Vec3, cur: Vec3, portals: PortalRect[], currentUid: number | null, cross = segmentCrossesRect): number | null => {
     const crossings: { t: number, uid: number | null }[] = [];
     for (const p of portals) {
-        const c = segmentCrossesRect(prev, cur, p);
+        const c = cross(prev, cur, p);
         if (c) {
             crossings.push({ t: c.t, uid: c.side === 'front' ? p.frontUid : p.backUid });
         }

@@ -103,9 +103,33 @@ class SetStartSplatOp {
     }
 }
 
+class UpdatePortalEntrypointOp {
+    name = 'updatePortalEntrypoint';
+    events: Events;
+    uid: number;
+    oldPos: [number, number, number] | null;
+    newPos: [number, number, number] | null;
+    constructor(events: Events, uid: number, oldPos: [number, number, number] | null, newPos: [number, number, number] | null) {
+        this.events = events;
+        this.uid = uid;
+        this.oldPos = oldPos;
+        this.newPos = newPos;
+    }
+    do() {
+        this.events.fire('portals.setEntrypointRaw', this.uid, this.newPos);
+    }
+    undo() {
+        this.events.fire('portals.setEntrypointRaw', this.uid, this.oldPos);
+    }
+    destroy() {
+        this.events = null;
+    }
+}
+
 const registerPortalsEvents = (events: Events) => {
     const portals: PortalData[] = [];
     let startUid: number | null = null;
+    const entrypoints = new Map<number, [number, number, number]>();
     let nextId = 0;
     let selectedId: string | null = null;
 
@@ -119,6 +143,14 @@ const registerPortalsEvents = (events: Events) => {
     events.function('portals.newId', () => genId());
     events.function('portals.startSplat', () => startUid);
     events.function('portals.count', () => portals.length);
+    events.function('portals.entrypoint', (uid: number) => entrypoints.get(uid) ?? null);
+    events.function('portals.exportEntrypoints', () => {
+        const out: Record<string, [number, number, number]> = {};
+        entrypoints.forEach((pos, uid) => {
+            out[String(uid)] = [pos[0], pos[1], pos[2]];
+        });
+        return out;
+    });
 
     // --- low-level mutators (called by edit ops; fire change events) ---
     events.on('portals.insertRaw', (data: PortalData, index?: number) => {
@@ -155,6 +187,15 @@ const registerPortalsEvents = (events: Events) => {
         fireChanged();
     });
 
+    events.on('portals.setEntrypointRaw', (uid: number, pos: [number, number, number] | null) => {
+        if (pos) {
+            entrypoints.set(uid, [pos[0], pos[1], pos[2]]);
+        } else {
+            entrypoints.delete(uid);
+        }
+        fireChanged();
+    });
+
     // --- selection ---
     events.on('portals.select', (id: string | null) => {
         if (selectedId !== id) {
@@ -167,6 +208,7 @@ const registerPortalsEvents = (events: Events) => {
     events.on('scene.clear', () => {
         portals.length = 0;
         startUid = null;
+        entrypoints.clear();
         nextId = 0;
         selectedId = null;
         events.fire('portals.selectionChanged', null);
@@ -194,11 +236,20 @@ const registerPortalsEvents = (events: Events) => {
         backUid: p.backUid
     })));
 
-    events.function('docDeserialize.portals', (data: PortalData[], start?: number | null) => {
+    events.function('docDeserialize.portals', (data: PortalData[], start?: number | null, eps?: Record<string, [number, number, number]>) => {
         portals.length = 0;
         nextId = 0;
         selectedId = null;
         startUid = (typeof start === 'number') ? start : null;
+        entrypoints.clear();
+        if (eps && typeof eps === 'object') {
+            Object.keys(eps).forEach((k) => {
+                const v = eps[k];
+                if (Array.isArray(v) && v.length >= 3) {
+                    entrypoints.set(parseInt(k, 10), [v[0], v[1], v[2]]);
+                }
+            });
+        }
         if (Array.isArray(data)) {
             data.forEach((d) => {
                 portals.push({
@@ -227,5 +278,6 @@ export {
     RemovePortalOp,
     UpdatePortalOp,
     SetStartSplatOp,
+    UpdatePortalEntrypointOp,
     PortalData
 };

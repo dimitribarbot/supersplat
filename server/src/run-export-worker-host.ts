@@ -12,6 +12,7 @@ export type RunExportViaWorkerArgs = {
     plyGz: Buffer;
     options: ExportOptions;
     onProgress: (e: ProgressEvent) => void;
+    extraPlyGz?: Buffer[];
 };
 
 export type RunningExport = {
@@ -21,7 +22,7 @@ export type RunningExport = {
     cancel: () => void;
 };
 
-export const runExportViaWorker = ({ plyGz, options, onProgress }: RunExportViaWorkerArgs): RunningExport => {
+export const runExportViaWorker = ({ plyGz, options, onProgress, extraPlyGz }: RunExportViaWorkerArgs): RunningExport => {
     // When spawning a .ts worker (dev/test), Node won't know how to handle .ts
     // imports inside the worker. Pass tsx's ESM loader so the worker thread gets
     // the same TypeScript transform as the spawning process.
@@ -53,11 +54,18 @@ export const runExportViaWorker = ({ plyGz, options, onProgress }: RunExportViaW
         });
     });
 
-    // Transfer the input bytes into the worker (zero-copy when plyGz is a
+    // Transfer the input bytes into the worker (zero-copy when the buffer is a
     // standalone full-buffer Buffer, which it is for large multipart uploads).
-    const standalone = plyGz.byteOffset === 0 && plyGz.byteLength === plyGz.buffer.byteLength;
-    const bytes = standalone ? new Uint8Array(plyGz.buffer) : new Uint8Array(plyGz);
-    worker.postMessage({ type: 'start', plyGz: bytes, options }, [bytes.buffer as ArrayBuffer]);
+    const toStandalone = (b: Buffer) => {
+        const standalone = b.byteOffset === 0 && b.byteLength === b.buffer.byteLength;
+        return standalone ? new Uint8Array(b.buffer) : new Uint8Array(b);
+    };
+    const bytes = toStandalone(plyGz);
+    const extraBytes = (extraPlyGz ?? []).map(toStandalone);
+    worker.postMessage(
+        { type: 'start', plyGz: bytes, options, extraPlyGz: extraBytes },
+        [bytes.buffer as ArrayBuffer, ...extraBytes.map(e => e.buffer as ArrayBuffer)]
+    );
 
     return { promise, cancel: () => { worker.terminate(); } };
 };
