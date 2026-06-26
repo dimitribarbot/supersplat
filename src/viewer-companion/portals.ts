@@ -1,5 +1,52 @@
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
 
+// Localized default loading labels, keyed by primary language subtag. Mirrors
+// the language set used by off-limits-zones.ts / annotation-links.ts.
+const DEFAULT_MESSAGES: Record<string, string> = {
+    en: 'Loading…',
+    de: 'Wird geladen…',
+    es: 'Cargando…',
+    fr: 'Chargement…',
+    ja: '読み込み中…',
+    ko: '로딩 중…',
+    pt: 'Carregando…',
+    ru: 'Загрузка…',
+    zh: '加载中…'
+};
+
+// Pure default-message resolver. Custom text wins; otherwise pick the viewer's
+// language (region subtag -> base subtag -> English). Self-contained so it is
+// also injected verbatim into the runtime via Function.toString().
+const resolveLoadingMessage = (custom: string, defaults: Record<string, string>, lang: string): string => {
+    if (custom) {
+        return custom;
+    }
+    const l = (lang || 'en').toLowerCase();
+    return defaults[l] || defaults[l.split('-')[0]] || defaults.en;
+};
+
+// CSS for the streaming-scene loading overlay (backdrop covers the viewer's
+// clear color, a CSS-only spinner + label sit centered). Non-blocking
+// (pointer-events: none) and fades via the `active` class, matching the
+// 200ms timing used by off-limits-zones.ts.
+const companionStyle = `
+.ss-portal-loading-backdrop {
+  position: fixed; inset: 0; z-index: 2000; pointer-events: none;
+  background: #1a1a1a; opacity: 0; transition: opacity 200ms ease-out;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.ss-portal-loading-backdrop.active { opacity: 1; }
+.ss-portal-loading-spinner {
+  width: 42px; height: 42px; border-radius: 50%;
+  border: 4px solid rgba(255,255,255,0.25); border-top-color: #fff;
+  animation: ss-portal-spin 0.9s linear infinite;
+}
+.ss-portal-loading-label {
+  margin-top: 16px; color: #fff; font-family: sans-serif; font-size: 15px;
+}
+@keyframes ss-portal-spin { to { transform: rotate(360deg); } }
+`;
+
 // Runtime companion injected verbatim into the exported viewer. It creates one
 // disabled gsplat per extra scene, switches the visible scene when the camera
 // crosses a portal, and swaps the walk/fly collision to match. The two pure
@@ -13,13 +60,98 @@ const companionRuntime = `
   if (!data || !data.portals || !data.portalScenes || data.portalScenes.length < 2) return;
   var segmentCrossesRect = ${segmentCrossesRect.toString()};
   var resolveActiveSplat = ${resolveActiveSplat.toString()};
+  var resolveLoadingMessage = ${resolveLoadingMessage.toString()};
+  var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
   function getApp(v) { return (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.app) || (v && v.navCursor && v.navCursor.app) || null; }
 
   var entities = [];                       // scene index -> gsplat Entity (index 0 = start)
   var activeIndex = data.portalStart || 0;
+  // Streaming vs SOG: only streaming scenes stream progressively (and can show
+  // the black clear color on first crossing); SOG scenes are fully resident the
+  // moment their entity exists, so they never get the loading overlay.
+  var streaming = (data.portalScenes || []).some(function (u) { return u && u.indexOf('lod-meta.json') !== -1; });
   var lastSafe = null;
+
+  // --- streaming loading overlay ---------------------------------------
+  // First crossing into a streaming scene enables an entity whose splat data
+  // has not streamed yet (LOD is camera-driven; disabled scenes stream
+  // nothing), so the viewer briefly shows its clear color. Cover that with a
+  // backdrop+spinner+label until the scene's splats are visibly present.
+  //
+  // Readiness uses the GLOBAL renderer splat count. That is valid per-scene
+  // because the companion keeps exactly ONE scene enabled at a time, so right
+  // after a crossing the global count is effectively the active scene's
+  // resident-splat count. We cannot know a scene's target count in advance, so
+  // "visibly present" is detected three ways (whichever fires first):
+  //   1. LOD threshold - resident count reaches the payload-baked splat count
+  //                     for the chosen LOD level (deterministic early reveal),
+  //   2. plateau      - count stopped climbing (fully streamed for this view),
+  //   3. safety cap   - absolute frame bound so the overlay can never stick.
+  // A short SHOW_DELAY defers showing the backdrop so an already-resident scene
+  // (e.g. a non-streaming SOG export) never flashes it.
+  var readyScenes = {};            // scene index -> true once revealed
+  readyScenes[activeIndex] = true; // start scene is already loaded; never overlay it
+  var pendingIndex = null;         // scene index currently loading (or null)
+  var pendingFrames = 0;           // frames since the crossing
+  var overlayShown = false;        // backdrop currently visible
+  var peakCount = 0;               // highest count seen since the crossing
+  var plateauFrames = 0;           // consecutive frames near the peak
+  var revealThreshold = 0;         // resident-splat count that means "shown enough" (0 = unknown)
+  var crossedBelow = false;        // count dipped below the threshold after the swap (we're now measuring the NEW scene)
+  var SETTLE_FRAMES = 4;           // let the enable/disable swap settle before tracking the plateau
+  var SHOW_DELAY = 0;              // streaming-only (SOG gated out) => show immediately
+  var REVEAL_LOD = 1;              // which LOD level's count to reveal at: 0 = coarsest (earliest/sparsest), higher = finer/denser/later
+  var PLATEAU_TOL = 0.9;           // "near peak" fraction for plateau detection
+  var PLATEAU_FRAMES = 15;         // near-peak frames => plateau reached (fallback when the threshold is never met)
+  var LOADING_MAX_FRAMES = 600;    // ~10s absolute safety cap (rAF-counted)
+
+  var lBackdrop = document.createElement('div');
+  lBackdrop.className = 'ss-portal-loading-backdrop';
+  var lSpinner = document.createElement('div');
+  lSpinner.className = 'ss-portal-loading-spinner';
+  var lLabel = document.createElement('div');
+  lLabel.className = 'ss-portal-loading-label';
+  lLabel.textContent = loadingText;
+  lBackdrop.appendChild(lSpinner);
+  lBackdrop.appendChild(lLabel);
+  function mountLoading() { document.body.appendChild(lBackdrop); }
+  if (document.body) mountLoading(); else document.addEventListener('DOMContentLoaded', mountLoading);
+  function showLoading() { lBackdrop.classList.add('active'); }
+  function hideLoading() { lBackdrop.classList.remove('active'); }
+
+  // Global resident-splat count (see note above). 0 when unavailable.
+  function gsplatCount() {
+    var app = getApp(window.__supersplatViewer);
+    return (app && app.renderer && app.renderer._gsplatCount) || 0;
+  }
+
+  // Resident-splat count at which scene idx is "shown enough", taken from the
+  // per-scene LOD level counts baked into the payload (level 0 = finest/full,
+  // last = coarsest). REVEAL_LOD selects the level from the coarsest end. 0 when
+  // unknown (e.g. counts absent) -> the threshold trigger is then disabled and
+  // the overlay relies on the plateau/cap fallbacks.
+  function lodThreshold(idx) {
+    var counts = (data.portalSceneLodCounts || [])[idx];
+    if (!counts || !counts.length) { return 0; }
+    var i = counts.length - 1 - REVEAL_LOD;
+    if (i < 0) { i = 0; }
+    return counts[i] || 0;
+  }
+
+  // Arm the overlay for a first-time crossing into scene idx. showLoading is
+  // deferred to the poll (SHOW_DELAY) so an already-resident scene never flashes.
+  function beginLoading(idx) {
+    pendingIndex = idx; pendingFrames = 0; overlayShown = false;
+    peakCount = 0; plateauFrames = 0; crossedBelow = false;
+    revealThreshold = lodThreshold(idx);
+  }
+  function endLoading() {
+    if (pendingIndex !== null) { readyScenes[pendingIndex] = true; }
+    hideLoading();
+    pendingIndex = null; overlayShown = false;
+  }
 
   // Portal rects carry index-based front/back: the export (buildPortalBundle)
   // already rewrote editor scene-uids to scene indices, so resolveActiveSplat's
@@ -176,12 +308,50 @@ const companionRuntime = `
             activeIndex = next;
             applyActive();
             swapCollision(next);
+            // Arm the loading overlay for a first visit to this scene. Ready
+            // scenes never re-arm; the poll decides whether/when to show it.
+            if (streaming && !readyScenes[next] && pendingIndex !== next) {
+              beginLoading(next);
+            }
           }
         }
         lastSafe = cur;
       }
     } catch (err) {
       if (!tickErrored) { tickErrored = true; console.warn('portal tick error (suppressed further):', err); }
+    }
+    // Advance the loading overlay (outside the pose guard so it polls every
+    // frame). Self-contained try/catch: a throw here must never kill the rAF
+    // loop nor leave the overlay stuck, so on error we just clear it.
+    try {
+      if (pendingIndex !== null) {
+        pendingFrames++;
+        var pApp = getApp(window.__supersplatViewer);
+        if (pApp) { pApp.renderNextFrame = true; }
+        var c = gsplatCount();
+        // Threshold reveal needs us to be measuring the NEW scene: after the
+        // swap the count briefly lags at the old scene's (high) value, so only
+        // arm the trigger once it has dipped below the threshold.
+        if (revealThreshold > 0 && c < revealThreshold) { crossedBelow = true; }
+        // Plateau tracking (fallback), after the swap lag clears.
+        if (pendingFrames >= SETTLE_FRAMES) {
+          if (c > peakCount) { peakCount = c; plateauFrames = 0; }
+          else if (c >= peakCount * PLATEAU_TOL) { plateauFrames++; }
+          else { plateauFrames = 0; }
+        }
+        var ready =
+          (revealThreshold > 0 && crossedBelow && c >= revealThreshold) ||
+          (peakCount > 0 && plateauFrames >= PLATEAU_FRAMES) ||
+          (pendingFrames > LOADING_MAX_FRAMES);
+        if (ready) {
+          endLoading();
+        } else if (!overlayShown && pendingFrames >= SHOW_DELAY) {
+          showLoading();
+          overlayShown = true;
+        }
+      }
+    } catch (e) {
+      endLoading();
     }
     requestAnimationFrame(tick);
   }
@@ -203,7 +373,9 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
         portalScenes: viewerSettingsJson.portalScenes ?? [],
         portalStart: viewerSettingsJson.portalStart ?? 0,
         portalCollision: viewerSettingsJson.portalCollision ?? [],
-        portalEnvironments: viewerSettingsJson.portalEnvironments ?? []
+        portalEnvironments: viewerSettingsJson.portalEnvironments ?? [],
+        portalSceneLodCounts: viewerSettingsJson.portalSceneLodCounts ?? [],
+        loadingDefaults: DEFAULT_MESSAGES
     };
     // Escape characters unsafe inside an HTML <script> context so the payload
     // cannot break out of the injected script tag (mirrors off-limits-zones.ts:
@@ -215,8 +387,9 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
         .replace(/&/g, '\\u0026')
         .replace(/\u2028/g, '\\u2028')
         .replace(/\u2029/g, '\\u2029');
-    return `<script>window.__supersplatPortals = ${payloadJson};</script>` +
+    return `<style>${companionStyle}</style>` +
+        `<script>window.__supersplatPortals = ${payloadJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };
 
-export { buildPortalsInjection };
+export { buildPortalsInjection, resolveLoadingMessage, DEFAULT_MESSAGES };

@@ -196,7 +196,7 @@ const buildStreamingLodTable = async (
     lod0: DataTable,
     createDevice: DeviceCreator,
     onPhase?: (label: string) => void
-): Promise<DataTable> => {
+): Promise<{ table: DataTable; levelCounts: number[] }> => {
     // Count the coarser levels we'll generate up front so the phase label can
     // show an accurate "level N of M" (M = number of decimated levels). Mirror
     // the build loop's stop condition: keep halving and count each level until
@@ -239,9 +239,10 @@ const buildStreamingLodTable = async (
         levels[i].addColumn(new Column('lod', new Float32Array(levels[i].numRows).fill(i)));
     }
 
+    const levelCounts = levels.map(l => l.numRows);
     // All levels descend from lod0's Transform.PLY (clone preserves it), so
     // combine concatenates rows without any coordinate-space conversion.
-    return combine(levels);
+    return { table: combine(levels), levelCounts };
 };
 
 // Coarsest voxel size the auto-fit ladder will try before giving up.
@@ -322,13 +323,15 @@ const writePortalScene = async (
     radius: number,
     voxelSize: number,
     onPhase?: (label: string, counted: boolean) => void
-): Promise<void> => {
+): Promise<number[]> => {
     const base = `scenes/${index}`;
     const sub = new MemoryFileSystem();
+    let levelCounts: number[] = [];
     if (scene.streaming) {
-        const lodTable = await buildStreamingLodTable(scene.dataTable.clone(), createDevice, (label) => {
+        const { table: lodTable, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable.clone(), createDevice, (label) => {
             onPhase?.(label, false);   // decimation passes carry their level in the label
         });
+        levelCounts = counts;
         onPhase?.('Packaging streaming chunks', true);
         await writeLod({
             filename: '/lod-meta.json',
@@ -361,6 +364,7 @@ const writePortalScene = async (
     for (const [name, data] of sub.results.entries()) {
         memFs.results.set(`${base}/${name.replace(/^\/+/, '')}`, data);
     }
+    return levelCounts;
 };
 
 // Repoint the viewer's default collisionUrl at the bundled voxel file so the
@@ -437,7 +441,7 @@ const writeStreamingViewerCore = async (
     // Streaming bundle: lod-meta.json + per-LOD SOG chunk folders. Decimation's
     // per-pass count is an estimate, so the level number lives in the label and
     // the per-step counter stays off here.
-    const lodTable = await buildStreamingLodTable(dataTable, createDevice, (label) => {
+    const { table: lodTable, levelCounts: primaryLodCounts } = await buildStreamingLodTable(dataTable, createDevice, (label) => {
         phase = `${pp}${label}`;
     });
 
@@ -461,6 +465,25 @@ const writeStreamingViewerCore = async (
         chunkExtent: 16    // ~chunk size in world units / metres (splat-transform default)
     }, memFs);
 
+    // Write each extra portal scene's streaming bundle (lod-meta.json + chunk
+    // folders) + per-scene voxel into the SAME memFs under scenes/N/, before the
+    // HTML injection so the per-LOD counts are available for the payload. Mirrors
+    // the package branch; uses the shared collision radius / voxel size (defaulting
+    // when collision is off but a scene still carries a collision URL —
+    // writePortalScene guards on it).
+    const extraLodCounts: number[][] = [];
+    if (extraScenes && extraScenes.length > 0) {
+        const collRadius = collision?.radius ?? 50;
+        const collVoxelSize = collision?.voxelSize ?? 0.05;
+        for (let i = 0; i < extraScenes.length; i++) {
+            const scenePrefix = `Scene ${i + 2}/${extraScenes.length + 1}`;
+            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, (label, c) => {
+                phase = `${scenePrefix}: ${label}`;
+                counted = c;
+            }));
+        }
+    }
+
     // Drop the throwaway content SOG and repoint the viewer at the LOD bundle.
     // Unbundled writeHtml hardcodes the content fetch to the (now discarded) SOG
     // (`fetch("index.sog")`) and leaves the default contentUrl pointing at it.
@@ -483,29 +506,13 @@ const writeStreamingViewerCore = async (
     if (repointed === repointedFetch) {
         throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (writeHtml output format changed)');
     }
-    const withLinks = injectAnnotationLinks(repointed, viewerSettingsJson);
-    const withZones = injectOffLimitsZones(withLinks, viewerSettingsJson);
-    const withPortals = injectPortals(withZones, viewerSettingsJson);
+    const settingsWithLods = { ...viewerSettingsJson, portalSceneLodCounts: [primaryLodCounts, ...extraLodCounts] };
+    const withLinks = injectAnnotationLinks(repointed, settingsWithLods);
+    const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
+    const withPortals = injectPortals(withZones, settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(withPortals));
     if (collision) {
         repointCollisionUrl(memFs);
-    }
-
-    // Write each extra portal scene's streaming bundle (lod-meta.json + chunk
-    // folders) + per-scene voxel into the SAME memFs under scenes/N/, before the
-    // single zip pass below. Mirrors the package branch; uses the shared
-    // collision radius / voxel size (defaulting when collision is off but a
-    // scene still carries a collision URL — writePortalScene guards on it).
-    if (extraScenes && extraScenes.length > 0) {
-        const collRadius = collision?.radius ?? 50;
-        const collVoxelSize = collision?.voxelSize ?? 0.05;
-        for (let i = 0; i < extraScenes.length; i++) {
-            const scenePrefix = `Scene ${i + 2}/${extraScenes.length + 1}`;
-            await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, (label, c) => {
-                phase = `${scenePrefix}: ${label}`;
-                counted = c;
-            });
-        }
     }
 
     // ZIP every emitted file. Keys are normalised to relative paths so the

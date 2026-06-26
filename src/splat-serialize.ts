@@ -132,6 +132,7 @@ type ExperienceSettings = {
     portalStart?: number,
     portalCollision?: (string | null)[],
     portalEnvironments?: ('indoor' | 'outdoor')[],
+    portalSceneLodCounts?: number[][],   // [sceneIndex][lodLevel] = splat count; index 0 = primary, level 0 = finest
     startMode: 'default' | 'animTrack' | 'annotation'
 };
 
