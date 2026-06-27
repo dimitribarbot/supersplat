@@ -302,6 +302,10 @@ class ExportPopup extends Container {
         // environmentSelect above when there are no portals.
         const perSceneEnvRow = new Container({ class: 'per-scene-env', flex: true, flexDirection: 'column' });
         const perSceneEnvSelects = new Map<number, SelectInput>();  // sceneIndex -> select
+        // Chosen environment per scene uid, persisted across rebuildPerSceneEnv()
+        // calls (the Streaming/Collision toggles rebuild the rows) so user choices
+        // survive. Cleared on reset() so each fresh export starts at the default.
+        const perSceneEnvValues = new Map<number, 'indoor' | 'outdoor'>();  // sceneUid -> environment
 
         const rebuildPerSceneEnv = () => {
             perSceneEnvRow.clear();
@@ -322,12 +326,13 @@ class ExportPopup extends Container {
                 row.append(new Label({ class: 'label', text: name }));
                 const sel = new SelectInput({
                     class: 'select',
-                    defaultValue: 'indoor',
+                    defaultValue: perSceneEnvValues.get(uid) ?? 'indoor',
                     options: [
                         { v: 'indoor', t: localize('popup.export.environment.indoor') },
                         { v: 'outdoor', t: localize('popup.export.environment.outdoor') }
                     ]
                 });
+                sel.on('change', () => perSceneEnvValues.set(uid, sel.value as 'indoor' | 'outdoor'));
                 row.append(sel);
                 perSceneEnvRow.append(row);
                 perSceneEnvSelects.set(index, sel);
@@ -585,6 +590,7 @@ class ExportPopup extends Container {
             // collision detection (viewer zip only)
             collisionToggle.value = true;
             environmentSelect.value = 'indoor';
+            perSceneEnvValues.clear();
             radiusSlider.value = 50;
             voxelSizeSlider.value = 0.05;
             updateCollisionVisibility();
