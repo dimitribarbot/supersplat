@@ -1,3 +1,4 @@
+import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
@@ -73,6 +74,30 @@ const companionRuntime = `
   // moment their entity exists, so they never get the loading overlay.
   var streaming = (data.portalScenes || []).some(function (u) { return u && u.indexOf('lod-meta.json') !== -1; });
   var lastSafe = null;
+  var timeline = data.portalAnimTimeline || null;   // [{t, scene}] sorted ascending; null/absent when no animation
+  function getState() {
+    var v = window.__supersplatViewer;
+    return (v && v.global && v.global.state) || (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.state) || null;
+  }
+  // Active scene for cursor time t (seconds), from the baked timeline. Linear
+  // scan: timeline has one entry per crossing (small).
+  function sceneAtTime(t) {
+    if (!timeline || !timeline.length) return activeIndex;
+    var s = timeline[0].scene;
+    for (var i = 0; i < timeline.length; i++) {
+      if (timeline[i].t <= t) { s = timeline[i].scene; } else { break; }
+    }
+    return s;
+  }
+  // Switch to scene idx: enable it, swap collision, and arm the streaming
+  // loading overlay on a first visit. No-op when already active or not loaded.
+  function switchTo(idx) {
+    if (idx === activeIndex || idx === null || !entities[idx]) return;
+    activeIndex = idx;
+    applyActive();
+    swapCollision(idx);
+    if (streaming && !readyScenes[idx] && pendingIndex !== idx) { beginLoading(idx); }
+  }
 
   // --- streaming loading overlay ---------------------------------------
   // First crossing into a streaming scene enables an entity whose splat data
@@ -236,7 +261,41 @@ const companionRuntime = `
   }
   function swapCollision(idx) {
     var live = liveCollision();
-    if (live && voxels[idx]) applyVoxel(live, voxels[idx]);
+    if (live && voxels[idx]) {
+      applyVoxel(live, voxels[idx]);
+      // Live-update the overlay only if it is currently shown; otherwise it is
+      // refreshed lazily when the user enables it (see the listener in start()).
+      if (overlayEnabled()) refreshOverlay();
+    }
+  }
+
+  // The overlay's GPU buffers are uploaded once at construction, so an in-place
+  // collision swap leaves them showing the previous scene. Track which scene the
+  // overlay buffers represent and rebuild from the live (already-swapped)
+  // collision when needed. overlayScene starts at the scene the viewer built the
+  // overlay from (the start scene).
+  var overlayScene = data.portalStart || 0;
+  function overlayEnabled() {
+    var v = window.__supersplatViewer;
+    return !!(v && v.voxelOverlay && v.voxelOverlay.enabled);
+  }
+  function refreshOverlay() {
+    var v = window.__supersplatViewer;
+    var ov = v && v.voxelOverlay;
+    var live = liveCollision();
+    if (!ov || !ov.constructor || !live || overlayScene === activeIndex) return;
+    try {
+      var app = getApp(v);
+      var nv = new ov.constructor(app, live, ov.camera);  // re-uploads nodes/leafData buffers from the live collision
+      nv.mode = ov.mode;
+      nv.enabled = ov.enabled;
+      v.voxelOverlay = nv;                                 // prerender reads this.voxelOverlay live, so the swap is seen next frame
+      ov.destroy();
+      overlayScene = activeIndex;
+      if (app) app.renderNextFrame = true;
+    } catch (e) {
+      console.warn('portal overlay refresh failed:', e);
+    }
   }
 
   // Enable exactly the active scene; disable the rest (avoids overlapping haze).
@@ -259,6 +318,13 @@ const companionRuntime = `
     var startEntity = startComp.entity;
     var Entity = startEntity.constructor;
     entities[0] = startEntity;
+
+    // When the collision overlay is enabled after the user has already moved to
+    // another scene, its buffers are stale -> refresh to the active scene.
+    var ev = viewer && viewer.global && viewer.global.events;
+    if (ev && ev.on) {
+      ev.on('collisionOverlayEnabled:changed', function (on) { if (on) refreshOverlay(); });
+    }
 
     for (var i = 1; i < data.portalScenes.length; i++) {
       (function (idx) {
@@ -300,19 +366,23 @@ const companionRuntime = `
       var cam = cm && cm.camera;
       if (cam && cam.position) {
         var cur = [cam.position.x, cam.position.y, cam.position.z];
-        if (lastSafe) {
+        var st = getState();
+        // In animation mode the camera is driven by the authored path, so the
+        // active scene is a pure function of the cursor time (handles play,
+        // scrub, scrubTo and loop wrap). In free navigation, detect crossings
+        // from frame-to-frame motion. lastSafe is kept fresh in both so the
+        // hand-off between modes never produces a spurious crossing.
+        // If state is unreachable (st null) we fall back to the free-nav branch;
+        // exports always bake a truthy timeline, so this only degrades to
+        // delta-detection in the unexpected case where the viewer state is missing.
+        if (st && st.cameraMode === 'anim' && timeline) {
+          switchTo(sceneAtTime(st.animationTime || 0));
+        } else if (lastSafe) {
           // A crossing whose target scene has not finished loading (entities[next]
           // missing) is skipped; eager preload at startup makes this rare.
           var next = resolveActiveSplat(lastSafe, cur, rects, activeIndex, segmentCrossesRect);
           if (next !== activeIndex && next !== null && entities[next]) {
-            activeIndex = next;
-            applyActive();
-            swapCollision(next);
-            // Arm the loading overlay for a first visit to this scene. Ready
-            // scenes never re-arm; the poll decides whether/when to show it.
-            if (streaming && !readyScenes[next] && pendingIndex !== next) {
-              beginLoading(next);
-            }
+            switchTo(next);
           }
         }
         lastSafe = cur;
@@ -368,6 +438,23 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
     if (!portals || portals.length === 0) {
         return '';
     }
+    // Precompute the active scene over the camera-animation timeline so the
+    // exported viewer can switch scenes by cursor time (play/scrub) rather than
+    // only by frame-to-frame crossings. Uses the first anim track, matching the
+    // viewer's getAnimTrack (animTracks[0]).
+    const portalRects = portals.map((p: any) => ({
+        position: p.position,
+        rotation: p.rotation,
+        width: p.width,
+        height: p.height,
+        frontUid: p.front,
+        backUid: p.back
+    }));
+    const portalAnimTimeline = buildPortalAnimTimeline(
+        viewerSettingsJson.animTracks?.[0] ?? null,
+        portalRects,
+        viewerSettingsJson.portalStart ?? 0
+    );
     const payload = {
         portals,
         portalScenes: viewerSettingsJson.portalScenes ?? [],
@@ -375,6 +462,7 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
         portalCollision: viewerSettingsJson.portalCollision ?? [],
         portalEnvironments: viewerSettingsJson.portalEnvironments ?? [],
         portalSceneLodCounts: viewerSettingsJson.portalSceneLodCounts ?? [],
+        portalAnimTimeline,
         loadingDefaults: DEFAULT_MESSAGES
     };
     // Escape characters unsafe inside an HTML <script> context so the payload

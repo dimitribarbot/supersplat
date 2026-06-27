@@ -64,4 +64,34 @@ describe('buildPortalsInjection', () => {
         expect(out).not.toContain('</script><b>inject');
         expect(out).toContain('\\u003c');
     });
+
+    it('bakes a portalAnimTimeline computed from the animation track', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 10, height: 10, front: 1, back: 0 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            animTracks: [{
+                name: 'cameraAnim',
+                duration: 1,
+                frameRate: 30,
+                loopMode: 'repeat',
+                interpolation: 'spline',
+                smoothness: 0,
+                keyframes: { times: [0, 30], values: { position: [0, 0, -5, 0, 0, 5], target: [0, 0, 0, 0, 0, 0], fov: [60, 60] } }
+            }]
+        });
+        expect(out).toContain('portalAnimTimeline');
+        // crossing into scene 1 is recorded (path goes back -> front through the portal)
+        expect(out).toContain('"scene":1');
+    });
+
+    it('bakes a start-only timeline when there is no animation track', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0
+        });
+        expect(out).toContain('portalAnimTimeline');
+        expect(out).toContain('[{"t":0,"scene":0}]');
+    });
 });
