@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { buildPortalBundle, resolveCollisionSeed, resolvePortalExtras, EYE_HEIGHT, SIDE_NUDGE } from '../src/portal-export';
+import { buildPortalBundle, resolveCollisionSeed, resolvePortalExtras, EYE_HEIGHT, SIDE_NUDGE, collisionSeedTuple } from '../src/portal-export';
 
 const portal = (front: number | null, back: number | null) => ({
     position: [0, 0, 0] as [number, number, number],
@@ -171,5 +171,17 @@ describe('resolvePortalExtras', () => {
             streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0], environments: []
         })!;
         expect(r.extras[0].environment).toBe('indoor');
+    });
+});
+
+describe('collisionSeedTuple', () => {
+    it('returns the first camera initial position', () => {
+        expect(collisionSeedTuple({ cameras: [{ initial: { position: [1, 2, 3] } }] })).toEqual([1, 2, 3]);
+    });
+
+    it('falls back to origin when no camera/position present', () => {
+        expect(collisionSeedTuple({})).toEqual([0, 0, 0]);
+        expect(collisionSeedTuple({ cameras: [] })).toEqual([0, 0, 0]);
+        expect(collisionSeedTuple({ cameras: [{}] })).toEqual([0, 0, 0]);
     });
 });

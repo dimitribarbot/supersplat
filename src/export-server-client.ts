@@ -93,10 +93,12 @@ export const checkPublishExists = async (subfolder: string, name: string): Promi
 export const runServerPublish = async (
     plyGz: Blob,
     options: object & { name: string; public: boolean; overwrite: boolean },
-    onProgress: (p: ServerProgress) => void
+    onProgress: (p: ServerProgress) => void,
+    extraPlyGz?: Blob[]
 ): Promise<PublishResult> => {
     const form = new FormData();
     form.append('ply', plyGz, 'scene.ply.gz');
+    (extraPlyGz ?? []).forEach((b, i) => form.append('extraPly', b, `scene-${i + 1}.ply.gz`));
     form.append('options', JSON.stringify(options));
     const startRes = await fetch(`${location.origin}/api/publish`, { method: 'POST', body: form });
     if (startRes.status === 409) {

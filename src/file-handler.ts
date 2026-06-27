@@ -6,7 +6,8 @@ import { ElementType } from './element';
 import { Events } from './events';
 import { runServerExport } from './export-server-client';
 import { BrowserFileSystem, MappedReadFileSystem } from './io';
-import { resolvePortalExtras } from './portal-export';
+import { collisionSeedTuple, resolvePortalExtras } from './portal-export';
+import { buildPortalUpload } from './portal-upload';
 import { Scene } from './scene';
 import { Splat } from './splat';
 import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeViewer, serializeViewerSettings, SogSettings, ViewerExportSettings } from './splat-serialize';
@@ -164,12 +165,6 @@ type ImportFile = {
 };
 
 const vec = new Vec3();
-
-// Extract the start-camera position from ExperienceSettings as a seed tuple.
-// Returns [0,0,0] when no camera is configured (collision voxel will be seeded at origin).
-const collisionSeedTuple = (es: { cameras?: { initial?: { position?: [number, number, number] } }[] }): [number, number, number] => {
-    return es.cameras?.[0]?.initial?.position ?? [0, 0, 0];
-};
 
 // load inria camera poses from json file
 const loadCameraPoses = async (file: ImportFile, events: Events) => {
@@ -639,39 +634,16 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             let extraPlyGz: Blob[] | undefined;
             if (fileType === 'htmlViewer' || fileType === 'packageViewer') {
                 const es = options.viewerExportSettings?.experienceSettings as any;
-                if (es?.portalScenes && es.portalScenes.length > 1) {
-                    const all = events.invoke('scene.allSplats') as Splat[];
-                    const resolved = resolvePortalExtras({
-                        portals: events.invoke('portals.export') ?? [],
-                        startUid: events.invoke('portals.startSplat') ?? null,
-                        availableUids: all.map(s => s.uid),
-                        streaming: !!options.viewerExportSettings!.streaming,
-                        collision: !!es.portalCollision && es.portalCollision.length > 0,
-                        authored: events.invoke('portals.exportEntrypoints') ?? {},
-                        startSeed: collisionSeedTuple(es),
-                        environments: es.portalEnvironments ?? []
-                    });
-                    if (resolved) {
-                        const startUid = resolved.bundle.sceneUids[0];
-                        const startSplat = all.find(s => s.uid === startUid);
-                        if (!startSplat) throw new Error(`Portal export: start scene uid ${startUid} not found among loaded splats.`);
-                        splats = [startSplat];
-                        const blobs: Blob[] = [];
-                        const meta: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; collisionUrl: string | null; streaming: boolean }[] = [];
-                        for (const ex of resolved.extras) {
-                            const splat = all.find(s => s.uid === ex.uid);
-                            if (!splat) throw new Error(`Portal export: scene uid ${ex.uid} not found among loaded splats.`);
-                            const sFs = new MemoryFileSystem();
-                            await serializePly([splat], serializeSettings, sFs, 'scene.ply');
-                            const bytes = sFs.results.get('scene.ply');
-                            if (!bytes) throw new Error(`Portal export: scene uid ${ex.uid} produced no PLY.`);
-                            const gz = await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))).blob();
-                            blobs.push(gz);
-                            meta.push({ seed: ex.seed, environment: ex.environment, collisionUrl: ex.collisionUrl, streaming: !!options.viewerExportSettings!.streaming });
-                        }
-                        extraPlyGz = blobs;
-                        (wire as any).portalExtras = meta;
-                    }
+                const upload = await buildPortalUpload({
+                    events,
+                    es,
+                    serializeSettings,
+                    streaming: !!options.viewerExportSettings!.streaming
+                });
+                if (upload) {
+                    splats = [upload.startSplat];
+                    extraPlyGz = upload.extraPlyGz;
+                    (wire as any).portalExtras = upload.portalExtras;
                 }
             }
 

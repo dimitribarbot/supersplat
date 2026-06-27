@@ -135,6 +135,14 @@ const resolveCollisionSeed = (args: {
 
 export { resolveCollisionSeed, EYE_HEIGHT, SIDE_NUDGE };
 
+// Start-scene collision seed = the start camera's initial position (or origin).
+// Pure (no playcanvas) so both the export and publish upload paths share it.
+const collisionSeedTuple = (es: { cameras?: { initial?: { position?: [number, number, number] } }[] }): [number, number, number] => {
+    return es.cameras?.[0]?.initial?.position ?? [0, 0, 0];
+};
+
+export { collisionSeedTuple };
+
 type PortalExtra = {
     index: number,
     uid: number,

@@ -3,6 +3,7 @@ import { BooleanInput, Button, ColorPicker, Container, Label, SelectInput, Slide
 import { Pose } from '../camera-poses';
 import { localize } from './localization';
 import { Events } from '../events';
+import { buildPortalBundle } from '../portal-export';
 import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
 
 // Strip a known splat/scene file extension so the name can serve as the
@@ -89,7 +90,45 @@ class S3PublishDialog extends Container {
         const nameRow = row('popup.publish.s3.name', name);
         const publicRow = row('popup.publish.s3.public', isPublic);
 
-        [streamingRow, collisionRow, environmentRow, radiusRow, voxelRow, animationRow, loopRow, colorRow, fovRow, bandsRow, subfolderRow, nameRow, publicRow]
+        // per-scene environment selectors (portals only); one Interior/Exterior
+        // select per portal-referenced scene, replacing the single environment row.
+        const perSceneEnvRow = new Container({ class: 'per-scene-env', flex: true, flexDirection: 'column' });
+        const perSceneEnvSelects = new Map<number, SelectInput>();
+
+        const rebuildPerSceneEnv = () => {
+            perSceneEnvRow.clear();
+            perSceneEnvSelects.clear();
+            const portalsRaw = events.invoke('portals.export') ?? [];
+            const startUid = events.invoke('portals.startSplat') ?? null;
+            const allSplats = events.invoke('scene.allSplats') ?? [];
+            const availableUids = allSplats.map((s: any) => s.uid);
+            const bundle = (events.invoke('portals.count') ?? 0) > 0
+                ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: true })
+                : null;
+            if (!bundle) { perSceneEnvRow.hidden = true; return; }
+            perSceneEnvRow.hidden = false;
+            bundle.sceneUids.forEach((uid, index) => {
+                const splat = allSplats.find((s: any) => s.uid === uid);
+                const label = splat ? `${uid}: ${(splat.asset?.file?.filename ?? splat.name ?? uid)}` : `Scene ${index}`;
+                const r = new Container({ class: 'row' });
+                r.append(new Label({ class: 'label', text: label }));
+                const sel = new SelectInput({
+                    class: 'select',
+                    defaultValue: 'indoor',
+                    options: [
+                        { v: 'indoor', t: localize('popup.export.environment.indoor') },
+                        { v: 'outdoor', t: localize('popup.export.environment.outdoor') }
+                    ]
+                });
+                r.append(sel);
+                perSceneEnvRow.append(r);
+                perSceneEnvSelects.set(index, sel);
+            });
+        };
+
+        [streamingRow, collisionRow, environmentRow].forEach(r => content.append(r.c));
+        content.append(perSceneEnvRow);
+        [radiusRow, voxelRow, animationRow, loopRow, colorRow, fovRow, bandsRow, subfolderRow, nameRow, publicRow]
         .forEach(r => content.append(r.c));
 
         const footer = new Container({ id: 'footer' });
@@ -110,11 +149,16 @@ class S3PublishDialog extends Container {
 
         const updateCollisionVisibility = () => {
             const hide = !collision.value;
-            environmentRow.c.hidden = hide;
+            const hasPortals = (events.invoke('portals.count') ?? 0) > 0;
+            // with portals, the single environment row is replaced by per-scene selectors
+            environmentRow.c.hidden = hide || hasPortals;
             radiusRow.c.hidden = hide;
             voxelRow.c.hidden = hide;
+            rebuildPerSceneEnv();
+            perSceneEnvRow.hidden = perSceneEnvRow.hidden || hide;
         };
         collision.on('change', updateCollisionVisibility);
+        streaming.on('change', rebuildPerSceneEnv);
         animation.on('change', (v: boolean) => {
             loop.enabled = v;
         });
@@ -176,6 +220,14 @@ class S3PublishDialog extends Container {
                     }
                     animTracks.push({ name: 'cameraAnim', duration: frames / frameRate, frameRate, loopMode: loop.value as 'none' | 'repeat' | 'pingpong', interpolation: 'spline', smoothness, keyframes: { times, values: { position, target, fov: fovKeys } } });
                 }
+                // portal multi-scene bundle (absent when the scene has no portals)
+                const portalsRaw = events.invoke('portals.export') ?? [];
+                const startUid = events.invoke('portals.startSplat') ?? null;
+                const allSplats = events.invoke('scene.allSplats') ?? [];
+                const availableUids = allSplats.map((s: any) => s.uid);
+                const bundle = (events.invoke('portals.count') ?? 0) > 0
+                    ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: collision.value })
+                    : null;
                 const experienceSettings: ExperienceSettings = {
                     version: 2,
                     tonemapping: events.invoke('camera.tonemapping') ?? 'none',
@@ -187,6 +239,13 @@ class S3PublishDialog extends Container {
                     annotations: events.invoke('annotations.export') ?? [],
                     offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
                     offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
+                    ...(bundle ? {
+                        portals: bundle.portals,
+                        portalScenes: bundle.portalScenes,
+                        portalStart: bundle.portalStart,
+                        portalCollision: bundle.portalCollision,
+                        portalEnvironments: bundle.sceneUids.map((_, i) => (perSceneEnvSelects.get(i)?.value ?? 'indoor') as 'indoor' | 'outdoor')
+                    } : {}),
                     startMode: animation.value ? 'animTrack' : 'default'
                 };
                 return {

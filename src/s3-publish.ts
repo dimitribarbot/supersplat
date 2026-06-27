@@ -2,6 +2,7 @@ import { MemoryFileSystem } from '@playcanvas/splat-transform';
 
 import { Events } from './events';
 import { checkPublishExists, PublishExistsError, runServerPublish } from './export-server-client';
+import { buildPortalUpload } from './portal-upload';
 import { serializePly, SerializeSettings } from './splat-serialize';
 import { localize } from './ui/localization';
 import type { S3PublishOptions } from './ui/s3-publish-dialog';
@@ -26,8 +27,20 @@ const registerS3PublishEvents = (events: Events) => {
             });
 
             // browser-side PLY extraction (same path as server export)
-            const splats = events.invoke('scene.splats');
             const serializeSettings: SerializeSettings = { ...options.serializeSettings };
+
+            // portal multi-scene upload: when the scene has portals, the PRIMARY
+            // scene is the START scene alone; each extra scene uploads its own
+            // gzipped PLY + metadata for the server to assemble (mirrors writeViaServer).
+            const es = options.viewerExportSettings.experienceSettings as any;
+            const upload = await buildPortalUpload({
+                events,
+                es,
+                serializeSettings,
+                streaming: !!options.viewerExportSettings.streaming
+            });
+            const splats = upload ? [upload.startSplat] : events.invoke('scene.splats');
+
             const memFs = new MemoryFileSystem();
             await serializePly(splats, serializeSettings, memFs, 'scene.ply');
             const plyBytes = memFs.results.get('scene.ply');
@@ -47,9 +60,10 @@ const registerS3PublishEvents = (events: Events) => {
                 public: options.public,
                 overwrite: true,   // already confirmed (or didn't exist)
                 serializeSettings: options.serializeSettings,
-                viewerExportSettings: options.viewerExportSettings
+                viewerExportSettings: options.viewerExportSettings,
+                ...(upload ? { portalExtras: upload.portalExtras } : {})
             };
-            const result = await runServerPublish(plyGz, publishOptions, p => events.fire('progressUpdate', { text: p.message, progress: p.value }));
+            const result = await runServerPublish(plyGz, publishOptions, p => events.fire('progressUpdate', { text: p.message, progress: p.value }), upload?.extraPlyGz);
 
             events.fire('progressEnd');
             await events.invoke('showPopup', {
