@@ -126,6 +126,8 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             // start rendering to offscreen buffer only
             scene.camera.startOffscreenMode(width, height);
             scene.camera.renderOverlays = showDebug;
+            // off-limits zones and portals are editor aids; hide them unless debug is on
+            scene.offLimitsLayer.enabled = showDebug;
             scene.gizmoLayer.enabled = false;
             if (!transparentBg) {
                 scene.camera.clearPass.setClearColor(events.invoke('bgClr'));
@@ -175,6 +177,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
         } finally {
             scene.camera.endOffscreenMode();
             scene.camera.renderOverlays = true;
+            scene.offLimitsLayer.enabled = true;
             scene.gizmoLayer.enabled = true;
             scene.camera.clearPass.setClearColor(nullClr);
 
@@ -243,6 +246,8 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 // start rendering to offscreen buffer only
                 scene.camera.startOffscreenMode(width, height);
                 scene.camera.renderOverlays = showDebug;
+                // off-limits zones and portals are editor aids; hide them unless debug is on
+                scene.offLimitsLayer.enabled = showDebug;
                 scene.gizmoLayer.enabled = false;
                 if (!transparentBg) {
                     scene.camera.clearPass.setClearColor(events.invoke('bgClr'));
@@ -402,6 +407,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
 
                 scene.camera.endOffscreenMode();
                 scene.camera.renderOverlays = true;
+                scene.offLimitsLayer.enabled = true;
                 scene.gizmoLayer.enabled = true;
                 scene.camera.clearPass.setClearColor(nullClr);
                 scene.lockedRenderMode = false;
