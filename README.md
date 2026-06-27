@@ -46,7 +46,7 @@ To initialize a local development environment for SuperSplat, ensure you have [N
 
    <img width="846" alt="Screenshot 2025-04-25 at 16 53 37" src="https://github.com/user-attachments/assets/888bac6c-25c1-4813-b5b6-4beecf437ac9" />
 
-5. Navigate to `http://localhost:3000`
+5. Navigate to `http://localhost:3333`
 
 When changes to the source are detected, SuperSplat is rebuilt automatically. Simply refresh your browser to see your changes.
 
@@ -77,7 +77,7 @@ To test your translations:
 2. Open your browser and navigate to:
 
    ```
-   http://localhost:3000/?lng=<locale>
+   http://localhost:3333/?lng=<locale>
    ```
 
    Replace `<locale>` with your language code (e.g., `fr`, `de`, `es`).
