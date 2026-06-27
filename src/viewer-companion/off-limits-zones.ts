@@ -4,7 +4,8 @@ type ZoneLike = {
     position: [number, number, number],
     rotation: [number, number, number, number],
     width: number,
-    height: number
+    height: number,
+    infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean }
 };
 
 // Localized default messages, keyed by primary language subtag. Mirrors the

@@ -5,7 +5,8 @@ type Wall = {
     position: Vec3,
     rotation: Quat,   // unit quaternion [x, y, z, w]
     width: number,
-    height: number
+    height: number,
+    infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean }
 };
 
 // Returns the world-space safe point to clamp the camera to (the last safe
@@ -57,9 +58,14 @@ const segmentBlockedByWall = (prev: Vec3, cur: Vec3, wall: Wall): Vec3 | null =>
 
     const ix = a[0] + t * (b[0] - a[0]);
     const iy = a[1] + t * (b[1] - a[1]);
-    if (Math.abs(ix) > hw || Math.abs(iy) > hh) {
-        return null;
-    }
+    // Per-edge bounds: an edge flagged `infinite` extends the wall to the scene
+    // boundary, so a crossing past that edge still blocks. With no flags this is
+    // identical to the original |ix| <= hw && |iy| <= hh test.
+    const inf = wall.infinite;
+    if (ix > hw && !(inf && inf.right)) return null;
+    if (ix < -hw && !(inf && inf.left)) return null;
+    if (iy > hh && !(inf && inf.top)) return null;
+    if (iy < -hh && !(inf && inf.bottom)) return null;
 
     // Blocked: clamp back to the last safe (prev) world position.
     return [prev[0], prev[1], prev[2]];

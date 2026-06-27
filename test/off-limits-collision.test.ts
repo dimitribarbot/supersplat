@@ -6,7 +6,8 @@ const wall = (over: Partial<Wall> = {}): Wall => ({
     position: over.position ?? [0, 0, 0],
     rotation: over.rotation ?? [0, 0, 0, 1],
     width: over.width ?? 2,
-    height: over.height ?? 2
+    height: over.height ?? 2,
+    ...over
 });
 
 describe('segmentBlockedByWall', () => {
@@ -21,6 +22,29 @@ describe('segmentBlockedByWall', () => {
 
     it('does not block when the crossing point is outside the height', () => {
         expect(segmentBlockedByWall([0, 5, -1], [0, 5, 1], wall())).toBeNull();
+    });
+
+    it('blocks past the right edge when the right edge is infinite', () => {
+        // crossing at x = 5 is outside the default half-width (1) -> normally null,
+        // but with right:infinite the wall extends, so it blocks.
+        const w = wall({ infinite: { top: false, right: true, bottom: false, left: false } });
+        expect(segmentBlockedByWall([5, 0, -1], [5, 0, 1], w)).toEqual([5, 0, -1]);
+    });
+
+    it('still does not block past the left edge when only the right edge is infinite', () => {
+        const w = wall({ infinite: { top: false, right: true, bottom: false, left: false } });
+        expect(segmentBlockedByWall([-5, 0, -1], [-5, 0, 1], w)).toBeNull();
+    });
+
+    it('blocks past the top edge when the top edge is infinite', () => {
+        const w = wall({ infinite: { top: true, right: false, bottom: false, left: false } });
+        expect(segmentBlockedByWall([0, 5, -1], [0, 5, 1], w)).toEqual([0, 5, -1]);
+    });
+
+    it('no flags behaves exactly like the original bounds check', () => {
+        const w = wall({ infinite: { top: false, right: false, bottom: false, left: false } });
+        expect(segmentBlockedByWall([5, 0, -1], [5, 0, 1], w)).toBeNull();
+        expect(segmentBlockedByWall([0, 0, -1], [0, 0, 1], w)).toEqual([0, 0, -1]);
     });
 
     it('does not block when both endpoints are on the same side', () => {

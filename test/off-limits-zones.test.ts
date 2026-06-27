@@ -32,7 +32,8 @@ const zone = (over: Partial<ZoneData> = {}): ZoneData => ({
     position: over.position ?? [1, 2, 3],
     rotation: over.rotation ?? [0, 0, 0, 1],
     width: over.width ?? 2,
-    height: over.height ?? 3
+    height: over.height ?? 3,
+    infinite: over.infinite
 });
 
 describe('off-limits zones model', () => {
@@ -96,6 +97,36 @@ describe('off-limits zones model', () => {
         expect(events.invoke('offLimitsZones.export')).toEqual([
             { position: [1, 2, 3], rotation: [0, 0, 0, 1], width: 2, height: 3 }
         ]);
+    });
+
+    it('export carries infinite edges when set', () => {
+        const events = makeEvents();
+        registerOffLimitsZonesEvents(events);
+        const inf = { top: true, right: false, bottom: false, left: true };
+        new AddZoneOp(events, zone({ infinite: inf })).do();
+        expect(events.invoke('offLimitsZones.export')).toEqual([
+            { position: [1, 2, 3], rotation: [0, 0, 0, 1], width: 2, height: 3, infinite: inf }
+        ]);
+    });
+
+    it('serialize -> deserialize round-trips infinite edges', () => {
+        const events = makeEvents();
+        registerOffLimitsZonesEvents(events);
+        const inf = { top: false, right: true, bottom: true, left: false };
+        new AddZoneOp(events, zone({ id: 'zone_0', infinite: inf })).do();
+        const serialized = events.invoke('docSerialize.offLimitsZones');
+
+        const events2 = makeEvents();
+        registerOffLimitsZonesEvents(events2);
+        events2.invoke('docDeserialize.offLimitsZones', serialized, '');
+        expect(events2.invoke('offLimitsZones.byId', 'zone_0').infinite).toEqual(inf);
+    });
+
+    it('deserialize leaves infinite undefined when absent', () => {
+        const events = makeEvents();
+        registerOffLimitsZonesEvents(events);
+        events.invoke('docDeserialize.offLimitsZones', [{ id: 'zone_0', position: [0, 0, 0] }], undefined);
+        expect(events.invoke('offLimitsZones.byId', 'zone_0').infinite).toBeUndefined();
     });
 
     it('serialize -> deserialize round-trips zones + message and keeps ids ahead', () => {

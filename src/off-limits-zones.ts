@@ -1,4 +1,5 @@
 import { Events } from './events';
+import type { InfiniteEdges } from './portal-geom';
 
 // Editor-internal off-limits zone record. A zone is a thin vertical wall: a
 // rectangle (width x height) centered at `position`, oriented by `rotation`
@@ -9,7 +10,8 @@ type ZoneData = {
     position: [number, number, number],
     rotation: [number, number, number, number],
     width: number,
-    height: number
+    height: number,
+    infinite?: InfiniteEdges
 };
 
 // Export-shaped zone consumed by the viewer companion (no id needed).
@@ -17,7 +19,8 @@ type ZoneExport = {
     position: [number, number, number],
     rotation: [number, number, number, number],
     width: number,
-    height: number
+    height: number,
+    infinite?: InfiniteEdges
 };
 
 class AddZoneOp {
@@ -206,7 +209,8 @@ const registerOffLimitsZonesEvents = (events: Events) => {
             position: [z.position[0], z.position[1], z.position[2]],
             rotation: [z.rotation[0], z.rotation[1], z.rotation[2], z.rotation[3]],
             width: z.width,
-            height: z.height
+            height: z.height,
+            infinite: z.infinite
         }));
     });
 
@@ -218,7 +222,8 @@ const registerOffLimitsZonesEvents = (events: Events) => {
             position: [z.position[0], z.position[1], z.position[2]],
             rotation: [z.rotation[0], z.rotation[1], z.rotation[2], z.rotation[3]],
             width: z.width,
-            height: z.height
+            height: z.height,
+            infinite: z.infinite
         }));
     });
 
@@ -234,7 +239,8 @@ const registerOffLimitsZonesEvents = (events: Events) => {
                     position: d.position,
                     rotation: d.rotation ?? [0, 0, 0, 1],
                     width: d.width ?? 1,
-                    height: d.height ?? 1
+                    height: d.height ?? 1,
+                    infinite: d.infinite
                 });
                 // keep the counter ahead of any numeric id we loaded
                 const m = /^zone_(\d+)$/.exec(d.id ?? '');

@@ -44,6 +44,8 @@ class OffLimitsZoneTool {
         const addButton = new Button({ text: localize('offLimitsZones.add'), class: 'select-toolbar-button' });
         const moveButton = new Button({ text: localize('offLimitsZones.move'), class: 'select-toolbar-button' });
         const rotateButton = new Button({ text: localize('offLimitsZones.rotate'), class: 'select-toolbar-button' });
+        const boundsButton = new Button({ text: '⤢', class: 'select-toolbar-button' });
+        boundsButton.dom.title = localize('offLimitsZones.bounds.tooltip');
         const widthLabel = new Label({ text: localize('offLimitsZones.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
         const heightLabel = new Label({ text: localize('offLimitsZones.height') });
@@ -54,6 +56,7 @@ class OffLimitsZoneTool {
         bar.append(addButton);
         bar.append(moveButton);
         bar.append(rotateButton);
+        bar.append(boundsButton);
         bar.append(widthLabel);
         bar.append(widthInput);
         bar.append(heightLabel);
@@ -67,6 +70,149 @@ class OffLimitsZoneTool {
             const id = events.invoke('offLimitsZones.selected') as string | null;
             return id ? (events.invoke('offLimitsZones.byId', id) as ZoneData) : null;
         };
+
+        // --- infinite-bounds popup (cross layout), mirrors portal-tool.ts ---
+        const boundsPopup = new Container({ class: 'off-limits-bounds-popup', hidden: true });
+        boundsPopup.dom.addEventListener('pointerdown', e => e.stopPropagation());
+        const EDGE_DIRS = ['top', 'right', 'bottom', 'left'] as const;
+        type EdgeDir = typeof EDGE_DIRS[number];
+        const edgeGlyph: Record<EdgeDir, string> = { top: '↑', right: '→', bottom: '↓', left: '←' };
+        const edgeButtons = {} as Record<EdgeDir, Button>;
+        EDGE_DIRS.forEach((dir) => {
+            const b = new Button({ text: edgeGlyph[dir], class: ['off-limits-bounds-toggle', `off-limits-bounds-${dir}`] });
+            b.dom.title = localize(`offLimitsZones.bounds.${dir}`);
+            edgeButtons[dir] = b;
+            boundsPopup.append(b);
+        });
+        canvasContainer.append(boundsPopup);
+
+        const emptyEdges = () => ({ top: false, right: false, bottom: false, left: false });
+        const edgesOf = (z: ZoneData) => ({ ...emptyEdges(), ...(z.infinite ?? {}) });
+
+        const refreshBoundsPopup = () => {
+            const z = active ? selected() : null;
+            boundsButton.enabled = !!z;
+            if (!z) {
+                boundsPopup.hidden = true;
+                return;
+            }
+            const e = edgesOf(z);
+            EDGE_DIRS.forEach(dir => edgeButtons[dir].class[e[dir] ? 'add' : 'remove']('active'));
+        };
+
+        const positionBoundsPopup = () => {
+            const br = boundsButton.dom.getBoundingClientRect();
+            const cr = canvasContainer.dom.getBoundingClientRect();
+            boundsPopup.dom.style.left = `${br.left - cr.left + br.width / 2}px`;
+            boundsPopup.dom.style.top = `${br.bottom - cr.top + 8}px`;
+        };
+
+        const toggleBoundsPopup = (show?: boolean) => {
+            const next = typeof show === 'boolean' ? show : boundsPopup.hidden;
+            if (next && active && selected()) {
+                refreshBoundsPopup();
+                positionBoundsPopup();
+                boundsPopup.hidden = false;
+            } else {
+                boundsPopup.hidden = true;
+            }
+        };
+
+        boundsButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            if (!active) return;
+            toggleBoundsPopup();
+        });
+
+        EDGE_DIRS.forEach((dir) => {
+            edgeButtons[dir].dom.addEventListener('pointerdown', (e) => {
+                e.stopPropagation();
+                const z = selected();
+                if (!z) return;
+                const oldEdges = edgesOf(z);
+                const newEdges = { ...oldEdges, [dir]: !oldEdges[dir] };
+                events.fire('edit.add', new UpdateZoneOp(events, z.id, { infinite: z.infinite }, { infinite: newEdges }));
+            });
+        });
+
+        // --- infinite-edge arrow overlay (selected zone only). Projects each
+        //     infinite edge's midpoint plus a point stepped outward, draws a red
+        //     arrow glyph at the midpoint rotated to point outward on screen. ---
+        const svgNs = 'http://www.w3.org/2000/svg';
+        const edgeSvg = document.createElementNS(svgNs, 'svg');
+        edgeSvg.style.position = 'absolute';
+        edgeSvg.style.inset = '0';
+        edgeSvg.style.width = '100%';
+        edgeSvg.style.height = '100%';
+        edgeSvg.style.overflow = 'visible';
+        edgeSvg.style.pointerEvents = 'none';
+        // Prepend so the overlay sits above #canvas but below editor chrome.
+        canvasContainer.dom.prepend(edgeSvg);
+        const edgeArrows: SVGTextElement[] = [];
+        const edgeQuat = new Quat();
+        const edgePos = new Vec3();
+        const edgeLocal = new Vec3();
+        const edgeMidW = new Vec3();
+        const edgeOutW = new Vec3();
+        const edgeMidS = new Vec3();
+        const edgeOutS = new Vec3();
+        const EDGE_MIDS: { dir: EdgeDir, x: number, y: number }[] = [
+            { dir: 'top', x: 0, y: 0.5 },
+            { dir: 'right', x: 0.5, y: 0 },
+            { dir: 'bottom', x: 0, y: -0.5 },
+            { dir: 'left', x: -0.5, y: 0 }
+        ];
+
+        const drawEdgeIcons = () => {
+            const z = active ? selected() : null;
+            const edges = z ? edgesOf(z) : emptyEdges();
+            const dirs = EDGE_MIDS.filter(d => edges[d.dir]);
+            while (edgeArrows.length < dirs.length) {
+                const t = document.createElementNS(svgNs, 'text') as SVGTextElement;
+                t.setAttribute('fill', '#ff3333');
+                t.setAttribute('stroke', '#7a0000');
+                t.setAttribute('stroke-width', '0.5');
+                // Size via inline CSS, not the SVG font-size attribute: the global
+                // `*` rule (font-size: 12px) overrides the presentation attribute.
+                t.style.fontSize = '24px';
+                t.setAttribute('text-anchor', 'middle');
+                t.setAttribute('dominant-baseline', 'central');
+                t.textContent = '➜';
+                edgeSvg.appendChild(t);
+                edgeArrows.push(t);
+            }
+            while (edgeArrows.length > dirs.length) {
+                edgeArrows.pop().remove();
+            }
+            if (!z) return;
+            const cw = canvasContainer.dom.clientWidth;
+            const ch = canvasContainer.dom.clientHeight;
+            edgeQuat.set(z.rotation[0], z.rotation[1], z.rotation[2], z.rotation[3]);
+            edgePos.set(z.position[0], z.position[1], z.position[2]);
+            dirs.forEach((d, i) => {
+                const t = edgeArrows[i];
+                edgeLocal.set(d.x * z.width, d.y * z.height, 0);
+                edgeQuat.transformVector(edgeLocal, edgeMidW);
+                edgeMidW.add(edgePos);
+                edgeLocal.set(d.x * z.width * 1.6, d.y * z.height * 1.6, 0);
+                edgeQuat.transformVector(edgeLocal, edgeOutW);
+                edgeOutW.add(edgePos);
+                const inFrontMid = scene.camera.worldToScreen(edgeMidW, edgeMidS);
+                const inFrontOut = scene.camera.worldToScreen(edgeOutW, edgeOutS);
+                if (!inFrontMid || !inFrontOut) {
+                    t.setAttribute('visibility', 'hidden');
+                    return;
+                }
+                const mx = edgeMidS.x * cw, my = edgeMidS.y * ch;
+                const ox = edgeOutS.x * cw, oy = edgeOutS.y * ch;
+                const angle = Math.atan2(oy - my, ox - mx) * 180 / Math.PI;
+                t.setAttribute('visibility', 'visible');
+                t.setAttribute('x', `${mx}`);
+                t.setAttribute('y', `${my}`);
+                t.setAttribute('transform', `rotate(${angle} ${mx} ${my})`);
+            });
+        };
+        events.on('postrender', drawEdgeIcons);
 
         let suppress = false;
         const refreshBar = () => {
@@ -334,11 +480,13 @@ class OffLimitsZoneTool {
             syncShapes();
             refreshBar();
             updateGizmos();
+            refreshBoundsPopup();
         });
         events.on('offLimitsZones.selectionChanged', () => {
             syncShapes();
             refreshBar();
             updateGizmos();
+            refreshBoundsPopup();
         });
 
         this.activate = () => {
@@ -349,6 +497,7 @@ class OffLimitsZoneTool {
             syncShapes();
             refreshBar();
             updateGizmos();
+            refreshBoundsPopup();
         };
 
         this.deactivate = () => {
@@ -358,6 +507,7 @@ class OffLimitsZoneTool {
             canvasContainer.dom.removeEventListener('pointerup', pointerup, true);
             events.fire('offLimitsZones.select', null);
             bar.hidden = true;
+            boundsPopup.hidden = true;
             translateGizmo.detach();
             rotateGizmo.detach();
         };

@@ -124,7 +124,7 @@ type ExperienceSettings = {
     animTracks: AnimTrack[],
     cameras: Camera[],
     annotations: Annotation[],
-    offLimitsZones: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number }[],
+    offLimitsZones: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number, infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean } }[],
     offLimitsMessage: string,
     // multi-scene portal walkthrough (absent unless portals exist)
     portals?: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number, front: number | null, back: number | null, infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean } }[],
