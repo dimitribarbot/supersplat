@@ -763,7 +763,11 @@ class ExportPopup extends Container {
                     viewerExportSettings: {
                         type: viewerTypeSelect.value,
                         streaming: streamingToggle.value,
-                        collision: (viewerTypeSelect.value === 'zip' && collisionToggle.value) ? { environment: environmentSelect.value as 'indoor' | 'outdoor', radius: radiusSlider.value, voxelSize: voxelSizeSlider.value } : undefined,
+                        // For a portal export the start scene (index 0) is hidden from the
+                        // global environmentSelect and chosen via its per-scene selector, so
+                        // source its environment from there (portalEnvironments[0]); fall back
+                        // to the global select for a non-portal export.
+                        collision: (viewerTypeSelect.value === 'zip' && collisionToggle.value) ? { environment: (bundle ? (perSceneEnvSelects.get(0)?.value ?? 'indoor') : environmentSelect.value) as 'indoor' | 'outdoor', radius: radiusSlider.value, voxelSize: voxelSizeSlider.value } : undefined,
                         experienceSettings
                     },
                     useServer: !serverRow.hidden && serverToggle.value
