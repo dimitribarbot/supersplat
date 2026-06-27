@@ -86,6 +86,28 @@ describe('portals events', () => {
         });
         expect(events.invoke('portals.startSplat')).toBeNull();
     });
+
+    it('round-trips the infinite-edges flags through serialize/deserialize', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        const inf = { top: true, right: false, bottom: false, left: true };
+        new AddPortalOp(events, portal({ id: 'portal_0', infinite: inf })).do();
+        const serialized = events.invoke('docSerialize.portals');
+        expect(serialized[0].infinite).toEqual(inf);
+
+        const events2 = makeEvents();
+        registerPortalsEvents(events2);
+        events2.invoke('docDeserialize.portals', serialized, null);
+        expect((events2.invoke('portals.list') as PortalData[])[0].infinite).toEqual(inf);
+    });
+
+    it('portals.export includes the infinite-edges flags', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        const inf = { top: false, right: true, bottom: false, left: false };
+        new AddPortalOp(events, portal({ infinite: inf })).do();
+        expect((events.invoke('portals.export') as any[])[0].infinite).toEqual(inf);
+    });
 });
 
 describe('portal entrypoints', () => {

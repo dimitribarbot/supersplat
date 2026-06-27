@@ -51,6 +51,8 @@ class PortalTool {
         const addButton = new Button({ text: localize('portals.add'), class: 'select-toolbar-button' });
         const moveButton = new Button({ text: localize('portals.move'), class: 'select-toolbar-button' });
         const rotateButton = new Button({ text: localize('portals.rotate'), class: 'select-toolbar-button' });
+        const boundsButton = new Button({ text: '⤢', class: 'select-toolbar-button' });
+        boundsButton.dom.title = localize('portals.bounds.tooltip');
         const widthLabel = new Label({ text: localize('portals.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
         const heightLabel = new Label({ text: localize('portals.height') });
@@ -75,6 +77,7 @@ class PortalTool {
         bar.append(addButton);
         bar.append(moveButton);
         bar.append(rotateButton);
+        bar.append(boundsButton);
         bar.append(group(widthLabel, widthInput));
         bar.append(group(heightLabel, heightInput));
         bar.append(group(frontLabel, frontInput));
@@ -82,6 +85,70 @@ class PortalTool {
         bar.append(group(startLabel, startInput));
         bar.append(group(entryLabel, entrySceneInput, entrySetButton, entryClearButton));
         canvasContainer.append(bar);
+
+        // --- infinite-bounds popup (cross layout) ---
+        const boundsPopup = new Container({ class: 'portal-bounds-popup', hidden: true });
+        boundsPopup.dom.addEventListener('pointerdown', e => e.stopPropagation());
+        const EDGE_DIRS = ['top', 'right', 'bottom', 'left'] as const;
+        type EdgeDir = typeof EDGE_DIRS[number];
+        const edgeGlyph: Record<EdgeDir, string> = { top: '↑', right: '→', bottom: '↓', left: '←' };
+        const edgeButtons = {} as Record<EdgeDir, Button>;
+        EDGE_DIRS.forEach((dir) => {
+            const b = new Button({ text: edgeGlyph[dir], class: ['portal-bounds-toggle', `portal-bounds-${dir}`] });
+            b.dom.title = localize(`portals.bounds.${dir}`);
+            edgeButtons[dir] = b;
+            boundsPopup.append(b);
+        });
+        canvasContainer.append(boundsPopup);
+
+        const emptyEdges = () => ({ top: false, right: false, bottom: false, left: false });
+        const edgesOf = (z: PortalData) => ({ ...emptyEdges(), ...(z.infinite ?? {}) });
+
+        const refreshBoundsPopup = () => {
+            const z = active ? selected() : null;
+            boundsButton.enabled = !!z;
+            if (!z) {
+                boundsPopup.hidden = true;
+                return;
+            }
+            const e = edgesOf(z);
+            EDGE_DIRS.forEach(dir => edgeButtons[dir].class[e[dir] ? 'add' : 'remove']('active'));
+        };
+
+        const positionBoundsPopup = () => {
+            const br = boundsButton.dom.getBoundingClientRect();
+            const cr = canvasContainer.dom.getBoundingClientRect();
+            boundsPopup.dom.style.left = `${br.left - cr.left + br.width / 2}px`;
+            boundsPopup.dom.style.top = `${br.bottom - cr.top + 8}px`;
+        };
+
+        const toggleBoundsPopup = (show?: boolean) => {
+            const next = typeof show === 'boolean' ? show : boundsPopup.hidden;
+            if (next && active && selected()) {
+                refreshBoundsPopup();
+                positionBoundsPopup();
+                boundsPopup.hidden = false;
+            } else {
+                boundsPopup.hidden = true;
+            }
+        };
+
+        boundsButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            if (!active) return;
+            toggleBoundsPopup();
+        });
+
+        EDGE_DIRS.forEach((dir) => {
+            edgeButtons[dir].dom.addEventListener('pointerdown', (e) => {
+                e.stopPropagation();
+                const z = selected();
+                if (!z) return;
+                const oldEdges = edgesOf(z);
+                const newEdges = { ...oldEdges, [dir]: !oldEdges[dir] };
+                events.fire('edit.add', new UpdatePortalOp(events, z.id, { infinite: z.infinite }, { infinite: newEdges }));
+            });
+        });
 
         // --- selection helpers ---
         const selected = (): PortalData | null => {
@@ -145,6 +212,7 @@ class PortalTool {
             const hasEp = selectedEntryUid != null && !!events.invoke('portals.entrypoint', selectedEntryUid);
             entryClearButton.enabled = hasEp;
             entrySetButton.enabled = selectedEntryUid != null;
+            refreshBoundsPopup();
             suppress = false;
             updateEntryGizmo();
         };
@@ -345,7 +413,11 @@ class PortalTool {
         epSvg.style.width = '100%';
         epSvg.style.height = '100%';
         epSvg.style.pointerEvents = 'none';
-        canvasContainer.dom.appendChild(epSvg);
+        // Prepend (not append) so this in-scene overlay is the first child of the
+        // canvas container: it still paints above the (non-positioned) #canvas, but
+        // below every editor panel/toolbar (scene panel, bottom/right toolbars,
+        // menu, view cube, the portal bar) which are all appended after it.
+        canvasContainer.dom.prepend(epSvg);
         const epNs = epSvg.namespaceURI;
         const epDots: { circle: SVGCircleElement, label: SVGTextElement }[] = [];
         const epWorld = new Vec3();
@@ -404,6 +476,90 @@ class PortalTool {
             }
         };
         events.on('postrender', drawEntrypoints);
+
+        // --- infinite-edge arrow overlay (selected portal only). Reuses the
+        //     entrypoint overlay's never-occluded SVG pattern: project each
+        //     infinite edge's midpoint plus a point stepped outward, draw an
+        //     arrow glyph at the midpoint rotated to point outward on screen. ---
+        const edgeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        edgeSvg.classList.add('portal-entrypoint-overlay');
+        edgeSvg.style.position = 'absolute';
+        edgeSvg.style.inset = '0';
+        edgeSvg.style.width = '100%';
+        edgeSvg.style.height = '100%';
+        edgeSvg.style.pointerEvents = 'none';
+        // Prepend so the arrow overlay sits above #canvas but below all editor
+        // chrome (see the entrypoint overlay note above).
+        canvasContainer.dom.prepend(edgeSvg);
+        const edgeArrows: SVGTextElement[] = [];
+        const edgeQuat = new Quat();
+        const edgePos = new Vec3();
+        const edgeLocal = new Vec3();
+        const edgeMidW = new Vec3();
+        const edgeOutW = new Vec3();
+        const edgeMidS = new Vec3();
+        const edgeOutS = new Vec3();
+        // unit edge midpoints in the portal's local XY frame (scaled by w/h below)
+        const EDGE_MIDS: { dir: EdgeDir, x: number, y: number }[] = [
+            { dir: 'top', x: 0, y: 0.5 },
+            { dir: 'right', x: 0.5, y: 0 },
+            { dir: 'bottom', x: 0, y: -0.5 },
+            { dir: 'left', x: -0.5, y: 0 }
+        ];
+
+        const drawEdgeIcons = () => {
+            const z = active ? selected() : null;
+            const edges = z ? edgesOf(z) : emptyEdges();
+            const dirs = EDGE_MIDS.filter(d => edges[d.dir]);
+            while (edgeArrows.length < dirs.length) {
+                const t = document.createElementNS(epNs, 'text') as SVGTextElement;
+                t.setAttribute('fill', '#00ccff');
+                t.setAttribute('stroke', '#003344');
+                t.setAttribute('stroke-width', '0.5');
+                // Size via inline CSS, not the SVG font-size attribute: the global
+                // `*` rule (font-size: 12px) is a CSS declaration and overrides the
+                // presentation attribute, so the attribute would have no effect.
+                t.style.fontSize = '24px';
+                t.setAttribute('text-anchor', 'middle');
+                t.setAttribute('dominant-baseline', 'central');
+                t.textContent = '➜';
+                edgeSvg.appendChild(t);
+                edgeArrows.push(t);
+            }
+            while (edgeArrows.length > dirs.length) {
+                edgeArrows.pop().remove();
+            }
+            if (!z) return;
+            const cw = canvasContainer.dom.clientWidth;
+            const ch = canvasContainer.dom.clientHeight;
+            edgeQuat.set(z.rotation[0], z.rotation[1], z.rotation[2], z.rotation[3]);
+            edgePos.set(z.position[0], z.position[1], z.position[2]);
+            dirs.forEach((d, i) => {
+                const t = edgeArrows[i];
+                // midpoint world
+                edgeLocal.set(d.x * z.width, d.y * z.height, 0);
+                edgeQuat.transformVector(edgeLocal, edgeMidW);
+                edgeMidW.add(edgePos);
+                // a point stepped outward along the same edge axis (1.6x the half-extent)
+                edgeLocal.set(d.x * z.width * 1.6, d.y * z.height * 1.6, 0);
+                edgeQuat.transformVector(edgeLocal, edgeOutW);
+                edgeOutW.add(edgePos);
+                const inFrontMid = scene.camera.worldToScreen(edgeMidW, edgeMidS);
+                const inFrontOut = scene.camera.worldToScreen(edgeOutW, edgeOutS);
+                if (!inFrontMid || !inFrontOut) {
+                    t.setAttribute('visibility', 'hidden');
+                    return;
+                }
+                const mx = edgeMidS.x * cw, my = edgeMidS.y * ch;
+                const ox = edgeOutS.x * cw, oy = edgeOutS.y * ch;
+                const angle = Math.atan2(oy - my, ox - mx) * 180 / Math.PI;
+                t.setAttribute('visibility', 'visible');
+                t.setAttribute('x', `${mx}`);
+                t.setAttribute('y', `${my}`);
+                t.setAttribute('transform', `rotate(${angle} ${mx} ${my})`);
+            });
+        };
+        events.on('postrender', drawEdgeIcons);
 
         // --- entrypoint translate gizmo ---
         const entryPivot = new Entity('portalEntrypointPivot');
@@ -504,6 +660,9 @@ class PortalTool {
 
         let clicked = false;
         const pointerdown = (e: PointerEvent) => {
+            if (!boundsPopup.hidden) {
+                toggleBoundsPopup(false);
+            }
             if (!clicked && isPrimary(e)) {
                 clicked = true;
             }
@@ -583,8 +742,10 @@ class PortalTool {
             refreshBar();
             updateGizmos();
             updateEntryGizmo();
+            scene.forceRender = true;
         });
         events.on('portals.selectionChanged', () => {
+            toggleBoundsPopup(false);
             syncShapes();
             refreshBar();
             updateGizmos();
@@ -609,10 +770,12 @@ class PortalTool {
             canvasContainer.dom.removeEventListener('pointerup', pointerup, true);
             events.fire('portals.select', null);
             bar.hidden = true;
+            boundsPopup.hidden = true;
             translateGizmo.detach();
             rotateGizmo.detach();
             entryGizmo.detach();
             drawEntrypoints();
+            drawEdgeIcons();
         };
     }
 }

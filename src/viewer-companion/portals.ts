@@ -182,7 +182,7 @@ const companionRuntime = `
   // already rewrote editor scene-uids to scene indices, so resolveActiveSplat's
   // "uid" values are indices here, matching the entities/collision arrays.
   var rects = data.portals.map(function (p) {
-    return { position: p.position, rotation: p.rotation, width: p.width, height: p.height, frontUid: p.front, backUid: p.back };
+    return { position: p.position, rotation: p.rotation, width: p.width, height: p.height, frontUid: p.front, backUid: p.back, infinite: p.infinite };
   });
 
   // --- collision: in-place mutation of the ONE shared VoxelCollision instance ---
@@ -448,7 +448,8 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
         width: p.width,
         height: p.height,
         frontUid: p.front,
-        backUid: p.back
+        backUid: p.back,
+        infinite: p.infinite
     }));
     const portalAnimTimeline = buildPortalAnimTimeline(
         viewerSettingsJson.animTracks?.[0] ?? null,

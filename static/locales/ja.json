@@ -351,6 +351,12 @@
     "portals.entrypoint": "エントリーポイント",
     "portals.entrypoint.set": "カメラから設定",
     "portals.entrypoint.clear": "クリア",
+    "portals.bounds": "境界",
+    "portals.bounds.tooltip": "ポータルの端をシーンの境界まで拡張",
+    "portals.bounds.top": "上",
+    "portals.bounds.right": "右",
+    "portals.bounds.bottom": "下",
+    "portals.bounds.left": "左",
     "tooltip.bottom-toolbar.portals": "ポータル",
     "tooltip.scene.walkthrough": "ウォークスルー"
 }

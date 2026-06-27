@@ -351,6 +351,12 @@
     "portals.entrypoint": "入口点",
     "portals.entrypoint.set": "从相机设置",
     "portals.entrypoint.clear": "清除",
+    "portals.bounds": "边界",
+    "portals.bounds.tooltip": "将传送门边缘扩展到场景边界",
+    "portals.bounds.top": "上",
+    "portals.bounds.right": "右",
+    "portals.bounds.bottom": "下",
+    "portals.bounds.left": "左",
     "tooltip.bottom-toolbar.portals": "传送门",
     "tooltip.scene.walkthrough": "漫游"
 }

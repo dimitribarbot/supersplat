@@ -351,6 +351,12 @@
     "portals.entrypoint": "Einstiegspunkt",
     "portals.entrypoint.set": "Von Kamera übernehmen",
     "portals.entrypoint.clear": "Löschen",
+    "portals.bounds": "Grenzen",
+    "portals.bounds.tooltip": "Portalkanten bis zur Szenengrenze erweitern",
+    "portals.bounds.top": "Oben",
+    "portals.bounds.right": "Rechts",
+    "portals.bounds.bottom": "Unten",
+    "portals.bounds.left": "Links",
     "tooltip.bottom-toolbar.portals": "Portale",
     "tooltip.scene.walkthrough": "Rundgang"
 }

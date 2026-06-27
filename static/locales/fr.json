@@ -353,6 +353,12 @@
     "portals.entrypoint": "Point d'entrée",
     "portals.entrypoint.set": "Définir depuis la caméra",
     "portals.entrypoint.clear": "Effacer",
+    "portals.bounds": "Limites",
+    "portals.bounds.tooltip": "Étendre les bords du portail jusqu'à la limite de la scène",
+    "portals.bounds.top": "Haut",
+    "portals.bounds.right": "Droite",
+    "portals.bounds.bottom": "Bas",
+    "portals.bounds.left": "Gauche",
     "tooltip.bottom-toolbar.portals": "Portails",
     "tooltip.scene.walkthrough": "Visite"
 }

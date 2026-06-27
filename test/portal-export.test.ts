@@ -77,6 +77,15 @@ describe('buildPortalBundle', () => {
         expect(b.sceneUids.filter(u => u === 20).length).toBe(1);
         expect(b.sceneUids.length).toBe(3);
     });
+
+    it('carries the infinite-edges flags onto the rewritten portals', () => {
+        const inf = { top: false, right: true, bottom: false, left: false };
+        const b = buildPortalBundle({
+            portals: [{ ...portal(10, 20), infinite: inf }],
+            startUid: 10, availableUids: [10, 20], streaming: false, collision: false
+        })!;
+        expect(b.portals[0].infinite).toEqual(inf);
+    });
 });
 
 const portalAt = (pos: [number, number, number], front: number | null, back: number | null, h = 2) => ({

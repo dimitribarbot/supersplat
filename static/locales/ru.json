@@ -351,6 +351,12 @@
     "portals.entrypoint": "Точка входа",
     "portals.entrypoint.set": "Задать с камеры",
     "portals.entrypoint.clear": "Очистить",
+    "portals.bounds": "Границы",
+    "portals.bounds.tooltip": "Расширить края портала до границы сцены",
+    "portals.bounds.top": "Верх",
+    "portals.bounds.right": "Право",
+    "portals.bounds.bottom": "Низ",
+    "portals.bounds.left": "Лево",
     "tooltip.bottom-toolbar.portals": "Порталы",
     "tooltip.scene.walkthrough": "Прогулка"
 }

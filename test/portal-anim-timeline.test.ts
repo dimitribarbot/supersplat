@@ -45,6 +45,20 @@ describe('buildPortalAnimTimeline', () => {
         expect(tl[1].t).toBeLessThan(1);
     });
 
+    it('honors an infinite right edge: a crossing past the edge registers', () => {
+        // 10x10 portal at origin (hw = 5); path pierces the plane at x = 20 (past the right edge).
+        const farTrack = track({
+            keyframes: { times: [0, 30], values: { position: [20, 0, -5, 20, 0, 5], target: [0, 0, 0, 0, 0, 0], fov: [60, 60] } }
+        });
+        // finite portal: no crossing
+        expect(buildPortalAnimTimeline(farTrack, [portal], 0)).toEqual([{ t: 0, scene: 0 }]);
+        // right edge infinite: crossing into the front scene registers
+        const offset: PortalRect = { ...portal, infinite: { top: false, right: true, bottom: false, left: false } };
+        const tl = buildPortalAnimTimeline(farTrack, [offset], 0);
+        expect(tl).toHaveLength(2);
+        expect(tl[1].scene).toBe(1);
+    });
+
     it('returns only the start entry when the path never crosses a portal', () => {
         // Path stays entirely on the back side (z from -5 to -1): no crossing.
         const noCross = track({

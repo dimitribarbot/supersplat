@@ -127,7 +127,7 @@ type ExperienceSettings = {
     offLimitsZones: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number }[],
     offLimitsMessage: string,
     // multi-scene portal walkthrough (absent unless portals exist)
-    portals?: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number, front: number | null, back: number | null }[],
+    portals?: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number, front: number | null, back: number | null, infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean } }[],
     portalScenes?: string[],
     portalStart?: number,
     portalCollision?: (string | null)[],

@@ -1,13 +1,16 @@
 type Vec3 = [number, number, number];
 type Quat = [number, number, number, number];
 
+type InfiniteEdges = { top: boolean, right: boolean, bottom: boolean, left: boolean };
+
 type PortalRect = {
     position: Vec3,
     rotation: Quat,   // unit quaternion [x, y, z, w]
     width: number,
     height: number,
     frontUid: number | null,  // scene on the local +Z side
-    backUid: number | null    // scene on the local -Z side
+    backUid: number | null,   // scene on the local -Z side
+    infinite?: InfiniteEdges  // edges extended to the scene boundary (absent = none)
 };
 
 // Crossing test for the segment prev -> cur against the portal rectangle.
@@ -50,9 +53,14 @@ const segmentCrossesRect = (prev: Vec3, cur: Vec3, rect: PortalRect): { side: 'f
 
     const ix = a[0] + t * (b[0] - a[0]);
     const iy = a[1] + t * (b[1] - a[1]);
-    if (Math.abs(ix) > hw || Math.abs(iy) > hh) {
-        return null;
-    }
+    // Per-edge bounds: an edge flagged `infinite` extends to the scene boundary,
+    // so a crossing past that edge still counts. With no flags this is identical
+    // to the original |ix| <= hw && |iy| <= hh test.
+    const inf = rect.infinite;
+    if (ix > hw && !(inf && inf.right)) return null;
+    if (ix < -hw && !(inf && inf.left)) return null;
+    if (iy > hh && !(inf && inf.top)) return null;
+    if (iy < -hh && !(inf && inf.bottom)) return null;
 
     // The camera ends on the side of `cur`: local +Z is front, -Z is back.
     return { side: bz > 0 ? 'front' : 'back', t };
@@ -88,4 +96,4 @@ const resolveActiveSplat = (prev: Vec3, cur: Vec3, portals: PortalRect[], curren
     return active;
 };
 
-export { segmentCrossesRect, resolveActiveSplat, PortalRect, Vec3, Quat };
+export { segmentCrossesRect, resolveActiveSplat, PortalRect, InfiniteEdges, Vec3, Quat };

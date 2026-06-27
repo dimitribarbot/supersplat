@@ -42,6 +42,31 @@ describe('segmentCrossesRect', () => {
         const r = rect({ rotation: [0, 0.7071067811865476, 0, 0.7071067811865476] });
         expect(segmentCrossesRect([-1, 10, 0], [1, 10, 0], r)).toBeNull();
     });
+
+    it('a crossing past the right edge counts only when right is infinite', () => {
+        // pierce at ix = +10, well past hw = 2
+        expect(segmentCrossesRect([10, 0, -1], [10, 0, 1], rect())).toBeNull();
+        const r = rect({ infinite: { top: false, right: true, bottom: false, left: false } });
+        expect(segmentCrossesRect([10, 0, -1], [10, 0, 1], r)).toEqual({ side: 'front', t: 0.5 });
+    });
+
+    it('right-infinite does not extend the opposite (left) edge', () => {
+        const r = rect({ infinite: { top: false, right: true, bottom: false, left: false } });
+        expect(segmentCrossesRect([-10, 0, -1], [-10, 0, 1], r)).toBeNull();
+    });
+
+    it('top and bottom infinite extend the vertical edges independently', () => {
+        const top = rect({ infinite: { top: true, right: false, bottom: false, left: false } });
+        expect(segmentCrossesRect([0, 10, -1], [0, 10, 1], top)).not.toBeNull();
+        expect(segmentCrossesRect([0, -10, -1], [0, -10, 1], top)).toBeNull();
+        const bottom = rect({ infinite: { top: false, right: false, bottom: true, left: false } });
+        expect(segmentCrossesRect([0, -10, -1], [0, -10, 1], bottom)).not.toBeNull();
+    });
+
+    it('all-four infinite acts as the full splitting plane', () => {
+        const all = rect({ infinite: { top: true, right: true, bottom: true, left: true } });
+        expect(segmentCrossesRect([100, -100, -1], [100, -100, 1], all)).toEqual({ side: 'front', t: 0.5 });
+    });
 });
 
 describe('resolveActiveSplat', () => {

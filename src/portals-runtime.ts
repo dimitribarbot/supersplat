@@ -34,7 +34,8 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
             width: p.width,
             height: p.height,
             frontUid: p.frontUid,
-            backUid: p.backUid
+            backUid: p.backUid,
+            infinite: p.infinite
         }));
     };
 

@@ -1,4 +1,5 @@
 import { Events } from './events';
+import { InfiniteEdges } from './portal-geom';
 
 // Editor-internal portal record: a rectangle (width x height) centered at
 // `position`, oriented by `rotation` (quaternion [x,y,z,w]). The +Z side of the
@@ -11,7 +12,8 @@ type PortalData = {
     width: number,
     height: number,
     frontUid: number | null,
-    backUid: number | null
+    backUid: number | null,
+    infinite?: InfiniteEdges
 };
 
 class AddPortalOp {
@@ -222,7 +224,8 @@ const registerPortalsEvents = (events: Events) => {
         width: p.width,
         height: p.height,
         frontUid: p.frontUid,
-        backUid: p.backUid
+        backUid: p.backUid,
+        infinite: p.infinite
     })));
 
     // --- document serialization ---
@@ -233,7 +236,8 @@ const registerPortalsEvents = (events: Events) => {
         width: p.width,
         height: p.height,
         frontUid: p.frontUid,
-        backUid: p.backUid
+        backUid: p.backUid,
+        infinite: p.infinite
     })));
 
     events.function('docDeserialize.portals', (data: PortalData[], start?: number | null, eps?: Record<string, [number, number, number]>) => {
@@ -259,7 +263,8 @@ const registerPortalsEvents = (events: Events) => {
                     width: d.width ?? 1,
                     height: d.height ?? 1,
                     frontUid: d.frontUid ?? null,
-                    backUid: d.backUid ?? null
+                    backUid: d.backUid ?? null,
+                    infinite: d.infinite
                 });
                 const m = /^portal_(\d+)$/.exec(d.id ?? '');
                 if (m) {

@@ -1,0 +1,39 @@
+@use 'colors.scss' as *;
+
+.portal-bounds-popup {
+    position: absolute;
+    transform: translate(-50%, 0);
+    z-index: 100;
+    padding: 8px;
+    border-radius: 8px;
+    background-color: $bcg-primary;
+
+    display: grid;
+    grid-template-columns: repeat(3, 36px);
+    grid-template-rows: repeat(3, 36px);
+    gap: 4px;
+
+    &.pcui-hidden {
+        display: none;
+    }
+
+    .portal-bounds-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 36px;
+        min-width: 36px;
+        padding: 0;
+        border-radius: 2px;
+        font-size: 18px;
+
+        &.active {
+            background-color: $clr-hilight !important;
+        }
+    }
+
+    .portal-bounds-top { grid-column: 2; grid-row: 1; }
+    .portal-bounds-left { grid-column: 1; grid-row: 2; }
+    .portal-bounds-right { grid-column: 3; grid-row: 2; }
+    .portal-bounds-bottom { grid-column: 2; grid-row: 3; }
+}

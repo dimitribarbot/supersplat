@@ -351,6 +351,12 @@
     "portals.entrypoint": "진입점",
     "portals.entrypoint.set": "카메라에서 설정",
     "portals.entrypoint.clear": "지우기",
+    "portals.bounds": "경계",
+    "portals.bounds.tooltip": "포털 가장자리를 장면 경계까지 확장",
+    "portals.bounds.top": "위",
+    "portals.bounds.right": "오른쪽",
+    "portals.bounds.bottom": "아래",
+    "portals.bounds.left": "왼쪽",
     "tooltip.bottom-toolbar.portals": "포털",
     "tooltip.scene.walkthrough": "둘러보기"
 }

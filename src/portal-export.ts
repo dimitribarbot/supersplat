@@ -4,6 +4,8 @@
 // and the relative scene/collision URLs the viewer companion loads. No
 // playcanvas / splat-transform imports so it is unit-testable in isolation.
 
+import { InfiniteEdges } from './portal-geom';
+
 type Vec3 = [number, number, number];
 type Quat = [number, number, number, number];
 
@@ -13,12 +15,13 @@ type ExportPortal = {
     width: number,
     height: number,
     frontUid: number | null,
-    backUid: number | null
+    backUid: number | null,
+    infinite?: InfiniteEdges
 };
 
 type PortalBundle = {
     sceneUids: number[];                 // index -> editor uid (index 0 = start)
-    portals: { position: Vec3, rotation: Quat, width: number, height: number, front: number | null, back: number | null }[];
+    portals: { position: Vec3, rotation: Quat, width: number, height: number, front: number | null, back: number | null, infinite?: InfiniteEdges }[];
     portalScenes: string[];              // index -> relative asset URL (index 0 = '')
     portalStart: number;                 // always 0
     portalCollision: (string | null)[];  // index -> voxel URL, or [] when collision off
@@ -69,7 +72,8 @@ const buildPortalBundle = (args: {
         width: p.width,
         height: p.height,
         front: indexOf(p.frontUid),
-        back: indexOf(p.backUid)
+        back: indexOf(p.backUid),
+        infinite: p.infinite
     }));
 
     const portalScenes = sceneUids.map((_, i) => sceneUrl(i, streaming));
