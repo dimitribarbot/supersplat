@@ -324,6 +324,16 @@ const companionRuntime = `
     var ev = viewer && viewer.global && viewer.global.events;
     if (ev && ev.on) {
       ev.on('collisionOverlayEnabled:changed', function (on) { if (on) refreshOverlay(); });
+      // The R shortcut and the viewer's reset menu both fire inputEvent 'reset',
+      // returning the camera to its spawn pose. The spawn lives in the start
+      // scene, but free-nav crossing detection can't see the move (it need not
+      // pass through a doorway), so force the start scene here. lastSafe is
+      // cleared so the spawn discontinuity isn't read as a spurious crossing on
+      // the next frame. In anim mode the timeline-driven switchTo immediately
+      // re-asserts the cursor's scene, so this is a harmless no-op there.
+      ev.on('inputEvent', function (name) {
+        if (name === 'reset') { switchTo(data.portalStart || 0); lastSafe = null; }
+      });
     }
 
     for (var i = 1; i < data.portalScenes.length; i++) {
