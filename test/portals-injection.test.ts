@@ -94,4 +94,24 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('portalAnimTimeline');
         expect(out).toContain('[{"t":0,"scene":0}]');
     });
+
+    it('includes the two-level coarse-LOD cache-warming routine in the runtime', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        expect(out).toContain('warmExtraScenes');
+        // both stages' helpers are stringified in: lod-meta -> block-metas -> webps
+        expect(out).toContain('collectLodFileUrls');
+        expect(out).toContain('collectSogBlockFileUrls');
+        // budget-driven depth selection is present (used by the cache-warming pass)
+        expect(out).toContain('lodMinLevelForBudget');
+        // adjacent scenes are pinned resident at the device-observed finest level
+        // and reclaimed when they leave the portal-adjacency frontier
+        expect(out).toContain('pinSceneToLevel');
+        expect(out).toContain('incRefCount');
+        expect(out).toContain('buildPortalAdjacency');
+        expect(out).toContain('updateDeviceFinest');
+    });
 });
