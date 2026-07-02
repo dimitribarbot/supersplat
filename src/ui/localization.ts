@@ -4,6 +4,9 @@ import Backend from 'i18next-http-backend';
 
 interface LocalizeOptions {
     ellipsis?: boolean;
+    // Any other keys are forwarded to i18next as interpolation values, e.g.
+    // t('export.progress.estimated-entrypoint', { scene: 2 }) -> "Scene 2: ...".
+    [key: string]: unknown;
 }
 
 // minimal shapes the binders operate on (pcui elements emit a 'destroy' event)
@@ -76,9 +79,10 @@ class Localization {
         });
     }
 
-    /** Translate a key. */
+    // Translate a key. Extra `options` keys are forwarded to i18next as
+    // interpolation values (see LocalizeOptions).
     t(key: string, options?: LocalizeOptions): string {
-        let text = i18next.t(key);
+        let text = i18next.t(key, options);
 
         if (options?.ellipsis) text += '...';
 

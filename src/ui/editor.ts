@@ -388,17 +388,29 @@ class EditorUI {
 
         topContainer.append(progress);
 
-        events.on('progressStart', (header: string, cancellable?: boolean) => {
+        events.on('progressStart', (header: string, cancellable?: boolean, headerKey?: string) => {
             progress.hidden = false;
-            progress.setHeader(header);
+            progress.setHeader(headerKey ? i18n.t(headerKey) : header);
             progress.setText('');
             progress.setProgress(0);
             progress.showCancelButton(!!cancellable);
             progress.onCancel = cancellable ? () => events.fire('progressCancel') : null;
         });
 
-        events.on('progressUpdate', (options: { text?: string, progress?: number }) => {
-            if (options.text !== undefined) {
+        events.on('progressUpdate', (options: { text?: string, progress?: number, loc?: { segments?: { key: string, params?: Record<string, string | number> }[], counter?: { index: number, total: number }, name?: string, nameKey?: string } }) => {
+            if (options.loc) {
+                // Localized export sub-line: translate each segment (scene prefix,
+                // phase label), join with ": ", then append splat-transform's step
+                // counter and its step name (localized via nameKey when known, else
+                // the English name). Mirrors the English `text` the server/log path
+                // composes in splat-export-core.ts.
+                const { segments = [], counter, name, nameKey } = options.loc;
+                let text = segments.map(s => i18n.t(s.key, s.params)).join(': ');
+                if (counter) text += ` (${counter.index}/${counter.total})`;
+                const stepName = nameKey ? i18n.t(nameKey) : name;
+                if (stepName) text += (text ? ': ' : '') + stepName;
+                progress.setText(text);
+            } else if (options.text !== undefined) {
                 progress.setText(options.text);
             }
             if (options.progress !== undefined) {

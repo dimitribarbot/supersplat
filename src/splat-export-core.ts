@@ -92,7 +92,81 @@ const injectPortals = (html: string, viewerSettingsJson: any): string => {
 // (e.g. "Packaging streaming chunks (5/40): k-means") instead of cycling
 // through bare repeated labels. Exporters that pass no prefix keep their
 // original output.
-const createProgressRenderer = (header: string, events?: Events, getPrefix?: () => string, countSteps?: () => boolean, onLog?: (level: string, text: string) => void, shouldCancel?: () => boolean): Renderer => {
+// A localizable progress phase. `en` is the English label used by the server/SSE +
+// log path (which has no locale); `key` + `params` let the browser (editor.ts)
+// localize the same label. Produced by the PHASES factory below.
+type PhaseInfo = { key: string; params?: Record<string, string | number>; en: string };
+
+// The composed prefix surfaced to the progress renderer. `en` is the full English
+// prefix (including any "Scene i/N" part) preserved verbatim for the server/log path;
+// the browser rebuilds a localized version from `scene` + `key`/`params`. `key` is
+// omitted for scene-only prefixes (the package path, which has no phase label).
+type ProgressPrefix = { en: string; key?: string; params?: Record<string, string | number>; scene?: { index: number; total: number } };
+
+// Phase-label descriptors. English lives here (single source for the server/log
+// path, which never loads a locale file); the matching i18n keys live in the locale
+// JSONs for the browser. Keep the two in sync when adding a phase.
+const PHASES = {
+    preparingViewer: (): PhaseInfo => ({ key: 'export.progress.preparing-viewer', en: 'Preparing viewer' }),
+    generatingCollision: (): PhaseInfo => ({ key: 'export.progress.generating-collision', en: 'Generating collision data' }),
+    buildingLod: (level: number, levelCount: number): PhaseInfo => ({ key: 'export.progress.building-lod', params: { level, levelCount }, en: `Building detail level ${level} of ${levelCount}` }),
+    packagingChunks: (): PhaseInfo => ({ key: 'export.progress.packaging-chunks', en: 'Packaging streaming chunks' })
+};
+
+// Compose a ProgressPrefix from a phase + optional scene, reproducing the exact
+// English string the server/log path emitted before (scene prefix + ": " + label).
+const withScene = (info: PhaseInfo, scene?: { index: number; total: number }): ProgressPrefix => ({
+    en: scene ? `Scene ${scene.index}/${scene.total}: ${info.en}` : info.en,
+    key: info.key,
+    params: info.params,
+    scene
+});
+
+// Maps @playcanvas/splat-transform's own English step names (the library's
+// logger group / progress-bar labels, appended after our phase prefix) to i18n
+// keys so the browser can localize them. Best-effort: an unmapped name (a library
+// rename, a step from an export path we haven't catalogued, or a dynamic id like a
+// "0_0" chunk name) falls back to its English text. Keep in sync with the
+// export.step.* locale keys. GPU / non-GPU label variants share one key.
+const LIBRARY_STEP_KEYS: Record<string, string> = {
+    'Allocating output table': 'export.step.allocating-output-table',
+    'Building BVH': 'export.step.building-bvh',
+    'Building grid': 'export.step.building-grid',
+    'Building per-splat cache': 'export.step.building-per-splat-cache',
+    'Building tree': 'export.step.building-tree',
+    'Computing edge costs': 'export.step.computing-edge-costs',
+    'Computing edge costs (GPU)': 'export.step.computing-edge-costs',
+    'Copying kept splats': 'export.step.copying-kept-splats',
+    'Cropping': 'export.step.cropping',
+    'Dilating': 'export.step.dilating',
+    'Fill exterior': 'export.step.fill-exterior',
+    'Filtering': 'export.step.filtering',
+    'Finding nearest neighbors': 'export.step.finding-nearest-neighbors',
+    'Finding nearest neighbors (GPU)': 'export.step.finding-nearest-neighbors',
+    'Loading grid': 'export.step.loading-grid',
+    'Merging splats': 'export.step.merging-splats',
+    'Scanning bounds': 'export.step.scanning-bounds',
+    'Selecting pairs': 'export.step.selecting-pairs',
+    'Voxelizing': 'export.step.voxelizing',
+    'Writing': 'export.step.writing'
+};
+
+// Bundle a library step name with its i18n key (if known) for the progress `loc`.
+// `name` stays English for the server/log + fallback; `nameKey` lets the browser
+// localize it.
+const nameLoc = (name: string): { name: string; nameKey?: string } => {
+    const nameKey = LIBRARY_STEP_KEYS[name];
+    return nameKey ? { name, nameKey } : { name };
+};
+
+// headerKey (optional) is an i18n key for `header`. It is forwarded verbatim on
+// the progressStart event so the browser can localize the dialog title; `header`
+// itself stays English for the server/SSE + log path (which has no locale). Likewise
+// each progressUpdate carries a structured `loc` (scene + phase key + counter + the
+// splat-transform step name) so the browser can localize the sub-line while `text`
+// stays English. Keeping both leaves output bytes and the parity guarantee untouched
+// (progress is UI-only).
+const createProgressRenderer = (header: string, events?: Events, getPrefix?: () => ProgressPrefix | undefined, countSteps?: () => boolean, onLog?: (level: string, text: string) => void, shouldCancel?: () => boolean, headerKey?: string): Renderer => {
     // Active scopes carrying a counter, ordered outermost-first. The outermost
     // is the meaningful unit (e.g. the chunk number during packaging); inner SOG
     // sub-steps are ignored so the count stays stable across a unit. The counter
@@ -101,13 +175,33 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
     // phase carries its level number in the prefix instead.
     const counters: { depth: number; index: number; total: number }[] = [];
 
-    const stepText = (name: string): string => {
+    // Build the progressUpdate payload for a splat-transform step. `text` is the
+    // English line (server/SSE/log + browser fallback); `loc` carries the structured
+    // parts so the browser can localize (see the progressUpdate handler in editor.ts).
+    // `name` is splat-transform's own step label and stays English in both paths.
+    const stepUpdate = (name: string): { text: string; progress: number; loc?: any } => {
         const prefix = getPrefix?.();
-        if (!prefix) {
-            return name;
-        }
         const counter = countSteps?.() ? counters[0] : undefined;
-        return `${prefix}${counter ? ` (${counter.index}/${counter.total})` : ''}: ${name}`;
+        const counterStr = counter ? ` (${counter.index}/${counter.total})` : '';
+        if (!prefix) {
+            // No phase prefix (e.g. the SOG path): the sub-line is just the library
+            // step name, still localizable via nameLoc.
+            return { text: name, progress: 0, loc: nameLoc(name) };
+        }
+        // Ordered translatable segments, joined by ": " on both paths. Scene prefix
+        // (if any) first, then the phase label (absent for scene-only prefixes).
+        const segments: { key: string; params?: Record<string, string | number> }[] = [];
+        if (prefix.scene) {
+            segments.push({ key: 'export.progress.scene', params: { index: prefix.scene.index, total: prefix.scene.total } });
+        }
+        if (prefix.key) {
+            segments.push({ key: prefix.key, params: prefix.params });
+        }
+        return {
+            text: `${prefix.en}${counterStr}: ${name}`,
+            progress: 0,
+            loc: { segments, counter: counter ? { index: counter.index, total: counter.total } : undefined, ...nameLoc(name) }
+        };
     };
 
     return {
@@ -126,16 +220,19 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
                         counters.push({ depth: event.depth, index: event.index, total: event.total });
                     }
                     if (event.depth === 0) {
-                        events?.fire('progressStart', header);
+                        events?.fire('progressStart', header, undefined, headerKey);
                     } else if (getPrefix) {
-                        events?.fire('progressUpdate', { text: stepText(event.name), progress: 0 });
-                    } else {
+                        events?.fire('progressUpdate', stepUpdate(event.name));
+                    } else if (event.index !== undefined && event.total !== undefined) {
+                        // Generic splat-transform scope with a step counter but no phase
+                        // prefix (e.g. the SOG path): "Step N of M: <library step>".
                         events?.fire('progressUpdate', {
-                            text: event.index !== undefined && event.total !== undefined ?
-                                `Step ${event.index} of ${event.total}: ${event.name}` :
-                                event.name,
-                            progress: 0
+                            text: `Step ${event.index} of ${event.total}: ${event.name}`,
+                            progress: 0,
+                            loc: { segments: [{ key: 'export.progress.step', params: { index: event.index, total: event.total } }], ...nameLoc(event.name) }
                         });
+                    } else {
+                        events?.fire('progressUpdate', { text: event.name, progress: 0, loc: nameLoc(event.name) });
                     }
                     break;
                 case 'scopeEnd':
@@ -147,7 +244,7 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
                     }
                     break;
                 case 'barStart':
-                    events?.fire('progressUpdate', { text: stepText(event.name), progress: 0 });
+                    events?.fire('progressUpdate', stepUpdate(event.name));
                     break;
                 case 'barTick':
                     events?.fire('progressUpdate', {
@@ -195,7 +292,7 @@ const MIN_LOD_SPLATS = 1024 * 1024;
 const buildStreamingLodTable = async (
     lod0: DataTable,
     createDevice: DeviceCreator,
-    onPhase?: (label: string) => void
+    onPhase?: (info: PhaseInfo) => void
 ): Promise<{ table: DataTable; levelCounts: number[] }> => {
     // Count the coarser levels we'll generate up front so the phase label can
     // show an accurate "level N of M" (M = number of decimated levels). Mirror
@@ -222,7 +319,7 @@ const buildStreamingLodTable = async (
         if (target < 1) {
             break;
         }
-        onPhase?.(`Building detail level ${level} of ${levelCount}`);
+        onPhase?.(PHASES.buildingLod(level, levelCount));
         const simplified = await simplifyGaussians(prev, target, createDevice);
         levels.push(simplified);
         prev = simplified;
@@ -322,17 +419,17 @@ const writePortalScene = async (
     createDevice: DeviceCreator,
     radius: number,
     voxelSize: number,
-    onPhase?: (label: string, counted: boolean) => void
+    onPhase?: (info: PhaseInfo, counted: boolean) => void
 ): Promise<number[]> => {
     const base = `scenes/${index}`;
     const sub = new MemoryFileSystem();
     let levelCounts: number[] = [];
     if (scene.streaming) {
-        const { table: lodTable, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable.clone(), createDevice, (label) => {
-            onPhase?.(label, false);   // decimation passes carry their level in the label
+        const { table: lodTable, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable.clone(), createDevice, (info) => {
+            onPhase?.(info, false);   // decimation passes carry their level in the label
         });
         levelCounts = counts;
-        onPhase?.('Packaging streaming chunks', true);
+        onPhase?.(PHASES.packagingChunks(), true);
         await writeLod({
             filename: '/lod-meta.json',
             dataTable: lodTable,
@@ -346,7 +443,7 @@ const writePortalScene = async (
         await writeSog({ filename: 'scene.sog', dataTable: scene.dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' }, sub);
     }
     if (scene.collisionUrl) {
-        onPhase?.('Generating collision data', false);
+        onPhase?.(PHASES.generatingCollision(), false);
         // Synthesise a minimal settings object that places the seed at cameras[0].initial.position
         // so collisionSeedFromSettings picks it up for the per-scene voxel.
         const fakeSettings = { cameras: [{ initial: { position: scene.seed } }] };
@@ -407,20 +504,20 @@ const writeStreamingViewerCore = async (
     // the repeated decimation and chunk-compression passes read clearly.
     // `counted` enables the splat-transform per-unit counter (chunk number)
     // only during chunk packaging; decimation carries its level in the label.
-    let phase = '';
+    let phase: ProgressPrefix | undefined;
     let counted = false;
     // When a portal walkthrough adds extra scenes, prefix the primary's phases
     // with "Scene 1/N: " so its progress reads consistently with the extras
     // (which carry "Scene 2/N: …" etc.). No prefix for a single-scene export.
     const total = 1 + (extraScenes?.length ?? 0);
-    const pp = total > 1 ? `Scene 1/${total}: ` : '';
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting streaming viewer', events, () => phase, () => counted, onLog, shouldCancel));
+    const primaryScene = total > 1 ? { index: 1, total } : undefined;
+    splatTransformLogger.setRenderer(createProgressRenderer('Exporting streaming viewer', events, () => phase, () => counted, onLog, shouldCancel, 'export.progress.exporting-streaming'));
 
     const memFs = new MemoryFileSystem();
 
     // A 1-row placeholder keeps writeHtml's throwaway content SOG cheap to
     // produce (we only want its index.html/css/js/settings.json shell).
-    phase = `${pp}Preparing viewer`;
+    phase = withScene(PHASES.preparingViewer(), primaryScene);
     const placeholder = dataTable.clone({ rows: [0] });
     await writeHtml({
         filename: 'index.html',
@@ -434,19 +531,19 @@ const writeStreamingViewerCore = async (
     // Voxelize the full-resolution table now, before buildStreamingLodTable
     // consumes/mutates it.
     if (collision) {
-        phase = `${pp}Generating collision data`;
+        phase = withScene(PHASES.generatingCollision(), primaryScene);
         await writeCollisionVoxel(memFs, dataTable, viewerSettingsJson, createDevice, collision);
     }
 
     // Streaming bundle: lod-meta.json + per-LOD SOG chunk folders. Decimation's
     // per-pass count is an estimate, so the level number lives in the label and
     // the per-step counter stays off here.
-    const { table: lodTable, levelCounts: primaryLodCounts } = await buildStreamingLodTable(dataTable, createDevice, (label) => {
-        phase = `${pp}${label}`;
+    const { table: lodTable, levelCounts: primaryLodCounts } = await buildStreamingLodTable(dataTable, createDevice, (info) => {
+        phase = withScene(info, primaryScene);
     });
 
     // Chunk packaging emits one accurate {index,total} per chunk - surface it.
-    phase = `${pp}Packaging streaming chunks`;
+    phase = withScene(PHASES.packagingChunks(), primaryScene);
     counted = true;
     await writeLod({
         // Absolute root so splat-transform's pathe `resolve(outputDir, ...)` for
@@ -475,15 +572,15 @@ const writeStreamingViewerCore = async (
     if (extraScenes && extraScenes.length > 0) {
         const collRadius = collision?.radius ?? 50;
         const collVoxelSize = collision?.voxelSize ?? 0.05;
-        // Hoisted out of the loop (no-loop-func); scenePrefix is refreshed each
+        // Hoisted out of the loop (no-loop-func); sceneRef is refreshed each
         // iteration before the awaited call, so the callback reads the right value.
-        let scenePrefix = '';
-        const onSceneProgress = (label: string, c: boolean) => {
-            phase = `${scenePrefix}: ${label}`;
+        let sceneRef: { index: number; total: number } | undefined;
+        const onSceneProgress = (info: PhaseInfo, c: boolean) => {
+            phase = withScene(info, sceneRef);
             counted = c;
         };
         for (let i = 0; i < extraScenes.length; i++) {
-            scenePrefix = `Scene ${i + 2}/${extraScenes.length + 1}`;
+            sceneRef = { index: i + 2, total: extraScenes.length + 1 };
             extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, onSceneProgress));
         }
     }
@@ -538,7 +635,7 @@ const writeStreamingViewerCore = async (
 };
 
 const writeSogCore = async (dataTable: DataTable, iterations: number, createDevice: DeviceCreator, fs: FileSystem, events?: Events, onLog?: (level: string, text: string) => void, shouldCancel?: () => boolean): Promise<void> => {
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SOG', events, undefined, undefined, onLog, shouldCancel));
+    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SOG', events, undefined, undefined, onLog, shouldCancel, 'export.progress.exporting-sog'));
     try {
         await writeSog({ filename: 'output.sog', dataTable, bundle: true, iterations, createDevice }, fs);
     } catch (err) {
@@ -572,7 +669,9 @@ const writeViewerCore = async (
     const total = 1 + (extraScenes?.length ?? 0);
     const hasPortalScenes = (extraScenes?.length ?? 0) > 0;
 
-    let scenePrefix = '';
+    // Package/HTML path: the prefix is scene-only (no phase label). `en` preserves
+    // the previous English string; `scene` lets the browser localize "Scene i/N".
+    let scenePrefix: ProgressPrefix | undefined;
     const getScenePrefix = () => scenePrefix;
 
     splatTransformLogger.setRenderer(createProgressRenderer(
@@ -581,7 +680,8 @@ const writeViewerCore = async (
         hasPortalScenes ? getScenePrefix : undefined,
         undefined,
         onLog,
-        shouldCancel
+        shouldCancel,
+        'export.progress.exporting-html'
     ));
     try {
         if (viewerType === 'html') {
@@ -608,7 +708,7 @@ const writeViewerCore = async (
             // Package (ZIP) path: write primary scene, then extra portal scenes, then ZIP everything.
             const memFs = new MemoryFileSystem();
             if (hasPortalScenes) {
-                scenePrefix = `Scene 1/${total}`;
+                scenePrefix = { en: `Scene 1/${total}`, scene: { index: 1, total } };
             }
             await writeHtml({ filename: 'index.html', dataTable, viewerSettingsJson, bundle: false, iterations: 10, createDevice }, memFs);
             if (collision) {
@@ -629,7 +729,7 @@ const writeViewerCore = async (
                 const collVoxelSize = collision?.voxelSize ?? 0.05;
                 for (let i = 0; i < extraScenes!.length; i++) {
                     const index = i + 1;
-                    scenePrefix = `Scene ${index + 1}/${total}`;
+                    scenePrefix = { en: `Scene ${index + 1}/${total}`, scene: { index: index + 1, total } };
                     await writePortalScene(memFs, index, extraScenes![i], createDevice, collRadius, collVoxelSize);
                 }
             }

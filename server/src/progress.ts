@@ -1,5 +1,16 @@
+// Structured, localizable form of a progress line. `message` carries the English
+// text (server logs + a fallback); `loc` lets the browser rebuild a localized line
+// from i18n keys. Mirrors the progressUpdate `loc` the shared export core emits and
+// the composition in the editor's progressUpdate handler.
+export type ProgressLoc = {
+    segments?: { key: string; params?: Record<string, string | number> }[];
+    counter?: { index: number; total: number };
+    name?: string;
+    nameKey?: string;
+};
+
 export type ProgressEvent =
-    | { kind: 'progress'; message?: string; value?: number }
+    | { kind: 'progress'; message?: string; value?: number; loc?: ProgressLoc }
     | { kind: 'done'; url?: string; prefix?: string }
     | { kind: 'error'; message: string };
 

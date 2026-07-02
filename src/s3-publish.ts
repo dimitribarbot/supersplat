@@ -63,7 +63,7 @@ const registerS3PublishEvents = (events: Events) => {
                 viewerExportSettings: options.viewerExportSettings,
                 ...(upload ? { portalExtras: upload.portalExtras } : {})
             };
-            const result = await runServerPublish(plyGz, publishOptions, p => events.fire('progressUpdate', { text: p.message, progress: p.value }), upload?.extraPlyGz);
+            const result = await runServerPublish(plyGz, publishOptions, p => events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc }), upload?.extraPlyGz);
 
             events.fire('progressEnd');
             await events.invoke('showPopup', {

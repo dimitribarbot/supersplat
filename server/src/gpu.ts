@@ -32,10 +32,19 @@ const createNodeDevice = async (): Promise<GraphicsDevice> => {
         createElement(type: string) {
             if (type === 'canvas') {
                 return {
+                    width: 0,
+                    height: 0,
                     addEventListener() {},
                     removeEventListener() {},
                     getContext() {
                         return null;
+                    },
+                    // playcanvas >= 2.20 calls GraphicsDevice.updateClientRect() from
+                    // the constructor, which reads canvas.getBoundingClientRect().
+                    // This is an offscreen export device that never renders to a
+                    // display, so a zero-size rect is fine.
+                    getBoundingClientRect() {
+                        return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 };
                     }
                 };
             }

@@ -17,7 +17,15 @@ export const probeExportCapabilities = async (): Promise<Capabilities | null> =>
     return cached ?? null;
 };
 
-export type ServerProgress = { message?: string; value?: number };
+// `loc` (when present) is the structured, localizable form of the progress line
+// forwarded from the server's shared export core; the caller passes it straight to
+// the editor's progressUpdate handler, which localizes it. `message` is the English
+// fallback. Shape mirrors server ProgressLoc.
+export type ServerProgress = {
+    message?: string;
+    value?: number;
+    loc?: { segments?: { key: string; params?: Record<string, string | number> }[]; counter?: { index: number; total: number }; name?: string; nameKey?: string };
+};
 
 // POST gzipped ply + options, follow SSE, then fetch the result as a Blob.
 export const runServerExport = async (
@@ -47,7 +55,7 @@ export const runServerExport = async (
                 return;
             }
             if (e.kind === 'progress') {
-                onProgress({ message: e.message, value: e.value });
+                onProgress({ message: e.message, value: e.value, loc: e.loc });
             } else if (e.kind === 'done') {
                 es.close();
                 resolve();
@@ -121,7 +129,7 @@ export const runServerPublish = async (
                 return;
             }
             if (e.kind === 'progress') {
-                onProgress({ message: e.message, value: e.value });
+                onProgress({ message: e.message, value: e.value, loc: e.loc });
             } else if (e.kind === 'done') {
                 es.close();
                 resolve({ url: e.url, prefix: e.prefix });

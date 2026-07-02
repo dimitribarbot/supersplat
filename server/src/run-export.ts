@@ -8,7 +8,7 @@ import {
     MemoryReadFileSystem,
     Transform
 } from '@playcanvas/splat-transform';
-import type { ProgressEvent } from './progress.js';
+import type { ProgressEvent, ProgressLoc } from './progress.js';
 
 export type ExportOptions = {
     fileType: 'ply' | 'compressedPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
@@ -105,7 +105,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // load a relative path pointing outside the server project root; plain Node
     // resolves the URL identically.
     ensureLive();
-    sink.emit({ kind: 'progress', message: 'Preparing GPU export' });
+    sink.emit({ kind: 'progress', message: 'Preparing GPU export', loc: { segments: [{ key: 'export.progress.preparing-gpu' }] } });
     const coreUrl = pathToFileURL(
         resolve(dirname(fileURLToPath(import.meta.url)), '../../dist-shared/splat-export-core.js')
     ).href;
@@ -121,8 +121,11 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // progress is silently dropped. Bridge those to the SSE sink, and route
     // splat-transform's logs through onLog for friendly server-side logging.
     const events = new Events();
-    events.on('progressStart', (header: string) => sink.emit({ kind: 'progress', message: header, value: 0 }));
-    events.on('progressUpdate', (p: { text?: string; progress?: number }) => sink.emit({ kind: 'progress', message: p.text, value: p.progress }));
+    // Forward the shared core's headerKey / progressUpdate loc so the browser can
+    // localize server-export progress (the server itself has no locale). `message`
+    // stays English for server logs + a fallback.
+    events.on('progressStart', (header: string, _cancellable?: boolean, headerKey?: string) => sink.emit({ kind: 'progress', message: header, value: 0, loc: headerKey ? { segments: [{ key: headerKey }] } : undefined }));
+    events.on('progressUpdate', (p: { text?: string; progress?: number; loc?: ProgressLoc }) => sink.emit({ kind: 'progress', message: p.text, value: p.progress, loc: p.loc }));
 
     // Friendly per-file logging: collapse the many files inside each streaming
     // chunk folder (e.g. 0_0/meta.json + textures) into one summary line, and log

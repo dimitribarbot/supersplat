@@ -660,7 +660,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             const result = await runServerExport(plyGz, wire, (p) => {
                 if (!useSpinner) {
-                    events.fire('progressUpdate', { text: p.message, progress: p.value });
+                    events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
                 }
             }, extraPlyGz);
 
@@ -765,7 +765,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             primarySplats = [startSplat];
                             portalScenes = resolved.extras.map((ex) => {
                                 if (ex.estimated && ex.environment === 'indoor') {
-                                    events.fire('progressUpdate', { text: `Scene ${ex.index}: using an estimated collision entrypoint — set one in the portals panel if collision looks wrong.` });
+                                    events.fire('progressUpdate', { text: i18n.t('export.progress.estimated-entrypoint', { scene: ex.index }) });
                                     console.warn(`Portal export: scene index ${ex.index} (uid ${ex.uid}) used an estimated collision entrypoint.`);
                                 }
                                 const splat = byUid(ex.uid);
