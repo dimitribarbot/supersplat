@@ -94,6 +94,10 @@ class S3PublishDialog extends Container {
         // select per portal-referenced scene, replacing the single environment row.
         const perSceneEnvRow = new Container({ class: 'per-scene-env', flex: true, flexDirection: 'column' });
         const perSceneEnvSelects = new Map<number, SelectInput>();
+        // Chosen environment per scene uid, persisted across rebuildPerSceneEnv()
+        // calls (the Streaming/Collision toggles rebuild the rows) so user choices
+        // survive. Cleared on show() so each fresh publish starts at the default.
+        const perSceneEnvValues = new Map<number, 'indoor' | 'outdoor'>();  // sceneUid -> environment
 
         const rebuildPerSceneEnv = () => {
             perSceneEnvRow.clear();
@@ -114,12 +118,13 @@ class S3PublishDialog extends Container {
                 r.append(new Label({ class: 'label', text: label }));
                 const sel = new SelectInput({
                     class: 'select',
-                    defaultValue: 'indoor',
+                    defaultValue: perSceneEnvValues.get(uid) ?? 'indoor',
                     options: [
                         { v: 'indoor', t: localize('popup.export.environment.indoor') },
                         { v: 'outdoor', t: localize('popup.export.environment.outdoor') }
                     ]
                 });
+                sel.on('change', () => perSceneEnvValues.set(uid, sel.value as 'indoor' | 'outdoor'));
                 r.append(sel);
                 perSceneEnvRow.append(r);
                 perSceneEnvSelects.set(index, sel);
@@ -181,6 +186,7 @@ class S3PublishDialog extends Container {
             streaming.value = true;
             collision.value = true;
             environment.value = 'indoor';
+            perSceneEnvValues.clear();
             radius.value = 50;
             voxelSize.value = 0.05;
             updateCollisionVisibility();
@@ -256,7 +262,11 @@ class S3PublishDialog extends Container {
                     viewerExportSettings: {
                         type: 'zip',
                         streaming: streaming.value,
-                        collision: collision.value ? { environment: environment.value as 'indoor' | 'outdoor', radius: radius.value, voxelSize: voxelSize.value } : undefined,
+                        // For a portal publish the start scene (index 0) is hidden from the
+                        // global environment select and chosen via its per-scene selector, so
+                        // source its environment from there (portalEnvironments[0]); fall back
+                        // to the global select for a non-portal publish.
+                        collision: collision.value ? { environment: (bundle ? (perSceneEnvSelects.get(0)?.value ?? 'indoor') : environment.value) as 'indoor' | 'outdoor', radius: radius.value, voxelSize: voxelSize.value } : undefined,
                         experienceSettings
                     }
                 };
