@@ -7,7 +7,7 @@ import { PortalShape } from '../portal-shape';
 import { AddPortalOp, RemovePortalOp, SetStartSplatOp, UpdatePortalEntrypointOp, UpdatePortalOp, PortalData } from '../portals';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
-import { localize } from '../ui/localization';
+import { i18n } from '../ui/localization';
 
 // temps for projecting a portal's quad corners to screen (click-to-select)
 const qrot = new Quat();
@@ -48,26 +48,26 @@ class PortalTool {
         const bar = new Container({ class: ['select-toolbar', 'annotations-toolbar'], hidden: true });
         bar.dom.addEventListener('pointerdown', e => e.stopPropagation());
 
-        const addButton = new Button({ text: localize('portals.add'), class: 'select-toolbar-button' });
-        const moveButton = new Button({ text: localize('portals.move'), class: 'select-toolbar-button' });
-        const rotateButton = new Button({ text: localize('portals.rotate'), class: 'select-toolbar-button' });
+        const addButton = new Button({ text: i18n.t('portals.add'), class: 'select-toolbar-button' });
+        const moveButton = new Button({ text: i18n.t('portals.move'), class: 'select-toolbar-button' });
+        const rotateButton = new Button({ text: i18n.t('portals.rotate'), class: 'select-toolbar-button' });
         const boundsButton = new Button({ text: '⤢', class: 'select-toolbar-button' });
-        boundsButton.dom.title = localize('portals.bounds.tooltip');
-        const widthLabel = new Label({ text: localize('portals.width') });
+        boundsButton.dom.title = i18n.t('portals.bounds.tooltip');
+        const widthLabel = new Label({ text: i18n.t('portals.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
-        const heightLabel = new Label({ text: localize('portals.height') });
+        const heightLabel = new Label({ text: i18n.t('portals.height') });
         const heightInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
-        const frontLabel = new Label({ text: localize('portals.front') });
+        const frontLabel = new Label({ text: i18n.t('portals.front') });
         const frontInput = new SelectInput({ type: 'number', options: [], width: 140 });
-        const backLabel = new Label({ text: localize('portals.back') });
+        const backLabel = new Label({ text: i18n.t('portals.back') });
         const backInput = new SelectInput({ type: 'number', options: [], width: 140 });
-        const startLabel = new Label({ text: localize('portals.start') });
+        const startLabel = new Label({ text: i18n.t('portals.start') });
         const startInput = new SelectInput({ type: 'number', options: [], width: 140 });
 
-        const entryLabel = new Label({ text: localize('portals.entrypoint') });
+        const entryLabel = new Label({ text: i18n.t('portals.entrypoint') });
         const entrySceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
-        const entrySetButton = new Button({ text: localize('portals.entrypoint.set'), class: 'select-toolbar-button' });
-        const entryClearButton = new Button({ text: localize('portals.entrypoint.clear'), class: 'select-toolbar-button' });
+        const entrySetButton = new Button({ text: i18n.t('portals.entrypoint.set'), class: 'select-toolbar-button' });
+        const entryClearButton = new Button({ text: i18n.t('portals.entrypoint.clear'), class: 'select-toolbar-button' });
 
         const group = (...els: any[]) => {
             const c = new Container({ class: 'select-toolbar-group' });
@@ -95,7 +95,7 @@ class PortalTool {
         const edgeButtons = {} as Record<EdgeDir, Button>;
         EDGE_DIRS.forEach((dir) => {
             const b = new Button({ text: edgeGlyph[dir], class: ['portal-bounds-toggle', `portal-bounds-${dir}`] });
-            b.dom.title = localize(`portals.bounds.${dir}`);
+            b.dom.title = i18n.t(`portals.bounds.${dir}`);
             edgeButtons[dir] = b;
             boundsPopup.append(b);
         });

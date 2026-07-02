@@ -5,7 +5,7 @@ import { ElementType } from '../element';
 import { Events } from '../events';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
-import { localize } from './localization';
+import { i18n } from './localization';
 import alignSvg from './svg/align.svg';
 
 const createSvg = (svgString: string) => {
@@ -37,7 +37,7 @@ class AlignmentPanel extends Container {
         const headerIcon = new Container({ class: 'panel-header-icon' });
         headerIcon.dom.appendChild(createSvg(alignSvg));
         const headerLabel = new Label({
-            text: localize('panel.alignment'),
+            text: i18n.t('panel.alignment'),
             class: 'panel-header-label'
         });
         header.append(headerIcon);
@@ -50,34 +50,34 @@ class AlignmentPanel extends Container {
         const modeSelect = new SelectInput({
             class: 'alignment-select',
             options: [
-                { v: 'rigid', t: localize('alignment.mode.rigid') },
-                { v: 'similarity', t: localize('alignment.mode.similarity') }
+                { v: 'rigid', t: i18n.t('alignment.mode.rigid') },
+                { v: 'similarity', t: i18n.t('alignment.mode.similarity') }
             ],
             value: 'rigid'
         });
 
         const sourceRow = new Container({ class: 'alignment-control-row' });
-        sourceRow.append(new Label({ text: localize('alignment.source'), class: 'alignment-control-label' }));
+        sourceRow.append(new Label({ text: i18n.t('alignment.source'), class: 'alignment-control-label' }));
         sourceRow.append(sourceSelect);
         controls.append(sourceRow);
 
         const targetRow = new Container({ class: 'alignment-control-row' });
-        targetRow.append(new Label({ text: localize('alignment.target'), class: 'alignment-control-label' }));
+        targetRow.append(new Label({ text: i18n.t('alignment.target'), class: 'alignment-control-label' }));
         targetRow.append(targetSelect);
         controls.append(targetRow);
 
         const modeRow = new Container({ class: 'alignment-control-row' });
-        modeRow.append(new Label({ text: localize('alignment.mode'), class: 'alignment-control-label' }));
+        modeRow.append(new Label({ text: i18n.t('alignment.mode'), class: 'alignment-control-label' }));
         modeRow.append(modeSelect);
         controls.append(modeRow);
 
         this.append(controls);
 
         const pickRow = new Container({ class: 'alignment-button-row' });
-        const pickSourceBtn = new Button({ text: localize('alignment.pick-source'), class: 'alignment-button' });
-        const pickTargetBtn = new Button({ text: localize('alignment.pick-target'), class: 'alignment-button' });
-        const swapBtn = new Button({ text: localize('alignment.swap'), class: 'alignment-button' });
-        const clearBtn = new Button({ text: localize('alignment.clear'), class: 'alignment-button' });
+        const pickSourceBtn = new Button({ text: i18n.t('alignment.pick-source'), class: 'alignment-button' });
+        const pickTargetBtn = new Button({ text: i18n.t('alignment.pick-target'), class: 'alignment-button' });
+        const swapBtn = new Button({ text: i18n.t('alignment.swap'), class: 'alignment-button' });
+        const clearBtn = new Button({ text: i18n.t('alignment.clear'), class: 'alignment-button' });
         pickRow.append(pickSourceBtn);
         pickRow.append(pickTargetBtn);
         pickRow.append(swapBtn);
@@ -88,22 +88,22 @@ class AlignmentPanel extends Container {
         const table = document.createElement('table');
         table.id = 'alignment-pair-list';
         const th = (text: string) => `<th>${text}</th>`;
-        table.innerHTML = `<thead><tr>${th('#')}${th(localize('alignment.source'))}${th(localize('alignment.target'))}${th(localize('alignment.error'))}<th></th></tr></thead>`;
+        table.innerHTML = `<thead><tr>${th('#')}${th(i18n.t('alignment.source'))}${th(i18n.t('alignment.target'))}${th(i18n.t('alignment.error'))}<th></th></tr></thead>`;
         const tbody = document.createElement('tbody');
         table.appendChild(tbody);
         tableOuter.dom.appendChild(table);
         this.append(tableOuter);
 
         const resultRow = new Container({ class: 'alignment-result-row' });
-        const pairCount = new Label({ text: `${localize('alignment.pairs')}: 0/4`, class: 'alignment-result-label' });
-        const rmsLabel = new Label({ text: `${localize('alignment.rms')}: -`, class: 'alignment-result-label' });
+        const pairCount = new Label({ text: `${i18n.t('alignment.pairs')}: 0/4`, class: 'alignment-result-label' });
+        const rmsLabel = new Label({ text: `${i18n.t('alignment.rms')}: -`, class: 'alignment-result-label' });
         resultRow.append(pairCount);
         resultRow.append(rmsLabel);
         this.append(resultRow);
 
         const actionRow = new Container({ class: 'alignment-button-row' });
-        const previewBtn = new Button({ text: localize('alignment.preview'), class: 'alignment-button' });
-        const applyBtn = new Button({ text: localize('alignment.align'), class: 'alignment-button' });
+        const previewBtn = new Button({ text: i18n.t('alignment.preview'), class: 'alignment-button' });
+        const applyBtn = new Button({ text: i18n.t('alignment.align'), class: 'alignment-button' });
         actionRow.append(previewBtn);
         actionRow.append(applyBtn);
         this.append(actionRow);
@@ -188,9 +188,9 @@ class AlignmentPanel extends Container {
             updateSplatOptions();
             rebuildPairs();
             const completeCount = manager.completePairs().length;
-            pairCount.text = `${localize('alignment.pairs')}: ${completeCount}/4`;
-            rmsLabel.text = `${localize('alignment.rms')}: ${manager.lastResult ? fmt(manager.lastResult.rms) : '-'}`;
-            previewBtn.text = manager.previewActive ? localize('alignment.revert-preview') : localize('alignment.preview');
+            pairCount.text = `${i18n.t('alignment.pairs')}: ${completeCount}/4`;
+            rmsLabel.text = `${i18n.t('alignment.rms')}: ${manager.lastResult ? fmt(manager.lastResult.rms) : '-'}`;
+            previewBtn.text = manager.previewActive ? i18n.t('alignment.revert-preview') : i18n.t('alignment.preview');
             previewBtn.enabled = !!manager.lastResult || manager.previewActive;
             applyBtn.enabled = !!manager.lastResult || manager.previewActive;
             pickSourceBtn.class[manager.pickSide === 'source' ? 'add' : 'remove']('active');

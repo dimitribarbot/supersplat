@@ -1,7 +1,7 @@
 import { BooleanInput, Button, ColorPicker, Container, Label, SelectInput, SliderInput, TextInput } from '@playcanvas/pcui';
 
 import { Pose } from '../camera-poses';
-import { localize } from './localization';
+import { i18n } from './localization';
 import { Events } from '../events';
 import { buildPortalBundle } from '../portal-export';
 import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
@@ -32,7 +32,7 @@ export type S3PublishOptions = {
 
 const row = (labelKey: string, widget: any) => {
     const c = new Container({ class: 'row' });
-    c.append(new Label({ class: 'label', text: localize(labelKey) }));
+    c.append(new Label({ class: 'label', text: i18n.t(labelKey) }));
     c.append(widget);
     return { c, widget };
 };
@@ -47,7 +47,7 @@ class S3PublishDialog extends Container {
 
         const dialog = new Container({ id: 'dialog' });
         const header = new Container({ id: 'header' });
-        header.append(new Label({ id: 'header', text: localize('popup.publish.s3.header') }));
+        header.append(new Label({ id: 'header', text: i18n.t('popup.publish.s3.header') }));
 
         const content = new Container({ id: 'content' });
 
@@ -56,8 +56,8 @@ class S3PublishDialog extends Container {
         const environment = new SelectInput({ class: 'select',
             defaultValue: 'indoor',
             options: [
-                { v: 'indoor', t: localize('popup.export.environment.indoor') },
-                { v: 'outdoor', t: localize('popup.export.environment.outdoor') }
+                { v: 'indoor', t: i18n.t('popup.export.environment.indoor') },
+                { v: 'outdoor', t: i18n.t('popup.export.environment.outdoor') }
             ] });
         const radius = new SliderInput({ class: 'slider', min: 5, max: 500, precision: 0, value: 50 });
         const voxelSize = new SliderInput({ class: 'slider', min: 0.02, max: 0.5, precision: 2, value: 0.05 });
@@ -65,9 +65,9 @@ class S3PublishDialog extends Container {
         const loop = new SelectInput({ class: 'select',
             defaultValue: 'repeat',
             options: [
-                { v: 'none', t: localize('popup.export.loop-mode.none') },
-                { v: 'repeat', t: localize('popup.export.loop-mode.repeat') },
-                { v: 'pingpong', t: localize('popup.export.loop-mode.pingpong') }
+                { v: 'none', t: i18n.t('popup.export.loop-mode.none') },
+                { v: 'repeat', t: i18n.t('popup.export.loop-mode.repeat') },
+                { v: 'pingpong', t: i18n.t('popup.export.loop-mode.pingpong') }
             ] });
         const color = new ColorPicker({ class: 'color-picker', value: [1, 1, 1, 1] });
         const fov = new SliderInput({ class: 'slider', min: 10, max: 120, precision: 0, value: 60 });
@@ -122,8 +122,8 @@ class S3PublishDialog extends Container {
                     class: 'select',
                     defaultValue: perSceneEnvValues.get(uid) ?? 'indoor',
                     options: [
-                        { v: 'indoor', t: localize('popup.export.environment.indoor') },
-                        { v: 'outdoor', t: localize('popup.export.environment.outdoor') }
+                        { v: 'indoor', t: i18n.t('popup.export.environment.indoor') },
+                        { v: 'outdoor', t: i18n.t('popup.export.environment.outdoor') }
                     ]
                 });
                 sel.on('change', () => perSceneEnvValues.set(uid, sel.value as 'indoor' | 'outdoor'));
@@ -139,8 +139,8 @@ class S3PublishDialog extends Container {
         .forEach(r => content.append(r.c));
 
         const footer = new Container({ id: 'footer' });
-        const cancelButton = new Button({ class: 'button', text: localize('popup.cancel') });
-        const publishButton = new Button({ class: 'button', text: localize('popup.publish.ok') });
+        const cancelButton = new Button({ class: 'button', text: i18n.t('popup.cancel') });
+        const publishButton = new Button({ class: 'button', text: i18n.t('popup.publish.ok') });
         footer.append(cancelButton);
         footer.append(publishButton);
 

@@ -4,7 +4,7 @@ import { Events } from './events';
 import { checkPublishExists, PublishExistsError, runServerPublish } from './export-server-client';
 import { buildPortalUpload } from './portal-upload';
 import { serializePly, SerializeSettings } from './splat-serialize';
-import { localize } from './ui/localization';
+import { i18n } from './ui/localization';
 import type { S3PublishOptions } from './ui/s3-publish-dialog';
 
 const registerS3PublishEvents = (events: Events) => {
@@ -15,13 +15,13 @@ const registerS3PublishEvents = (events: Events) => {
             if (exists) {
                 const res = await events.invoke('showPopup', {
                     type: 'okcancel',
-                    header: localize('popup.publish.s3.overwrite-header'),
-                    message: localize('popup.publish.s3.overwrite-message')
+                    header: i18n.t('popup.publish.s3.overwrite-header'),
+                    message: i18n.t('popup.publish.s3.overwrite-message')
                 });
                 if (res.action === 'cancel') return;
             }
 
-            events.fire('progressStart', localize('popup.publish.s3.publishing'));
+            events.fire('progressStart', i18n.t('popup.publish.s3.publishing'));
             await new Promise<void>((resolve) => {
                 setTimeout(resolve);
             });
@@ -46,7 +46,7 @@ const registerS3PublishEvents = (events: Events) => {
             const plyBytes = memFs.results.get('scene.ply');
             if (!plyBytes) {
                 events.fire('progressEnd');
-                await events.invoke('showPopup', { type: 'error', header: localize('popup.publish.failed'), message: localize('popup.publish.s3.nothing-to-publish') });
+                await events.invoke('showPopup', { type: 'error', header: i18n.t('popup.publish.failed'), message: i18n.t('popup.publish.s3.nothing-to-publish') });
                 return;
             }
 
@@ -68,14 +68,14 @@ const registerS3PublishEvents = (events: Events) => {
             events.fire('progressEnd');
             await events.invoke('showPopup', {
                 type: 'info',
-                header: localize('popup.publish.succeeded'),
-                message: result.url ? localize('popup.publish.s3.public-message') : `${localize('popup.publish.s3.private-message')} ${result.prefix}`,
+                header: i18n.t('popup.publish.succeeded'),
+                message: result.url ? i18n.t('popup.publish.s3.public-message') : `${i18n.t('popup.publish.s3.private-message')} ${result.prefix}`,
                 link: result.url
             });
         } catch (error) {
             events.fire('progressEnd');
-            const message = error instanceof PublishExistsError ? localize('popup.publish.s3.exists-message') : (error.message ?? String(error));
-            await events.invoke('showPopup', { type: 'error', header: localize('popup.publish.failed'), message });
+            const message = error instanceof PublishExistsError ? i18n.t('popup.publish.s3.exists-message') : (error.message ?? String(error));
+            await events.invoke('showPopup', { type: 'error', header: i18n.t('popup.publish.failed'), message });
         }
     });
 };

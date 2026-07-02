@@ -4,7 +4,7 @@ import { Vec3 } from 'playcanvas';
 import type { AnnotationData } from './annotations';
 import { Events } from './events';
 import { Scene } from './scene';
-import { localize } from './ui/localization';
+import { i18n } from './ui/localization';
 
 const p = new Vec3();
 
@@ -34,7 +34,7 @@ class AnnotationOverlay {
         previewText.classList.add('annotation-preview-text');
         const previewLink = document.createElement('a');
         previewLink.classList.add('annotation-preview-link');
-        previewLink.textContent = `${localize('annotation.open-link')} ↗`;
+        previewLink.textContent = `${i18n.t('annotation.open-link')} ↗`;
         preview.appendChild(previewTitle);
         preview.appendChild(previewText);
         preview.appendChild(previewLink);

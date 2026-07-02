@@ -550,6 +550,10 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         if (activeTool === 'measure' || activeTool === 'annotation') {
             return;
         }
+        // Don't delete gaussians while a polygon selection is in progress (backspace removes the last point instead)
+        if (events.invoke('polygonSelection.removeLastPoint')) {
+            return;
+        }
         selectedSplats().forEach((splat) => {
             editHistory.add(new DeleteSelectionOp(splat));
         });

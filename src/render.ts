@@ -6,7 +6,7 @@ import { Events } from './events';
 import { PngCompressor } from './png-compressor';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { localize } from './ui/localization';
+import { i18n } from './ui/localization';
 
 const nullClr = new Color(0, 0, 0, 0);
 
@@ -171,7 +171,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
         } catch (error) {
             await events.invoke('showPopup', {
                 type: 'error',
-                header: localize('panel.render.failed'),
+                header: i18n.t('panel.render.failed'),
                 message: `'${error.message ?? error}'`
             });
         } finally {
@@ -187,7 +187,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
 
     events.function('render.video', (videoSettings: VideoSettings, fileStream: FileSystemWritableFileStream) => {
         const renderImpl = async () => {
-            events.fire('progressStart', localize('panel.render.render-video'), true);
+            events.fire('progressStart', i18n.t('panel.render.render-video'), true);
 
             let cancelled = false;
             const cancelHandler = events.on('progressCancel', () => {
@@ -376,7 +376,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                     await captureFrame(frameTime);
 
                     events.fire('progressUpdate', {
-                        text: localize('panel.render.rendering', { ellipsis: true }),
+                        text: i18n.t('panel.render.rendering', { ellipsis: true }),
                         progress: 100 * frameTime / duration
                     });
                 }
@@ -395,7 +395,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             } catch (error) {
                 await events.invoke('showPopup', {
                     type: 'error',
-                    header: localize('panel.render.failed'),
+                    header: i18n.t('panel.render.failed'),
                     message: `'${(error as any).message ?? error}'`
                 });
                 return false;

@@ -4,7 +4,7 @@ import { Entity, TranslateGizmo, Vec3 } from 'playcanvas';
 import { AddAnnotationOp, AnnotationData, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
 import { Events } from '../events';
 import { Scene } from '../scene';
-import { localize } from '../ui/localization';
+import { i18n } from '../ui/localization';
 
 const p = new Vec3();
 const screen = new Vec3();
@@ -24,13 +24,13 @@ class AnnotationTool {
         });
         bar.dom.addEventListener('pointerdown', e => e.stopPropagation());
 
-        const titleLabel = new Label({ text: localize('panel.annotations.title') });
+        const titleLabel = new Label({ text: i18n.t('panel.annotations.title') });
         const titleInput = new TextInput({ class: 'annotations-toolbar-input' });
-        const textLabel = new Label({ text: localize('panel.annotations.text') });
+        const textLabel = new Label({ text: i18n.t('panel.annotations.text') });
         const textInput = new TextInput({ class: 'annotations-toolbar-input' });
-        const urlLabel = new Label({ text: localize('panel.annotations.url') });
+        const urlLabel = new Label({ text: i18n.t('panel.annotations.url') });
         const urlInput = new TextInput({ class: 'annotations-toolbar-input', placeholder: 'https://' });
-        const newTabLabel = new Label({ text: localize('panel.annotations.new-tab') });
+        const newTabLabel = new Label({ text: i18n.t('panel.annotations.new-tab') });
         const newTabInput = new BooleanInput({ type: 'toggle' });
 
         bar.append(titleLabel);

@@ -11,7 +11,7 @@ import { buildPortalUpload } from './portal-upload';
 import { Scene } from './scene';
 import { Splat } from './splat';
 import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeViewer, serializeViewerSettings, SogSettings, ViewerExportSettings } from './splat-serialize';
-import { localize } from './ui/localization';
+import { i18n } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -61,8 +61,7 @@ const filePickerTypes: { [key: string]: FilePickerAcceptType } = {
     'lcc': {
         description: 'LCC Scene',
         accept: {
-            'application/json': ['.lcc'],
-            'application/octet-stream': ['.bin']
+            'application/x-lcc': ['.lcc', '.bin']
         }
     },
     'splat': {
@@ -115,8 +114,7 @@ const allImportTypes = {
         'application/ply': ['.ply'],
         'application/x-gaussian-splat': ['.json', '.sog', '.splat', '.ksplat', '.spz'],
         'image/webp': ['.webp'],
-        'application/json': ['.lcc'],
-        'application/octet-stream': ['.bin'],
+        'application/x-lcc': ['.lcc', '.bin'],
         'text/plain': ['.txt']
     }
 };
@@ -271,7 +269,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     const showLoadError = async (message: string, filename: string) => {
         await events.invoke('showPopup', {
             type: 'error',
-            header: localize('popup.error-loading'),
+            header: i18n.t('popup.error-loading'),
             message: `${message} while loading '${filename}'`
         });
     };
@@ -336,7 +334,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     await events.invoke('showPopup', {
                         type: 'info',
                         header: 'LCC',
-                        message: localize('popup.lcc-folder-required')
+                        message: i18n.t('popup.lcc-folder-required')
                     });
                     return result;
                 }
@@ -350,7 +348,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     const response = await events.invoke('showPopup', {
                         type: 'okcancel',
                         header: 'LCC',
-                        message: localize('popup.lcc-upload-warning'),
+                        message: i18n.t('popup.lcc-upload-warning'),
                         link: `${window.location.origin}/upload`
                     });
                     if (response.action === 'cancel') {
@@ -604,7 +602,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         if (useSpinner) {
             events.fire('startSpinner');
         } else {
-            events.fire('progressStart', localize('popup.export.exporting-on-server'));
+            events.fire('progressStart', i18n.t('popup.export.exporting-on-server'));
         }
         try {
             // let the spinner / progress UI activate
@@ -676,7 +674,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         } catch (error) {
             await events.invoke('showPopup', {
                 type: 'error',
-                header: localize('popup.error-loading'),
+                header: i18n.t('popup.error-loading'),
                 message: `${error.message ?? error} while exporting on server`
             });
             return true; // handled (error surfaced); do not silently fall back to local
@@ -793,7 +791,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         } catch (error) {
             await events.invoke('showPopup', {
                 type: 'error',
-                header: localize('popup.error-loading'),
+                header: i18n.t('popup.error-loading'),
                 message: `${error.message ?? error} while saving file`
             });
         } finally {

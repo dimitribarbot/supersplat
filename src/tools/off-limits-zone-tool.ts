@@ -5,7 +5,7 @@ import { Events } from '../events';
 import { OffLimitsZoneShape } from '../off-limits-zone-shape';
 import { AddZoneOp, RemoveZoneOp, SetMessageOp, UpdateZoneOp, ZoneData } from '../off-limits-zones';
 import { Scene } from '../scene';
-import { localize } from '../ui/localization';
+import { i18n } from '../ui/localization';
 
 // temps for projecting a zone's quad corners to screen (click-to-select)
 const qrot = new Quat();
@@ -41,16 +41,16 @@ class OffLimitsZoneTool {
         const bar = new Container({ class: ['select-toolbar', 'annotations-toolbar'], hidden: true });
         bar.dom.addEventListener('pointerdown', e => e.stopPropagation());
 
-        const addButton = new Button({ text: localize('offLimitsZones.add'), class: 'select-toolbar-button' });
-        const moveButton = new Button({ text: localize('offLimitsZones.move'), class: 'select-toolbar-button' });
-        const rotateButton = new Button({ text: localize('offLimitsZones.rotate'), class: 'select-toolbar-button' });
+        const addButton = new Button({ text: i18n.t('offLimitsZones.add'), class: 'select-toolbar-button' });
+        const moveButton = new Button({ text: i18n.t('offLimitsZones.move'), class: 'select-toolbar-button' });
+        const rotateButton = new Button({ text: i18n.t('offLimitsZones.rotate'), class: 'select-toolbar-button' });
         const boundsButton = new Button({ text: '⤢', class: 'select-toolbar-button' });
-        boundsButton.dom.title = localize('offLimitsZones.bounds.tooltip');
-        const widthLabel = new Label({ text: localize('offLimitsZones.width') });
+        boundsButton.dom.title = i18n.t('offLimitsZones.bounds.tooltip');
+        const widthLabel = new Label({ text: i18n.t('offLimitsZones.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
-        const heightLabel = new Label({ text: localize('offLimitsZones.height') });
+        const heightLabel = new Label({ text: i18n.t('offLimitsZones.height') });
         const heightInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
-        const messageLabel = new Label({ text: localize('offLimitsZones.message') });
+        const messageLabel = new Label({ text: i18n.t('offLimitsZones.message') });
         const messageInput = new TextInput({ class: 'annotations-toolbar-input' });
 
         bar.append(addButton);
@@ -80,7 +80,7 @@ class OffLimitsZoneTool {
         const edgeButtons = {} as Record<EdgeDir, Button>;
         EDGE_DIRS.forEach((dir) => {
             const b = new Button({ text: edgeGlyph[dir], class: ['off-limits-bounds-toggle', `off-limits-bounds-${dir}`] });
-            b.dom.title = localize(`offLimitsZones.bounds.${dir}`);
+            b.dom.title = i18n.t(`offLimitsZones.bounds.${dir}`);
             edgeButtons[dir] = b;
             boundsPopup.append(b);
         });
@@ -222,7 +222,7 @@ class OffLimitsZoneTool {
             }
             suppress = true;
             messageInput.value = events.invoke('offLimitsZones.message') as string;
-            messageInput.placeholder = localize('offLimitsZones.defaultMessage');
+            messageInput.placeholder = i18n.t('offLimitsZones.defaultMessage');
             const z = selected();
             widthInput.enabled = !!z;
             heightInput.enabled = !!z;
