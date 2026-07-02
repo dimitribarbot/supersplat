@@ -100,7 +100,10 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             docSource.close();
             const document = JSON.parse(new TextDecoder().decode(docData));
 
-            // run through each splat and load it
+            // run through each splat and load it, collecting the created
+            // elements: loadedSplats[i] is built from `splat_${i}.ply`, so the
+            // array maps document splat index -> live session uid
+            const loadedSplats: Splat[] = [];
             for (let i = 0; i < document.splats.length; ++i) {
                 const filename = `splat_${i}.ply`;
                 const splatSettings = document.splats[i];
@@ -112,6 +115,8 @@ const registerDocEvents = (scene: Scene, events: Events) => {
                 await scene.add(splat);
 
                 splat.docDeserialize(splatSettings);
+
+                loadedSplats.push(splat);
             }
 
             // FIXME: trigger scene bound calc in a better way
@@ -124,7 +129,11 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             events.invoke('docDeserialize.poseSets', document.poseSets, document.camera?.fov);
             events.invoke('docDeserialize.annotations', document.annotations);
             events.invoke('docDeserialize.offLimitsZones', document.offLimitsZones, document.offLimitsMessage);
-            events.invoke('docDeserialize.portals', document.portals, document.portalsStartSplat, document.portalsEntrypoints);
+            events.invoke('docDeserialize.portals', document.portals, document.portalsStartSplat, document.portalsEntrypoints, {
+                indexToUid: loadedSplats.map(s => s.uid),
+                startIndex: document.portalsStartSplatIndex,
+                entrypointsByIndex: document.portalsEntrypointsByIndex
+            });
             events.invoke('docDeserialize.view', document.view);
             scene.camera.docDeserialize(document.camera);
 
@@ -156,6 +165,14 @@ const registerDocEvents = (scene: Scene, events: Events) => {
         try {
             const splats = events.invoke('scene.allSplats') as Splat[];
 
+            // a splat's identity in the document is its index in this array:
+            // it drives both the splats[i] metadata below and the
+            // `splat_<i>.ply` payload filenames. uids are session-scoped, so
+            // portal splat references are persisted by index (legacy uid
+            // fields are kept alongside for older builds).
+            const uidToIndex = new Map<number, number>(splats.map((s, i) => [s.uid, i] as [number, number]));
+            const portalsIndex = events.invoke('docSerialize.portalsIndex', uidToIndex);
+
             const document = {
                 version: 0,
                 camera: scene.camera.docSerialize(),
@@ -165,9 +182,11 @@ const registerDocEvents = (scene: Scene, events: Events) => {
                 annotations: events.invoke('docSerialize.annotations'),
                 offLimitsZones: events.invoke('docSerialize.offLimitsZones'),
                 offLimitsMessage: events.invoke('offLimitsZones.message'),
-                portals: events.invoke('docSerialize.portals'),
+                portals: events.invoke('docSerialize.portals', uidToIndex),
                 portalsStartSplat: events.invoke('portals.startSplat'),
+                portalsStartSplatIndex: portalsIndex.startSplatIndex,
                 portalsEntrypoints: events.invoke('portals.exportEntrypoints'),
+                portalsEntrypointsByIndex: portalsIndex.entrypointsByIndex,
                 splats: splats.map(s => s.docSerialize())
             };
 

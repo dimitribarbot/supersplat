@@ -158,3 +158,122 @@ describe('portal entrypoints', () => {
         expect(events.invoke('portals.entrypoint', 7)).toBeNull();
     });
 });
+
+describe('portal doc-index serialization', () => {
+    it('docSerialize.portals writes frontIndex/backIndex from the uid->index map', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new AddPortalOp(events, portal({ frontUid: 2, backUid: 3 })).do();
+        const serialized = events.invoke('docSerialize.portals', new Map([[2, 0], [3, 1]]));
+        expect(serialized[0].frontIndex).toBe(0);
+        expect(serialized[0].backIndex).toBe(1);
+        // legacy uid fields are still written alongside (rollback / old-build compat)
+        expect(serialized[0].frontUid).toBe(2);
+        expect(serialized[0].backUid).toBe(3);
+    });
+
+    it('docSerialize.portals writes null indices for null or unknown uids', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new AddPortalOp(events, portal({ frontUid: null, backUid: 99 })).do();
+        const serialized = events.invoke('docSerialize.portals', new Map([[2, 0]]));
+        expect(serialized[0].frontIndex).toBeNull();
+        expect(serialized[0].backIndex).toBeNull();
+    });
+
+    it('docSerialize.portals without a map omits index fields entirely', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new AddPortalOp(events, portal()).do();
+        const serialized = events.invoke('docSerialize.portals');
+        expect(serialized[0]).not.toHaveProperty('frontIndex');
+        expect(serialized[0]).not.toHaveProperty('backIndex');
+    });
+
+    it('docSerialize.portalsIndex maps start splat and entrypoints to indices', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new SetStartSplatOp(events, null, 2).do();
+        new UpdatePortalEntrypointOp(events, 3, null, [1, 2, 3]).do();
+        const out = events.invoke('docSerialize.portalsIndex', new Map([[2, 0], [3, 1]]));
+        expect(out).toEqual({ startSplatIndex: 0, entrypointsByIndex: { '1': [1, 2, 3] } });
+    });
+
+    it('docSerialize.portalsIndex drops stale uids (start -> null, entrypoint omitted)', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        new SetStartSplatOp(events, null, 99).do();
+        new UpdatePortalEntrypointOp(events, 98, null, [1, 2, 3]).do();
+        const out = events.invoke('docSerialize.portalsIndex', new Map([[2, 0]]));
+        expect(out).toEqual({ startSplatIndex: null, entrypointsByIndex: {} });
+    });
+
+    it('round-trips splat refs across a uid drift via the index remap', () => {
+        // session 1: the two splats have uids [2, 3]
+        const s1 = makeEvents();
+        registerPortalsEvents(s1);
+        new AddPortalOp(s1, portal({ id: 'portal_0', frontUid: 2, backUid: 3 })).do();
+        new SetStartSplatOp(s1, null, 2).do();
+        new UpdatePortalEntrypointOp(s1, 3, null, [4, 5, 6]).do();
+        const uidToIndex = new Map([[2, 0], [3, 1]]);
+        // simulate the real .ssproj write/read (JSON drops undefined, keeps null)
+        const doc = JSON.parse(JSON.stringify({
+            portals: s1.invoke('docSerialize.portals', uidToIndex),
+            portalsStartSplat: s1.invoke('portals.startSplat'),
+            portalsEntrypoints: s1.invoke('portals.exportEntrypoints'),
+            ...s1.invoke('docSerialize.portalsIndex', uidToIndex)
+        }));
+
+        // session 2: the same two splats (same document order) now have uids [7, 9]
+        const s2 = makeEvents();
+        registerPortalsEvents(s2);
+        s2.invoke('docDeserialize.portals', doc.portals, doc.portalsStartSplat, doc.portalsEntrypoints, {
+            indexToUid: [7, 9],
+            startIndex: doc.startSplatIndex,
+            entrypointsByIndex: doc.entrypointsByIndex
+        });
+
+        const p = (s2.invoke('portals.list') as PortalData[])[0];
+        expect(p.frontUid).toBe(7);
+        expect(p.backUid).toBe(9);
+        expect(s2.invoke('portals.startSplat')).toBe(7);
+        expect(s2.invoke('portals.entrypoint', 9)).toEqual([4, 5, 6]);
+        expect(s2.invoke('portals.entrypoint', 3)).toBeNull();
+    });
+
+    it('legacy documents (uid fields only) still load via the raw-uid fallback', () => {
+        // a pre-fix .ssproj payload: no frontIndex/backIndex/startIndex/entrypointsByIndex
+        const legacyPortals = [{
+            id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1],
+            width: 2, height: 2, frontUid: 2, backUid: 3
+        }];
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        // the loader always passes remap.indexToUid (splats were loaded), but a
+        // legacy doc has no index fields, so the uid path must run verbatim
+        events.invoke('docDeserialize.portals', legacyPortals, 2, { '3': [1, 2, 3] }, {
+            indexToUid: [7, 9],
+            startIndex: undefined,
+            entrypointsByIndex: undefined
+        });
+        const p = (events.invoke('portals.list') as PortalData[])[0];
+        expect(p.frontUid).toBe(2);
+        expect(p.backUid).toBe(3);
+        expect(events.invoke('portals.startSplat')).toBe(2);
+        expect(events.invoke('portals.entrypoint', 3)).toEqual([1, 2, 3]);
+    });
+
+    it('null or out-of-range indices deserialize to null uids (index wins over legacy uid)', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.invoke('docDeserialize.portals', [{
+            id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1],
+            width: 2, height: 2, frontUid: 2, backUid: 3,
+            frontIndex: null, backIndex: 5
+        }], null, undefined, { indexToUid: [7, 9], startIndex: null, entrypointsByIndex: {} });
+        const p = (events.invoke('portals.list') as PortalData[])[0];
+        expect(p.frontUid).toBeNull();
+        expect(p.backUid).toBeNull();
+        expect(events.invoke('portals.startSplat')).toBeNull();
+    });
+});

@@ -16,6 +16,14 @@ type PortalData = {
     infinite?: InfiniteEdges
 };
 
+// On-disk portal record: PortalData plus stable splat references as indices
+// into the document's splat array (uids are session-scoped and NOT stable
+// across loads; the uid fields are kept only for rollback to older builds).
+type PortalDocData = PortalData & {
+    frontIndex?: number | null,
+    backIndex?: number | null
+};
+
 class AddPortalOp {
     name = 'addPortal';
     events: Events;
@@ -229,24 +237,78 @@ const registerPortalsEvents = (events: Events) => {
     })));
 
     // --- document serialization ---
-    events.function('docSerialize.portals', (): PortalData[] => portals.map(p => ({
-        id: p.id,
-        position: [p.position[0], p.position[1], p.position[2]],
-        rotation: [p.rotation[0], p.rotation[1], p.rotation[2], p.rotation[3]],
-        width: p.width,
-        height: p.height,
-        frontUid: p.frontUid,
-        backUid: p.backUid,
-        infinite: p.infinite
-    })));
+    events.function('docSerialize.portals', (uidToIndex?: Map<number, number>): PortalDocData[] => portals.map((p) => {
+        const doc: PortalDocData = {
+            id: p.id,
+            position: [p.position[0], p.position[1], p.position[2]],
+            rotation: [p.rotation[0], p.rotation[1], p.rotation[2], p.rotation[3]],
+            width: p.width,
+            height: p.height,
+            frontUid: p.frontUid,
+            backUid: p.backUid,
+            infinite: p.infinite
+        };
+        if (uidToIndex) {
+            // always write a value (null, never undefined) so the field
+            // survives JSON.stringify and marks the record as new-format
+            const toIndex = (uid: number | null) => {
+                const i = (uid === null) ? undefined : uidToIndex.get(uid);
+                return (typeof i === 'number') ? i : null;
+            };
+            doc.frontIndex = toIndex(p.frontUid);
+            doc.backIndex = toIndex(p.backUid);
+        }
+        return doc;
+    }));
 
-    events.function('docDeserialize.portals', (data: PortalData[], start?: number | null, eps?: Record<string, [number, number, number]>) => {
+    // start splat + entrypoints converted to document splat indices (stale
+    // uids are dropped rather than written as dangling references)
+    events.function('docSerialize.portalsIndex', (uidToIndex: Map<number, number>) => {
+        const startSplatIndex = (startUid !== null && uidToIndex.has(startUid)) ? uidToIndex.get(startUid) : null;
+        const entrypointsByIndex: Record<string, [number, number, number]> = {};
+        entrypoints.forEach((pos, uid) => {
+            const i = uidToIndex.get(uid);
+            if (typeof i === 'number') {
+                entrypointsByIndex[String(i)] = [pos[0], pos[1], pos[2]];
+            }
+        });
+        return { startSplatIndex, entrypointsByIndex };
+    });
+
+    events.function('docDeserialize.portals', (data: PortalDocData[], start?: number | null, eps?: Record<string, [number, number, number]>, remap?: { indexToUid: number[], startIndex?: number | null, entrypointsByIndex?: Record<string, [number, number, number]> }) => {
+        // index fields are authoritative when present (uids are session-scoped
+        // and only valid in the session that saved them); legacy documents
+        // without index fields keep the old raw-uid behavior verbatim
+        const indexToUid = (remap && Array.isArray(remap.indexToUid)) ? remap.indexToUid : null;
+        const fromIndex = (index: number | null): number | null => {
+            if (!indexToUid || typeof index !== 'number') {
+                return null;
+            }
+            const uid = indexToUid[index];
+            return (typeof uid === 'number') ? uid : null;
+        };
+
         portals.length = 0;
         nextId = 0;
         selectedId = null;
-        startUid = (typeof start === 'number') ? start : null;
+
+        if (indexToUid && remap.startIndex !== undefined) {
+            startUid = fromIndex(remap.startIndex);
+        } else {
+            startUid = (typeof start === 'number') ? start : null;
+        }
+
         entrypoints.clear();
-        if (eps && typeof eps === 'object') {
+        if (indexToUid && remap.entrypointsByIndex !== undefined) {
+            const byIndex = remap.entrypointsByIndex;
+            Object.keys(byIndex).forEach((k) => {
+                const uid = fromIndex(parseInt(k, 10));
+                const v = byIndex[k];
+                if (uid !== null && Array.isArray(v) && v.length >= 3) {
+                    entrypoints.set(uid, [v[0], v[1], v[2]]);
+                }
+            });
+        } else if (eps && typeof eps === 'object') {
             Object.keys(eps).forEach((k) => {
                 const v = eps[k];
                 if (Array.isArray(v) && v.length >= 3) {
@@ -254,16 +316,23 @@ const registerPortalsEvents = (events: Events) => {
                 }
             });
         }
+
         if (Array.isArray(data)) {
             data.forEach((d) => {
+                const resolve = (index: number | null | undefined, legacyUid: number | null | undefined) => {
+                    if (indexToUid && index !== undefined) {
+                        return fromIndex(index);
+                    }
+                    return legacyUid ?? null;
+                };
                 portals.push({
                     id: d.id ?? genId(),
                     position: d.position,
                     rotation: d.rotation ?? [0, 0, 0, 1],
                     width: d.width ?? 1,
                     height: d.height ?? 1,
-                    frontUid: d.frontUid ?? null,
-                    backUid: d.backUid ?? null,
+                    frontUid: resolve(d.frontIndex, d.frontUid),
+                    backUid: resolve(d.backIndex, d.backUid),
                     infinite: d.infinite
                 });
                 const m = /^portal_(\d+)$/.exec(d.id ?? '');
