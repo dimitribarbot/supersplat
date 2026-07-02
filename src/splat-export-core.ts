@@ -73,9 +73,9 @@ const injectPortals = (html: string, viewerSettingsJson: any): string => {
     // Ensure the viewer handle is published (idempotent: only inject if not
     // already present, since injectOffLimitsZones may have added it first).
     const bootstrap = 'const viewer = await main(canvas, settingsJson, config);';
-    const withHandle = (html.includes(bootstrap) && !html.includes('window.__supersplatViewer = viewer;'))
-        ? html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`)
-        : html;
+    const withHandle = (html.includes(bootstrap) && !html.includes('window.__supersplatViewer = viewer;')) ?
+        html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
+        html;
     return withHandle.includes('</body>') ? withHandle.replace('</body>', `${injection}</body>`) : withHandle + injection;
 };
 
@@ -475,12 +475,16 @@ const writeStreamingViewerCore = async (
     if (extraScenes && extraScenes.length > 0) {
         const collRadius = collision?.radius ?? 50;
         const collVoxelSize = collision?.voxelSize ?? 0.05;
+        // Hoisted out of the loop (no-loop-func); scenePrefix is refreshed each
+        // iteration before the awaited call, so the callback reads the right value.
+        let scenePrefix = '';
+        const onSceneProgress = (label: string, c: boolean) => {
+            phase = `${scenePrefix}: ${label}`;
+            counted = c;
+        };
         for (let i = 0; i < extraScenes.length; i++) {
-            const scenePrefix = `Scene ${i + 2}/${extraScenes.length + 1}`;
-            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, (label, c) => {
-                phase = `${scenePrefix}: ${label}`;
-                counted = c;
-            }));
+            scenePrefix = `Scene ${i + 2}/${extraScenes.length + 1}`;
+            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, onSceneProgress));
         }
     }
 

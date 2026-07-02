@@ -1237,15 +1237,15 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
     // Build per-scene extra tables for a portal walkthrough. The primary scene
     // is index 0 (the passed `splats` / `dataTable`); extra scenes are looked up
     // by uid against the full scene list so hidden scenes still export.
-    const extraScenes = (experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1)
-        ? options.portalScenes?.map((entry) => ({
+    const extraScenes = (experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1) ?
+        options.portalScenes?.map(entry => ({
             collisionUrl: entry.collisionUrl,
             environment: entry.environment,
             seed: entry.seed,
             streaming: options.streaming ?? false,
             dataTable: extractDataTable([entry.splat], serializeSettings)
-        })) ?? []
-        : [];
+        })) ?? [] :
+        [];
 
     await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision, extraScenes);
 };

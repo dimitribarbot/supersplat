@@ -51,7 +51,9 @@ const buildPortalBundle = (args: {
     const add = (uid: number | null) => {
         if (exists(uid) && !referenced.includes(uid)) referenced.push(uid);
     };
-    portals.forEach((p) => { add(p.frontUid); add(p.backUid); });
+    portals.forEach((p) => {
+        add(p.frontUid); add(p.backUid);
+    });
 
     // choose the start scene: explicit start if valid, else first referenced
     const start = exists(startUid) ? startUid : (referenced[0] ?? null);

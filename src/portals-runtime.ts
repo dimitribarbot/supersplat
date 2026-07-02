@@ -2,8 +2,8 @@ import { Mat4, Vec3 } from 'playcanvas';
 
 import { ElementType } from './element';
 import { Events } from './events';
-import { PortalData } from './portals';
 import { PortalRect, resolveActiveSplat } from './portal-geom';
+import { PortalData } from './portals';
 import { Scene } from './scene';
 import { Splat } from './splat';
 

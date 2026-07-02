@@ -51,6 +51,13 @@ class ScenePanel extends Container {
         });
         soloToggle.dom.appendChild(createSvg(soloSvg));
 
+        let walkthroughActive = false;
+
+        const walkthroughToggle = new Container({
+            class: 'panel-header-button'
+        });
+        walkthroughToggle.dom.appendChild(createSvg(portalSvg));
+
         soloToggle.on('click', () => {
             soloActive = !soloActive;
             if (soloActive) {
@@ -65,13 +72,6 @@ class ScenePanel extends Container {
             }
             events.fire('scene.solo', soloActive);
         });
-
-        let walkthroughActive = false;
-
-        const walkthroughToggle = new Container({
-            class: 'panel-header-button'
-        });
-        walkthroughToggle.dom.appendChild(createSvg(portalSvg));
 
         const refreshWalkthroughEnabled = () => {
             const count = events.invoke('portals.count') as number;

@@ -5,8 +5,8 @@ import { localize } from './localization';
 import { Events } from '../events';
 import { probeExportCapabilities } from '../export-server-client';
 import { ExportType, SceneExportOptions } from '../file-handler';
-import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
 import { buildPortalBundle } from '../portal-export';
+import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
 import sceneExport from './svg/export.svg';
 
 const createSvg = (svgString: string, args = {}) => {
@@ -314,10 +314,12 @@ class ExportPopup extends Container {
             const startUid = events.invoke('portals.startSplat') ?? null;
             const allSplats = events.invoke('scene.allSplats') ?? [];
             const availableUids = allSplats.map((s: any) => s.uid);
-            const bundle = events.invoke('portals.count') > 0
-                ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: true })
-                : null;
-            if (!bundle) { perSceneEnvRow.hidden = true; return; }
+            const bundle = events.invoke('portals.count') > 0 ?
+                buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: true }) :
+                null;
+            if (!bundle) {
+                perSceneEnvRow.hidden = true; return;
+            }
             perSceneEnvRow.hidden = false;
             bundle.sceneUids.forEach((uid, index) => {
                 const splat = allSplats.find((s: any) => s.uid === uid);
@@ -735,9 +737,9 @@ class ExportPopup extends Container {
                 const allSplats = events.invoke('scene.allSplats') ?? [];
                 const availableUids = allSplats.map((s: any) => s.uid);
                 const collisionOn = viewerTypeSelect.value === 'zip' && collisionToggle.value;
-                const bundle = (events.invoke('portals.count') ?? 0) > 0
-                    ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: collisionOn })
-                    : null;
+                const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
+                    buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: collisionOn }) :
+                    null;
 
                 const experienceSettings: ExperienceSettings = {
                     version: 2,

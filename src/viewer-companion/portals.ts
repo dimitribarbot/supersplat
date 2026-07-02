@@ -770,11 +770,11 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
     // < > & are escaped; U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR
     // are escaped because they are treated as line terminators in JS).
     const payloadJson = JSON.stringify(payload)
-        .replace(/</g, '\\u003c')
-        .replace(/>/g, '\\u003e')
-        .replace(/&/g, '\\u0026')
-        .replace(/\u2028/g, '\\u2028')
-        .replace(/\u2029/g, '\\u2029');
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
     return `<style>${companionStyle}</style>` +
         `<script>window.__supersplatPortals = ${payloadJson};</script>` +
         `<script>${companionRuntime}</script>`;

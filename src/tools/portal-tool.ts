@@ -151,10 +151,12 @@ class PortalTool {
         });
 
         // --- selection helpers ---
-        const selected = (): PortalData | null => {
+        // Declared as a hoisted function so the deferred handlers above can
+        // reference it before this point (no-use-before-define allows functions).
+        function selected(): PortalData | null {
             const id = events.invoke('portals.selected') as string | null;
             return id ? (events.invoke('portals.byId', id) as PortalData) : null;
-        };
+        }
 
         // --- scene dropdown helpers (mirrors alignment-panel.ts:111-133) ---
         const splatList = () => scene.getElementsByType(ElementType.splat) as Splat[];
@@ -175,8 +177,8 @@ class PortalTool {
                 if (p.backUid !== null) referenced.add(p.backUid);
             });
             entrySceneInput.options = splatList()
-                .filter(s => referenced.has(s.uid))
-                .map(s => ({ v: s.uid, t: splatName(s) }));
+            .filter(s => referenced.has(s.uid))
+            .map(s => ({ v: s.uid, t: splatName(s) }));
         };
 
         let suppress = false;
@@ -565,7 +567,7 @@ class PortalTool {
         const entryPivot = new Entity('portalEntrypointPivot');
         const entryDragStart = new Vec3();
 
-        const updateEntryGizmo = () => {
+        function updateEntryGizmo() {
             entryGizmo.detach();
             entryGizmoArmed = false;
             if (!active || selectedEntryUid == null) return;
@@ -587,12 +589,16 @@ class PortalTool {
             entryPivot.setLocalPosition(pos[0], pos[1], pos[2]);
             entryGizmo.attach(entryPivot);
             scene.forceRender = true;
-        };
-        entryGizmo.on('render:update', () => { scene.forceRender = true; });
+        }
+        entryGizmo.on('render:update', () => {
+            scene.forceRender = true;
+        });
         entryGizmo.on('transform:start', () => {
             entryDragStart.copy(entryPivot.getLocalPosition());
         });
-        entryGizmo.on('transform:move', () => { scene.forceRender = true; });
+        entryGizmo.on('transform:move', () => {
+            scene.forceRender = true;
+        });
         entryGizmo.on('transform:end', () => {
             if (selectedEntryUid == null) return;
             const p = entryPivot.getLocalPosition();

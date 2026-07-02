@@ -106,10 +106,12 @@ class S3PublishDialog extends Container {
             const startUid = events.invoke('portals.startSplat') ?? null;
             const allSplats = events.invoke('scene.allSplats') ?? [];
             const availableUids = allSplats.map((s: any) => s.uid);
-            const bundle = (events.invoke('portals.count') ?? 0) > 0
-                ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: true })
-                : null;
-            if (!bundle) { perSceneEnvRow.hidden = true; return; }
+            const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
+                buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: true }) :
+                null;
+            if (!bundle) {
+                perSceneEnvRow.hidden = true; return;
+            }
             perSceneEnvRow.hidden = false;
             bundle.sceneUids.forEach((uid, index) => {
                 const splat = allSplats.find((s: any) => s.uid === uid);
@@ -231,9 +233,9 @@ class S3PublishDialog extends Container {
                 const startUid = events.invoke('portals.startSplat') ?? null;
                 const allSplats = events.invoke('scene.allSplats') ?? [];
                 const availableUids = allSplats.map((s: any) => s.uid);
-                const bundle = (events.invoke('portals.count') ?? 0) > 0
-                    ? buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: collision.value })
-                    : null;
+                const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
+                    buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: collision.value }) :
+                    null;
                 const experienceSettings: ExperienceSettings = {
                     version: 2,
                     tonemapping: events.invoke('camera.tonemapping') ?? 'none',
