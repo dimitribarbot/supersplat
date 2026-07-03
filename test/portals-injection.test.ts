@@ -95,23 +95,103 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('[{"t":0,"scene":0}]');
     });
 
-    it('includes the two-level coarse-LOD cache-warming routine in the runtime', () => {
+    it('includes incremental distance-2 warming and budget-capped pinning in the runtime', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
             portalScenes: ['', 'scenes/1/lod-meta.json'],
             portalStart: 0
         });
-        expect(out).toContain('warmExtraScenes');
-        // both stages' helpers are stringified in: lod-meta -> block-metas -> webps
+        // frontier-shift warming replaces the startup warm-everything pass
+        expect(out).toContain('warmFrontier');
+        expect(out).toContain('computeWarmSet');
+        expect(out).not.toContain('warmExtraScenes');
+        // both warm stages' helpers are stringified in: lod-meta -> block-metas -> webps
         expect(out).toContain('collectLodFileUrls');
         expect(out).toContain('collectSogBlockFileUrls');
-        // budget-driven depth selection is present (used by the cache-warming pass)
-        expect(out).toContain('lodMinLevelForBudget');
-        // adjacent scenes are pinned resident at the device-observed finest level
+        // adjacent scenes are pinned resident at budget-capped, device-observed depths
         // and reclaimed when they leave the portal-adjacency frontier
+        expect(out).toContain('assignPinDepths');
         expect(out).toContain('pinSceneToLevel');
         expect(out).toContain('incRefCount');
         expect(out).toContain('buildPortalAdjacency');
         expect(out).toContain('updateDeviceFinest');
+    });
+
+    it('frontier-manages SOG scenes: load on entry, full unload on exit', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0
+        });
+        expect(out).toContain('reconcileFrontier');
+        expect(out).toContain('unloadScene');
+        expect(out).toContain('assets.remove');   // asset deregistered so a re-load creates a fresh Asset
+        expect(out).toContain('.unload()');       // resource destroyed (engine defers until sorter releases)
+        expect(out).toContain('sceneLoading');
+    });
+
+    it('frontier-manages collision voxels and guards the start snapshot', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            portalCollision: ['index.voxel.json', 'scenes/1/scene.voxel.json']
+        });
+        expect(out).toContain('reconcileCollisions');
+        expect(out).toContain('snapshotTaken');
+        expect(out).not.toContain('preloadCollisions');
+    });
+});
+
+describe('buildPortalsInjection smoke', () => {
+    // Representative 3-scene streaming payload: chained portals 0-1-2, collision
+    // on, per-level counts present (finest -> coarsest).
+    const payload = {
+        portals: [
+            { position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 },
+            { position: [5, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 1, back: 2 }
+        ],
+        portalScenes: ['', 'scenes/1/lod-meta.json', 'scenes/2/lod-meta.json'],
+        portalStart: 0,
+        portalCollision: ['index.voxel.json', 'scenes/1/scene.voxel.json', 'scenes/2/scene.voxel.json'],
+        portalEnvironments: ['indoor', 'indoor', 'indoor'],
+        portalSceneLodCounts: [[1000000, 250000, 62500], [800000, 200000, 50000], [600000, 150000, 37500]]
+    };
+
+    const extractScripts = (html: string): string[] => {
+        const out: string[] = [];
+        const re = /<script>([\s\S]*?)<\/script>/g;
+        let m;
+        while ((m = re.exec(html)) !== null) {
+            out.push(m[1]);
+        }
+        return out;
+    };
+
+    it('emits exactly two scripts: payload global then runtime', () => {
+        const scripts = extractScripts(buildPortalsInjection(payload));
+        expect(scripts.length).toBe(2);
+        expect(scripts[0]).toContain('window.__supersplatPortals');
+        expect(scripts[1]).toContain('function');
+    });
+
+    it('runtime script body constructs via new Function without throwing', () => {
+        const scripts = extractScripts(buildPortalsInjection(payload));
+        // Construction (not execution) catches syntax-level breakage in the
+        // stringified helpers and the IIFE template.
+        expect(() => new Function(scripts[1])).not.toThrow();
+    });
+
+    it('payload global round-trips through JSON.parse', () => {
+        const scripts = extractScripts(buildPortalsInjection(payload));
+        const m = scripts[0].match(/^window\.__supersplatPortals = ([\s\S]*);$/);
+        expect(m).not.toBeNull();
+        const parsed = JSON.parse(m![1]);
+        expect(parsed.portalScenes).toEqual(payload.portalScenes);
+        expect(parsed.portalSceneLodCounts).toEqual(payload.portalSceneLodCounts);
+        expect(parsed.portalCollision).toEqual(payload.portalCollision);
+        expect(parsed.portalStart).toBe(0);
+        expect(Array.isArray(parsed.portalAnimTimeline)).toBe(true);
+        expect(parsed.loadingDefaults.en).toBeTruthy();
     });
 });

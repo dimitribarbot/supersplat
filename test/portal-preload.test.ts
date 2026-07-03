@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -214,5 +214,90 @@ describe('desiredResidentScenes', () => {
 
     it('returns empty for an out-of-range active scene', () => {
         expect(desiredResidentScenes(adjacency, 9)).toEqual([]);
+    });
+});
+
+describe('assignPinDepths', () => {
+    // counts finest -> coarsest; pin cost at depth d = sum of counts[d..]
+    const counts = [
+        [1000, 100, 10],   // scene 0 (start, never pin-managed)
+        [1000, 100, 10],   // scene 1: cost 1110 / 110 / 10 at depths 0/1/2
+        [2000, 200, 20],   // scene 2: cost 2220 / 220 / 20
+        [1000, 100, 10]    // scene 3: cost 1110 / 110 / 10
+    ];
+
+    it('keeps everything at deviceFinest when the total fits the budget', () => {
+        // active 1 (1110) + neighbour 2 (2220) = 3330 <= 4000
+        expect(assignPinDepths(1, [2], counts, 0, 4000)).toEqual({ 1: 0, 2: 0 });
+    });
+
+    it('degrades the costliest neighbour first, one level at a time', () => {
+        // active 1 (1110) + n2 (2220) + n3 (1110) = 4440 > 3000
+        // -> degrade scene 2 to depth 1 (220): total 2440 <= 3000
+        expect(assignPinDepths(1, [2, 3], counts, 0, 3000)).toEqual({ 1: 0, 2: 1, 3: 0 });
+    });
+
+    it('never degrades the active scene, even when the budget cannot be met', () => {
+        // budget below the active cost alone: neighbours end at coarsest, active untouched
+        expect(assignPinDepths(1, [2, 3], counts, 0, 1000)).toEqual({ 1: 0, 2: 2, 3: 2 });
+    });
+
+    it('stops degrading at each scene\'s coarsest level', () => {
+        const d = assignPinDepths(1, [2], counts, 0, 1);
+        expect(d[2]).toBe(2);
+        expect(d[1]).toBe(0);
+    });
+
+    it('clamps deviceFinest to each scene\'s coarsest and treats null as coarsest', () => {
+        expect(assignPinDepths(1, [2], counts, 5, 100000)).toEqual({ 1: 2, 2: 2 });
+        expect(assignPinDepths(1, [2], counts, null, 100000)).toEqual({ 1: 2, 2: 2 });
+    });
+
+    it('excludes scene 0 and de-duplicates the active out of the neighbour list', () => {
+        expect(assignPinDepths(0, [1, 0, 1], counts, 0, 100000)).toEqual({ 1: 0 });
+    });
+
+    it('unknown budget (<= 0): neighbours at coarsest, active at base depth', () => {
+        expect(assignPinDepths(1, [2], counts, 0, 0)).toEqual({ 1: 0, 2: 2 });
+        expect(assignPinDepths(1, [2], counts, 0, -1)).toEqual({ 1: 0, 2: 2 });
+    });
+
+    it('scenes with missing counts get the base depth and zero cost', () => {
+        // empty counts -> coarsest = 0 -> base depth 0; cost 0 so budget never trips
+        expect(assignPinDepths(1, [2], [[], [], []], 1, 10)).toEqual({ 1: 0, 2: 0 });
+    });
+});
+
+describe('computeWarmSet', () => {
+    // linear chain 0-1-2-3-4
+    const chain = [[1], [0, 2], [1, 3], [2, 4], [3]];
+
+    it('returns the scenes at graph distance 2 from the active scene', () => {
+        // active 0, pinned {1}: neighbours of {0,1} = {0,1,2} minus frontier -> [2]
+        expect(computeWarmSet(0, chain, [1])).toEqual([2]);
+        // active 1, pinned {1,2}: neighbours of {1,2} ∪ {1} = {0,1,2,3} minus frontier, minus 0 -> [3]
+        expect(computeWarmSet(1, chain, [1, 2])).toEqual([3]);
+    });
+
+    it('excludes scene 0 even when it sits at distance 2', () => {
+        // active 2, pinned {1,2,3}: 0 is a neighbour of 1 but is always resident
+        const warm = computeWarmSet(2, chain, [1, 2, 3]);
+        expect(warm).toEqual([4]);
+        expect(warm).not.toContain(0);
+    });
+
+    it('returns empty when everything reachable is already pinned', () => {
+        expect(computeWarmSet(1, [[1], [0]], [1])).toEqual([]);
+    });
+
+    it('handles a hub topology (multiple distance-2 scenes, sorted)', () => {
+        // scene 1 connects to 2, 3, 4; active 2, pinned {1,2}
+        const star = [[], [2, 3, 4], [1], [1], [1]];
+        expect(computeWarmSet(2, star, [1, 2])).toEqual([3, 4]);
+    });
+
+    it('returns empty for an out-of-range active scene or missing adjacency', () => {
+        expect(computeWarmSet(9, chain, [])).toEqual([]);
+        expect(computeWarmSet(0, null as any, [])).toEqual([]);
     });
 });

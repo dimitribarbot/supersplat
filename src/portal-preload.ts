@@ -224,4 +224,129 @@ const desiredResidentScenes = (adjacency: number[][], active: number): number[] 
     return out;
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+// Assign a pin depth (minimum LOD level to keep resident) to each frontier scene
+// so the TOTAL pinned splat count stays within the device budget.
+// sceneLodCounts[s][lv] is scene s's whole-scene splat count at level lv
+// (0 = finest .. last = coarsest); pinning scene s at depth d keeps levels
+// [d .. coarsest] resident, costing sum(counts[s][d..]) splats. The active scene
+// keeps the base depth (deviceFinest clamped to its own coarsest) and is never
+// degraded; neighbours degrade one level at a time -- costliest first, ties to
+// the earliest neighbour -- until the total fits or all sit at their coarsest.
+// deviceFinest null (not yet observed) -> each scene's coarsest. budget <= 0
+// (unknown) -> neighbours at coarsest, active at base. Missing/empty counts ->
+// base depth, cost 0 (unmeasurable; the runtime clamps to the real octree span).
+// Only extra scenes (index >= 1) are returned: scene 0 is the viewer's own
+// always-resident start scene, never pin-managed. Pure and self-contained (no
+// imports, no sibling-function calls) so it can be stringified verbatim into the
+// exported viewer runtime via Function.toString().
+const assignPinDepths = (
+    activeIdx: number,
+    neighborIdxs: number[],
+    sceneLodCounts: number[][],
+    deviceFinest: number | null,
+    budget: number
+): Record<number, number> => {
+    const coarsest = (s: number): number => {
+        const c = sceneLodCounts && sceneLodCounts[s];
+        return (c && c.length) ? c.length - 1 : 0;
+    };
+    const baseDepth = (s: number): number => {
+        const max = coarsest(s);
+        if (deviceFinest === null || deviceFinest === undefined) {
+            return max;
+        }
+        return Math.min(Math.max(deviceFinest, 0), max);
+    };
+    const cost = (s: number, d: number): number => {
+        const c = sceneLodCounts && sceneLodCounts[s];
+        if (!c || !c.length) {
+            return 0;
+        }
+        let sum = 0;
+        for (let lv = d; lv < c.length; lv++) {
+            sum += (c[lv] || 0);
+        }
+        return sum;
+    };
+    const hasBudget = typeof budget === 'number' && budget > 0;
+    const depths: Record<number, number> = {};
+    const neighbours: number[] = [];
+    if (activeIdx >= 1) {
+        depths[activeIdx] = baseDepth(activeIdx);
+    }
+    for (let i = 0; i < (neighborIdxs || []).length; i++) {
+        const n = neighborIdxs[i];
+        if (n >= 1 && n !== activeIdx && depths[n] === undefined) {
+            depths[n] = hasBudget ? baseDepth(n) : coarsest(n);
+            neighbours.push(n);
+        }
+    }
+    if (!hasBudget) {
+        return depths;
+    }
+    const total = (): number => {
+        let t = 0;
+        for (const k in depths) {
+            const s = Number(k);
+            t += cost(s, depths[s]);
+        }
+        return t;
+    };
+    while (total() > budget) {
+        let pick = -1;
+        let pickCost = -1;
+        for (let i = 0; i < neighbours.length; i++) {
+            const n = neighbours[i];
+            if (depths[n] >= coarsest(n)) {
+                continue;                    // already at its coarsest
+            }
+            const c = cost(n, depths[n]);
+            if (c > pickCost) {
+                pickCost = c;
+                pick = n;
+            }
+        }
+        if (pick < 0) {
+            break;                           // nothing left to degrade
+        }
+        depths[pick] += 1;
+    }
+    return depths;
+};
+
+// Scenes at graph distance 2 from the active scene: neighbours of the pinned
+// frontier ({active} ∪ pinnedSet) that are not themselves in it. These are the
+// ones worth HTTP-cache warming -- distance <= 1 is pinned resident (instant
+// crossing) and a distance-2 scene becomes pinned after ONE more crossing, so a
+// warm cache makes that future pin fetch fast. Scene 0 (the viewer's own
+// always-resident start scene) is excluded. Sorted, de-duplicated. Pure and
+// self-contained (no imports, no sibling-function calls) so it can be
+// stringified verbatim into the exported viewer runtime via Function.toString().
+const computeWarmSet = (activeIdx: number, adjacency: number[][], pinnedSet: number[]): number[] => {
+    if (!adjacency || activeIdx < 0 || activeIdx >= adjacency.length) {
+        return [];
+    }
+    const inFrontier: Record<number, boolean> = {};
+    inFrontier[activeIdx] = true;
+    for (let i = 0; i < (pinnedSet || []).length; i++) {
+        inFrontier[pinnedSet[i]] = true;
+    }
+    const warm: Record<number, boolean> = {};
+    for (const k in inFrontier) {
+        const neighbours = adjacency[Number(k)] || [];
+        for (let i = 0; i < neighbours.length; i++) {
+            const n = neighbours[i];
+            if (n >= 1 && !inFrontier[n]) {
+                warm[n] = true;
+            }
+        }
+    }
+    const out: number[] = [];
+    for (const k in warm) {
+        out.push(Number(k));
+    }
+    out.sort((x, y) => x - y);
+    return out;
+};
+
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

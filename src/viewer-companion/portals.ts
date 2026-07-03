@@ -1,6 +1,6 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -64,10 +64,11 @@ const companionRuntime = `
   var resolveActiveSplat = ${resolveActiveSplat.toString()};
   var resolveLoadingMessage = ${resolveLoadingMessage.toString()};
   var collectLodFileUrls = ${collectLodFileUrls.toString()};
-  var lodMinLevelForBudget = ${lodMinLevelForBudget.toString()};
   var collectSogBlockFileUrls = ${collectSogBlockFileUrls.toString()};
   var buildPortalAdjacency = ${buildPortalAdjacency.toString()};
   var desiredResidentScenes = ${desiredResidentScenes.toString()};
+  var assignPinDepths = ${assignPinDepths.toString()};
+  var computeWarmSet = ${computeWarmSet.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
@@ -83,11 +84,17 @@ const companionRuntime = `
   var sceneMinLevel = [];                   // scene index -> device-depth level (its reveal lodRangeMin)
   var adjacency = null;                     // built in start() from data.portals
   var pinnedScenes = {};                    // scene index -> true when currently pinned
+  var pinDepth = [];                        // scene index -> currently applied pin depth (min pinned level)
   var pinReady = false;                     // set once the budget + deviceFinest have first settled; later reconciles run immediately
+  var sceneLoading = [];                    // scene index -> gsplat asset load in flight
+  var liveApp = null;                       // pc.AppBase, captured once start() finds it
+  var startEntityRef = null;                // the viewer's own start-scene entity (transform template for extra scenes)
+  var EntityCtor = null;                    // pc.Entity constructor (reached via the start entity)
   var activeIndex = data.portalStart || 0;
-  // Streaming vs SOG: only streaming scenes stream progressively (and can show
-  // the black clear color on first crossing); SOG scenes are fully resident the
-  // moment their entity exists, so they never get the loading overlay.
+  // Streaming vs SOG: streaming scenes stream progressively via the pin
+  // machinery; SOG scenes are frontier-managed whole assets (loaded when they
+  // enter the adjacency frontier, fully unloaded when they leave), so a fast
+  // crossing into a still-loading SOG scene shows the loading overlay too.
   var streaming = (data.portalScenes || []).some(function (u) { return u && u.indexOf('lod-meta.json') !== -1; });
   var lastSafe = null;
   var timeline = data.portalAnimTimeline || null;   // [{t, scene}] sorted ascending; null/absent when no animation
@@ -105,16 +112,20 @@ const companionRuntime = `
     }
     return s;
   }
-  // Switch to scene idx: enable it, swap collision, and arm the streaming
-  // loading overlay on a first visit. No-op when already active or not loaded.
+  // Switch to scene idx: enable it, swap collision, reconcile the frontier and
+  // arm the loading overlay when the destination is not ready (still streaming,
+  // or a SOG scene whose asset has not finished loading). Tolerates a target
+  // whose entity does not exist yet: activeIndex flips immediately (the frontier
+  // reconcile loads it) and the load callback enables it on arrival.
   function switchTo(idx) {
-    if (idx === activeIndex || idx === null || !entities[idx]) return;
+    if (idx === activeIndex || idx === null || idx === undefined) return;
+    if (idx < 0 || idx >= data.portalScenes.length) return;
     activeIndex = idx;
     applyActive();
     swapCollision(idx);
     scheduleRefine(idx);
-    pinWhenBudgetReady();
-    if (streaming && !readyScenes[idx] && pendingIndex !== idx) { beginLoading(idx); }
+    reconcileFrontier();
+    if (!readyScenes[idx] && pendingIndex !== idx) { beginLoading(idx); }
   }
 
   // --- device-depth reveal -----------------------------------------------
@@ -228,6 +239,9 @@ const companionRuntime = `
   // by the movers on the next frame. We never construct a new instance, which keeps
   // the original class (e.g. legacy FlippedVoxelCollision stays flipped).
   var voxels = [];                         // scene index -> parsed field-set (or undefined)
+  var voxelLoading = [];                   // scene index -> voxel fetch in flight
+  var snapshotIdx = data.portalStart || 0; // scene whose field-set is the live-instance snapshot; retained all session (it is the restore source for walking back to the start and was captured, not fetched)
+  var snapshotTaken = false;               // set once initCollisions captures the pristine start snapshot
   function liveCollision() {
     var v = window.__supersplatViewer;
     return (v && v.inputController && v.inputController.collision) || null;
@@ -270,38 +284,67 @@ const companionRuntime = `
       });
     });
   }
-  function preloadCollisions() {
+  // Ensure scene idx's collision field-set is loaded (fetch once; concurrent
+  // calls guarded). On completion: discard if the scene left the frontier while
+  // fetching, and apply immediately if the user already crossed into it.
+  function loadVoxel(idx) {
+    if (!data.portalCollision || voxels[idx] || voxelLoading[idx]) return;
+    var url = data.portalCollision[idx];
+    if (!url) return;
+    voxelLoading[idx] = true;
+    parseVoxel(url).then(function (f) {
+      voxelLoading[idx] = false;
+      if (idx !== snapshotIdx && idx !== activeIndex && !sceneWanted(idx)) { return; }
+      voxels[idx] = f;
+      if (idx === activeIndex) swapCollision(idx);
+    }).catch(function (err) {
+      voxelLoading[idx] = false;
+      console.warn('portal collision ' + idx + ' failed:', err);
+    });
+  }
+
+  // Frontier-manage the collision field-sets: fetch voxels for the active scene
+  // + its portal neighbours (scene 0 included -- crossing back into it must swap
+  // to its data, which is the retained snapshot), drop the rest so their
+  // Uint32Arrays can be GC'd. The start snapshot (snapshotIdx) is never dropped.
+  function reconcileCollisions(want) {
     if (!data.portalCollision || data.portalCollision.length === 0) return;
-    // The viewer loads its collision asynchronously and independently of the
-    // camera/gsplat, so the shared instance may not exist yet on the first
-    // attempt. Poll until it does (collision-on exports always bundle + load it).
-    var live = liveCollision();
-    if (!live) { requestAnimationFrame(preloadCollisions); return; }
-    // The viewer already loaded the start scene's collision - snapshot it so we
-    // can restore it when walking back to the start scene.
-    voxels[activeIndex] = snapshot(live);
-    for (var i = 0; i < data.portalCollision.length; i++) {
-      (function (idx) {
-        if (idx === activeIndex || voxels[idx]) return;
-        var url = data.portalCollision[idx];
-        if (!url) return;
-        parseVoxel(url).then(function (f) {
-          voxels[idx] = f;
-          // If the user already crossed into this scene while its collision was
-          // still loading, apply it now so visual and collision stay in sync.
-          if (idx === activeIndex) swapCollision(idx);
-        }).catch(function (err) { console.warn('portal collision ' + idx + ' failed:', err); });
-      })(i);
+    var keep = {};
+    keep[snapshotIdx] = true;
+    keep[activeIndex] = true;
+    for (var i = 0; i < want.length; i++) { keep[want[i]] = true; }
+    var neigh = (adjacency && adjacency[activeIndex]) || [];
+    for (var n = 0; n < neigh.length; n++) { keep[neigh[n]] = true; }
+    for (var idx = 0; idx < data.portalCollision.length; idx++) {
+      if (keep[idx]) { loadVoxel(idx); } else if (voxels[idx]) { voxels[idx] = undefined; }
     }
+  }
+
+  // Startup: wait for the viewer's own (asynchronously loaded) collision
+  // instance, snapshot the pristine start-scene field-set, then bring the
+  // frontier in. Collision-on exports always bundle + load the instance.
+  function initCollisions() {
+    if (!data.portalCollision || data.portalCollision.length === 0) return;
+    var live = liveCollision();
+    if (!live) { requestAnimationFrame(initCollisions); return; }
+    voxels[snapshotIdx] = snapshot(live);
+    snapshotTaken = true;
+    // If the user already crossed while we were waiting for the live instance,
+    // bring collision in sync with the visuals now.
+    if (activeIndex !== snapshotIdx && voxels[activeIndex]) { swapCollision(activeIndex); }
+    reconcileCollisions(adjacency ? desiredResidentScenes(adjacency, activeIndex) : []);
   }
   function swapCollision(idx) {
     var live = liveCollision();
-    if (live && voxels[idx]) {
-      applyVoxel(live, voxels[idx]);
-      // Live-update the overlay only if it is currently shown; otherwise it is
-      // refreshed lazily when the user enables it (see the listener in start()).
-      if (overlayEnabled()) refreshOverlay();
-    }
+    // Never overwrite the shared instance before the pristine start snapshot is
+    // captured: the snapshot is the only restore source for the start scene.
+    // initCollisions re-applies the active voxel right after snapshotting, so a
+    // crossing during the startup poll still ends up in sync.
+    if (!snapshotTaken || !live || !voxels[idx]) return;
+    applyVoxel(live, voxels[idx]);
+    // Live-update the overlay only if it is currently shown; otherwise it is
+    // refreshed lazily when the user enables it (see the listener in start()).
+    if (overlayEnabled()) refreshOverlay();
   }
 
   // The overlay's GPU buffers are uploaded once at construction, so an in-place
@@ -378,44 +421,21 @@ const companionRuntime = `
       });
     }
 
+    liveApp = app;
+    startEntityRef = startEntity;
+    EntityCtor = Entity;
+    // Streaming scenes load eagerly: the asset is only the small lod-meta.json
+    // (a disabled scene streams no blocks on its own). SOG scenes are frontier-
+    // managed by reconcileFrontier: the asset IS the full splat data, so only
+    // the active scene's portal neighbours are kept loaded.
     for (var i = 1; i < data.portalScenes.length; i++) {
-      (function (idx) {
-        var url = data.portalScenes[idx];
-        if (!url) return;
-        // loadFromUrl builds + loads the gsplat Asset internally (Task 8: the
-        // start entity's gsplat.asset is a numeric id, so the Asset class is not
-        // reachable that way). Works for both SOG and streaming (lod-meta.json).
-        app.assets.loadFromUrl(url, 'gsplat', function (err, asset) {
-          if (err || !asset) { console.warn('portal scene ' + idx + ' failed to load:', err); return; }
-          var e = new Entity('portalScene' + idx);
-          var comp = e.addComponent('gsplat', { unified: true, asset: asset });
-          // The start gsplat is parented directly to app.root in exported
-          // viewers, so copying its LOCAL transform places extra scenes in the
-          // same shared world frame the export already baked them into.
-          e.setLocalPosition(startEntity.getLocalPosition());
-          e.setLocalRotation(startEntity.getLocalRotation());
-          e.setLocalScale(startEntity.getLocalScale());
-          app.root.addChild(e);
-          e.enabled = (idx === activeIndex);
-          entities[idx] = e;
-          comps[idx] = comp;
-          assets[idx] = asset;
-          octrees[idx] = getOctree(asset);
-          sceneMinLevel[idx] = deviceMinLevel(idx);
-          if (comp && octrees[idx]) {
-            comp.lodRangeMin = sceneMinLevel[idx];
-            comp.lodRangeMax = 1000;
-          }
-          if (idx === activeIndex) scheduleRefine(idx);
-          pinWhenBudgetReady();               // reconcile the frontier (incl. this just-loaded scene) once budget/deviceFinest settle
-          app.renderNextFrame = true;
-        });
-      })(i);
+      var u = data.portalScenes[i];
+      if (u && u.indexOf('lod-meta.json') !== -1) { loadScene(i); }
     }
 
     applyActive();
-    pinWhenBudgetReady();
-    preloadCollisions();
+    reconcileFrontier();
+    initCollisions();
     requestAnimationFrame(tick);
   }
 
@@ -442,10 +462,11 @@ const companionRuntime = `
         if (st && st.cameraMode === 'anim' && timeline) {
           switchTo(sceneAtTime(st.animationTime || 0));
         } else if (lastSafe) {
-          // A crossing whose target scene has not finished loading (entities[next]
-          // missing) is skipped; eager preload at startup makes this rare.
+          // A crossing whose target has neither loaded nor started loading is
+          // skipped (defensive: frontier preloading starts every reachable
+          // neighbour's load, so this only bites after a load failure).
           var next = resolveActiveSplat(lastSafe, cur, rects, activeIndex, segmentCrossesRect);
-          if (next !== activeIndex && next !== null && entities[next]) {
+          if (next !== activeIndex && next !== null && (entities[next] || sceneLoading[next])) {
             switchTo(next);
           }
         }
@@ -491,18 +512,13 @@ const companionRuntime = `
   }
 
   // --- preload (cache-warming) of extra streaming scenes ----------------
-  // Warm the BROWSER CACHE with each extra streaming scene's coarse LOD data at
-  // startup, in the background, so the first crossing into a scene reads from
-  // disk cache (fast) instead of the network. A streaming scene's lod-meta.json
-  // lists per-block meta.json files; each block in turn bundles the heavy data
-  // as webp textures. So warming is TWO levels: lod-meta -> block-metas -> webps.
-  // How DEEP we warm (which LOD levels) is chosen per scene from the device splat
-  // budget (lodMinLevelForBudget over the baked portalSceneLodCounts): the
-  // coarsest level always, plus each finer level that still fits the budget -
-  // i.e. roughly the LODs the engine will actually display. Plain fetch only (no
-  // engine APIs, nothing kept resident: zero added RAM/VRAM, which matters on
-  // low-end devices). The on-crossing overlay remains the fallback. Failures
-  // are non-fatal.
+  // --- cache-warming fetch helpers (used by warmScene below) ------------
+  // Plain fetch only: populate the BROWSER CACHE, keep nothing resident (no
+  // engine APIs, zero added RAM/VRAM, which matters on low-end devices). A
+  // streaming scene's lod-meta.json lists per-block meta.json files; each block
+  // in turn bundles the heavy data as webp textures, so warming is TWO levels:
+  // lod-meta -> block-metas -> webps. Failures are non-fatal (the on-crossing
+  // overlay covers a cold file).
   function fetchJson(u) {
     return fetch(u).then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.json(); });
   }
@@ -530,48 +546,44 @@ const companionRuntime = `
     var b = app && app.scene && app.scene.gsplat && app.scene.gsplat.splatBudget;
     return (typeof b === 'number' && b > 0) ? b : 0;
   }
-  function warmExtraScenes() {
-    if (!streaming) return;
-    var scenes = [];                  // extra streaming scenes (skip index 0 = start)
-    for (var i = 1; i < data.portalScenes.length; i++) {
-      var u = data.portalScenes[i];
-      if (u && u.indexOf('lod-meta.json') !== -1) {
-        scenes.push({ url: u, counts: (data.portalSceneLodCounts || [])[i] });
-      }
-    }
-    if (scenes.length === 0) return;
-    // Wait briefly for the device budget to be applied (it's set after the start
-    // scene reveals); fall back to a desktop-ish default if it never appears.
-    var waited = 0;
-    (function awaitBudget() {
-      var budget = getSplatBudget();
-      if (budget === 0 && waited++ < 300) { requestAnimationFrame(awaitBudget); return; }
-      runWarm(budget || 2000000);
-    })();
-
-    function runWarm(budget) {
-      // Stage 1: each lod-meta.json -> the block meta.json URLs for the LOD
-      // levels worth warming at this budget (coarsest .. budget-fitting level).
-      Promise.all(scenes.map(function (s) {
-        return fetchJson(s.url).then(function (meta) {
-          var minLevel = (s.counts && s.counts.length) ? lodMinLevelForBudget(s.counts, budget) : undefined;
-          return collectLodFileUrls(meta, s.url, minLevel);
-        }).catch(function (err) { console.warn('portal preload lod-meta failed (' + s.url + '):', err); return []; });
-      })).then(function (perScene) {
-        var blockUrls = [];
-        perScene.forEach(function (arr) { for (var k = 0; k < arr.length; k++) { blockUrls.push(arr[k]); } });
-        // Stage 2: each block meta.json -> its webp texture URLs.
-        return Promise.all(blockUrls.map(function (burl) {
-          return fetchJson(burl)
-            .then(function (bmeta) { return collectSogBlockFileUrls(bmeta, burl); })
-            .catch(function (err) { console.warn('portal preload block-meta failed (' + burl + '):', err); return []; });
-        }));
-      }).then(function (perBlock) {
-        var webpUrls = [];
-        perBlock.forEach(function (arr) { for (var k = 0; k < arr.length; k++) { webpUrls.push(arr[k]); } });
-        // Stage 3: warm the heavy webp data into the browser cache.
-        warmUrls(webpUrls);
-      });
+  // --- incremental cache-warming of distance-2 scenes --------------------
+  // When the frontier shifts (startup + each crossing), warm the HTTP cache for
+  // scenes at graph distance 2 (neighbours of the pinned frontier that are not
+  // themselves pinned): distance <= 1 is pinned resident, distance 2 becomes
+  // pinned after one more crossing, so a warm cache makes that future pin fetch
+  // fast. Streaming scenes warm their block files down to the device-observed
+  // finest level (exactly what a future pin would fetch); SOG scenes warm the
+  // single .sog bundle. Plain fetch only (nothing resident). Each scene warms at
+  // most once per session. Failures are non-fatal (the loading overlay covers a
+  // cold crossing). Scenes >= 3 hops away are neither resident nor warmed --
+  // the accepted trade for bounded memory.
+  var warmedScenes = {};
+  function warmScene(idx) {
+    var u = data.portalScenes[idx];
+    if (!u) return;
+    if (u.indexOf('lod-meta.json') === -1) { warmUrls([u]); return; }   // SOG: one bundle file
+    fetchJson(u).then(function (meta) {
+      var coarse = (meta && meta.lodLevels) ? meta.lodLevels - 1 : 0;
+      var min = (deviceFinest !== null) ? Math.min(deviceFinest, coarse) : coarse;
+      return collectLodFileUrls(meta, u, min);
+    }).then(function (blockUrls) {
+      return Promise.all(blockUrls.map(function (burl) {
+        return fetchJson(burl)
+          .then(function (bmeta) { return collectSogBlockFileUrls(bmeta, burl); })
+          .catch(function (err) { console.warn('portal warm block-meta failed (' + burl + '):', err); return []; });
+      }));
+    }).then(function (perBlock) {
+      var webpUrls = [];
+      perBlock.forEach(function (arr) { for (var k = 0; k < arr.length; k++) { webpUrls.push(arr[k]); } });
+      warmUrls(webpUrls);
+    }).catch(function (err) { console.warn('portal warm lod-meta failed (' + u + '):', err); });
+  }
+  function warmFrontier(want) {
+    if (!adjacency) return;
+    var warmSet = computeWarmSet(activeIndex, adjacency, want);
+    for (var i = 0; i < warmSet.length; i++) {
+      var idx = warmSet[i];
+      if (!warmedScenes[idx]) { warmedScenes[idx] = true; warmScene(idx); }
     }
   }
 
@@ -688,7 +700,9 @@ const companionRuntime = `
       if (pinReady) { pinDesired(); return; }
       updateDeviceFinest();
       if (deviceFinest !== last) { last = deviceFinest; stableFor = 0; } else { stableFor++; }
-      if ((getSplatBudget() && deviceFinest !== null && stableFor > 60) || waited++ > 600) {
+      // SOG exports have no start octree to observe, so deviceFinest never
+      // settles -- don't hold the first reconcile (and warming) ~10s for it.
+      if ((getSplatBudget() && (!streaming || deviceFinest !== null) && stableFor > 60) || waited++ > 600) {
         pinReady = true; pinDesired(); return;
       }
       requestAnimationFrame(poll);
@@ -704,27 +718,154 @@ const companionRuntime = `
     if (!adjacency) { return; }
     var active = activeIndex;
     var want = desiredResidentScenes(adjacency, active);
+    // Budget-capped per-scene depths: active keeps deviceFinest, neighbours
+    // degrade toward coarser until the summed pinned splat count fits ~1x the
+    // engine budget (pinned blocks of disabled scenes bypass the budget
+    // balancer, so we must cap them ourselves).
+    var depths = assignPinDepths(
+      active,
+      adjacency[active] || [],
+      data.portalSceneLodCounts || [],
+      deviceFinest,
+      getSplatBudget()
+    );
     var wantSet = {};
     for (var i = 0; i < want.length; i++) {
       var idx = want[i];
       wantSet[idx] = true;
-      if (!pinnedScenes[idx] && entities[idx] && octrees[idx]) {
-        var min = deviceMinLevel(idx);
-        sceneMinLevel[idx] = min;
-        pinSceneToLevel(getAsset(idx), idx, min);
-        pinnedScenes[idx] = true;
+      if (!entities[idx] || !octrees[idx]) { continue; }
+      // Clamp the assigned depth to the loaded octree's real level span (the
+      // payload counts can disagree with the octree; the octree is ground truth).
+      var coarse = octrees[idx].lodLevels ? octrees[idx].lodLevels - 1 : 0;
+      var min = (depths[idx] != null) ? Math.min(Math.max(depths[idx], 0), coarse) : deviceMinLevel(idx);
+      if (pinnedScenes[idx] && min === pinDepth[idx]) { continue; }
+      if (pinnedScenes[idx] && min > pinDepth[idx]) {
+        // Role changed toward neighbour on a tight budget -> coarsen. Full
+        // unpin + re-pin: pinSceneToLevel is additive so it cannot shed levels.
+        // An ACTIVE scene's own instance holds refs, so unpin never frees what
+        // is being rendered; a hidden scene reloads its coarse levels from the
+        // HTTP cache (cheap: coarse levels are small).
+        unpinScene(idx);
       }
+      sceneMinLevel[idx] = min;
+      if (comps[idx]) { comps[idx].lodRangeMin = min; }
+      pinSceneToLevel(getAsset(idx), idx, min);   // additive when deepening; fresh pin otherwise
+      pinnedScenes[idx] = true;
+      pinDepth[idx] = min;
     }
     for (var k in pinnedScenes) {
       var s = Number(k);
       if (pinnedScenes[s] && !wantSet[s] && s !== active) {
         unpinScene(s);
         pinnedScenes[s] = false;
+        pinDepth[s] = null;
       }
     }
+    // Warm here (not in reconcileFrontier): pinDesired runs once deviceFinest
+    // has settled, so streaming scenes warm at the depth a future pin will fetch.
+    warmFrontier(want);
   }
 
-  warmExtraScenes();
+  // Load scene idx's gsplat asset and create its (disabled unless active)
+  // entity. Extracted from start() so the frontier reconcile can (re)load SOG
+  // scenes on demand. No-op until start() has captured the live handles.
+  function loadScene(idx) {
+    if (entities[idx] || sceneLoading[idx] || !liveApp) { return; }
+    var url = data.portalScenes[idx];
+    if (!url) { return; }
+    var isStreamingScene = url.indexOf('lod-meta.json') !== -1;
+    sceneLoading[idx] = true;
+    // loadFromUrl builds + loads the gsplat Asset internally (the start entity's
+    // gsplat.asset is a numeric id, so the Asset class is not reachable that
+    // way). Works for both SOG and streaming (lod-meta.json).
+    liveApp.assets.loadFromUrl(url, 'gsplat', function (err, asset) {
+      sceneLoading[idx] = false;
+      if (err || !asset) { console.warn('portal scene ' + idx + ' failed to load:', err); return; }
+      // A SOG frontier may have moved on while the asset was in flight (fast
+      // multi-crossing): discard instead of keeping a hidden full copy.
+      // Streaming assets are always kept (only the small octree meta).
+      if (!isStreamingScene && !sceneWanted(idx)) {
+        try { liveApp.assets.remove(asset); asset.unload(); } catch (discardErr) { console.warn('portal scene ' + idx + ' discard failed:', discardErr); }
+        return;
+      }
+      var e = new EntityCtor('portalScene' + idx);
+      var comp = e.addComponent('gsplat', { unified: true, asset: asset });
+      // The start gsplat is parented directly to app.root in exported viewers,
+      // so copying its LOCAL transform places extra scenes in the same shared
+      // world frame the export already baked them into.
+      e.setLocalPosition(startEntityRef.getLocalPosition());
+      e.setLocalRotation(startEntityRef.getLocalRotation());
+      e.setLocalScale(startEntityRef.getLocalScale());
+      liveApp.root.addChild(e);
+      e.enabled = (idx === activeIndex);
+      entities[idx] = e;
+      comps[idx] = comp;
+      assets[idx] = asset;
+      octrees[idx] = getOctree(asset);
+      sceneMinLevel[idx] = deviceMinLevel(idx);
+      if (comp && octrees[idx]) {
+        comp.lodRangeMin = sceneMinLevel[idx];
+        comp.lodRangeMax = 1000;
+      }
+      if (!octrees[idx]) { readyScenes[idx] = true; }   // SOG: fully resident once loaded
+      if (idx === activeIndex) scheduleRefine(idx);
+      pinWhenBudgetReady();               // reconcile pins (incl. this just-loaded scene) once budget/deviceFinest settle
+      liveApp.renderNextFrame = true;
+    });
+  }
+
+  // Live frontier membership: the active scene or one of its portal neighbours.
+  function sceneWanted(idx) {
+    if (idx === activeIndex) { return true; }
+    if (!adjacency) { return true; }                    // before start() settles, keep everything
+    var want = desiredResidentScenes(adjacency, activeIndex);
+    for (var i = 0; i < want.length; i++) { if (want[i] === idx) { return true; } }
+    return false;
+  }
+
+  // Fully release a hidden SOG scene that left the frontier. Order matters:
+  // destroy the entity first (the gsplat component's onRemove destroys its
+  // placement, letting the unified manager release its resource refs), then
+  // deregister the asset (assets.remove deletes the registry's url->asset map
+  // entry, so a later loadFromUrl of the same URL creates a fresh Asset) and
+  // unload it (destroys the GSplatResource -- the engine defers the actual GPU
+  // free until the sorter's refCount hits 0 and GSplatDirector.update processes
+  // the cleanup queue, hence the renderNextFrame nudge). Streaming scenes are
+  // never asset-unloaded here: their asset is only the small octree meta and
+  // their block memory is governed by the pin/unpin machinery.
+  function unloadScene(idx) {
+    if (idx === 0 || idx === activeIndex || !entities[idx]) { return; }
+    var e = entities[idx];
+    var a = assets[idx];
+    entities[idx] = null; comps[idx] = null; octrees[idx] = null; assets[idx] = null;
+    sceneMinLevel[idx] = null; readyScenes[idx] = false;
+    pinDepth[idx] = null;
+    pinGen[idx] = (pinGen[idx] || 0) + 1;   // invalidate any in-flight awaitResident
+    try { e.destroy(); } catch (err) { console.warn('portal scene ' + idx + ' entity destroy failed:', err); }
+    if (a && liveApp) {
+      try { liveApp.assets.remove(a); a.unload(); } catch (err) { console.warn('portal scene ' + idx + ' unload failed:', err); }
+    }
+    if (liveApp) { liveApp.renderNextFrame = true; }
+  }
+
+  // Reconcile the frontier to the LIVE activeIndex: SOG scene assets (load
+  // wanted, unload unwanted) and streaming block pins (via pinWhenBudgetReady ->
+  // pinDesired). Called at startup and on every crossing; idempotent, so stale
+  // or duplicate calls are harmless.
+  function reconcileFrontier() {
+    if (!adjacency || !liveApp) { return; }
+    var want = desiredResidentScenes(adjacency, activeIndex);
+    var wantSet = {};
+    for (var i = 0; i < want.length; i++) { wantSet[want[i]] = true; }
+    for (var idx = 1; idx < data.portalScenes.length; idx++) {
+      var u = data.portalScenes[idx];
+      if (!u || u.indexOf('lod-meta.json') !== -1) { continue; }   // streaming: pin-managed, asset stays
+      if (wantSet[idx]) { loadScene(idx); } else { unloadScene(idx); }
+    }
+    reconcileCollisions(want);
+    pinWhenBudgetReady();
+  }
+
   requestAnimationFrame(start);
 })();
 `;
