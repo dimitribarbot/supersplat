@@ -3,7 +3,7 @@
  * Provides FileSystem abstraction for browser file operations.
  */
 
-import { MemoryFileSystem, type FileSystem, type Writer } from '@playcanvas/splat-transform';
+import { type FileSystem, type Writer } from '@playcanvas/splat-transform';
 
 /**
  * Writer implementation for FileSystemWritableFileStream (File System Access API).
@@ -36,10 +36,9 @@ class BrowserFileWriter implements Writer {
 }
 
 /**
- * Trigger a browser download for the given data.
+ * Trigger a browser download for the given blob.
  */
-const triggerDownload = (data: Uint8Array, filename: string): void => {
-    const blob = new Blob([data as BlobPart], { type: 'application/octet-stream' });
+const triggerDownload = (blob: Blob, filename: string): void => {
     const url = window.URL.createObjectURL(blob);
 
     const lnk = document.createElement('a');
@@ -63,33 +62,39 @@ const triggerDownload = (data: Uint8Array, filename: string): void => {
 
 /**
  * Writer implementation that triggers a browser download on close.
- * Uses MemoryFileSystem internally for efficient buffer management.
+ *
+ * Collects the written chunks and assembles them into a Blob directly, rather
+ * than concatenating into one contiguous buffer. A Blob combines its parts
+ * without allocating a single ArrayBuffer for the whole archive, so a large
+ * multi-scene save is not bound by the ~2GB typed-array cap that a single-buffer
+ * concatenation hits ("Array buffer allocation failed"). Used only on the
+ * fallback path (browsers without the File System Access API, e.g. Firefox or
+ * Brave with its privacy defaults); the stream path never buffers.
  */
 class BrowserDownloadWriter implements Writer {
-    private memFs: MemoryFileSystem;
-    private innerWriter: Writer;
+    private chunks: Uint8Array[] = [];
+    private cursor: number = 0;
     private filename: string;
 
     constructor(filename: string) {
         this.filename = filename;
-        this.memFs = new MemoryFileSystem();
-        this.innerWriter = this.memFs.createWriter(filename);
     }
 
     get bytesWritten(): number {
-        return this.innerWriter.bytesWritten;
+        return this.cursor;
     }
 
     write(data: Uint8Array): void {
-        this.innerWriter.write(data);
+        // Snapshot: the PLY serializer flushes one reused scratch buffer, and the
+        // caller may keep mutating `data` after this call returns.
+        this.chunks.push(data.slice());
+        this.cursor += data.byteLength;
     }
 
     close(): void {
-        this.innerWriter.close();
-        const data = this.memFs.results.get(this.filename);
-        if (data) {
-            triggerDownload(data, this.filename);
-        }
+        const blob = new Blob(this.chunks as BlobPart[], { type: 'application/octet-stream' });
+        this.chunks = [];
+        triggerDownload(blob, this.filename);
     }
 }
 
