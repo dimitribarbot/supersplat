@@ -316,8 +316,9 @@ class ExportPopup extends Container {
             const startUid = events.invoke('portals.startSplat') ?? null;
             const allSplats = events.invoke('scene.allSplats') ?? [];
             const availableUids = allSplats.map((s: any) => s.uid);
+            const preferredStartUid = events.invoke('selection')?.uid ?? null;
             const bundle = events.invoke('portals.count') > 0 ?
-                buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: true }) :
+                buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: true, preferredStartUid }) :
                 null;
             if (!bundle) {
                 perSceneEnvRow.hidden = true; return;
@@ -325,7 +326,7 @@ class ExportPopup extends Container {
             perSceneEnvRow.hidden = false;
             bundle.sceneUids.forEach((uid, index) => {
                 const splat = allSplats.find((s: any) => s.uid === uid);
-                const name = splat ? `${uid}: ${(splat.asset?.file?.filename ?? splat.name ?? uid)}` : `Scene ${index}`;
+                const name = splat ? `${uid}: ${(splat.name ?? splat.asset?.file?.filename ?? uid)}` : `Scene ${index}`;
                 const row = new Container({ class: 'row' });
                 row.append(new Label({ class: 'label', text: name }));
                 const sel = new SelectInput({
@@ -739,8 +740,9 @@ class ExportPopup extends Container {
                 const allSplats = events.invoke('scene.allSplats') ?? [];
                 const availableUids = allSplats.map((s: any) => s.uid);
                 const collisionOn = viewerTypeSelect.value === 'zip' && collisionToggle.value;
+                const preferredStartUid = events.invoke('selection')?.uid ?? null;
                 const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
-                    buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: collisionOn }) :
+                    buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: collisionOn, preferredStartUid }) :
                     null;
 
                 const experienceSettings: ExperienceSettings = {

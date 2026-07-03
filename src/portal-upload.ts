@@ -35,6 +35,7 @@ const buildPortalUpload = async (args: {
     const resolved = resolvePortalExtras({
         portals: events.invoke('portals.export') ?? [],
         startUid: events.invoke('portals.startSplat') ?? null,
+        preferredStartUid: events.invoke('selection')?.uid ?? null,
         availableUids: all.map(s => s.uid),
         streaming,
         collision: !!es.portalCollision && es.portalCollision.length > 0,

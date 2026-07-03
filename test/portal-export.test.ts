@@ -56,6 +56,23 @@ describe('buildPortalBundle', () => {
         expect(b.sceneUids[0]).toBe(10);
     });
 
+    it('uses preferredStartUid as the start when startUid is unset and it is portal-referenced', () => {
+        // no explicit portal-tool start; the visible/selected scene (uid 20) is referenced -> it wins
+        const b = buildPortalBundle({ portals: [portal(10, 20)], startUid: null, preferredStartUid: 20, availableUids: [10, 20], streaming: false, collision: false })!;
+        expect(b.sceneUids[0]).toBe(20);
+    });
+
+    it('ignores preferredStartUid that is not referenced by any portal (falls back to referenced[0])', () => {
+        // uid 99 is available but not referenced by a portal -> would be an unreachable start -> ignored
+        const b = buildPortalBundle({ portals: [portal(10, 20)], startUid: null, preferredStartUid: 99, availableUids: [10, 20, 99], streaming: false, collision: false })!;
+        expect(b.sceneUids[0]).toBe(10);
+    });
+
+    it('explicit startUid still wins over preferredStartUid', () => {
+        const b = buildPortalBundle({ portals: [portal(10, 20)], startUid: 10, preferredStartUid: 20, availableUids: [10, 20], streaming: false, collision: false })!;
+        expect(b.sceneUids[0]).toBe(10);
+    });
+
     it('drops references to uids that no longer exist', () => {
         const b = buildPortalBundle({ portals: [portal(10, 99)], startUid: 10, availableUids: [10, 20], streaming: false, collision: false });
         // uid 99 is gone -> that side becomes null; only scene 10 remains resolvable -> < 2 scenes -> null

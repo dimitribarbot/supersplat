@@ -41,9 +41,14 @@ const buildPortalBundle = (args: {
     startUid: number | null,
     availableUids: number[],
     streaming: boolean,
-    collision: boolean
+    collision: boolean,
+    // Preferred start when no explicit start (startUid) was chosen: the editor's
+    // currently visible/selected scene. Only honored if it is referenced by a
+    // portal (an unreferenced start would be unreachable). Optional so older
+    // callers keep the referenced[0] fallback.
+    preferredStartUid?: number | null
 }): PortalBundle | null => {
-    const { portals, startUid, availableUids, streaming, collision } = args;
+    const { portals, startUid, availableUids, streaming, collision, preferredStartUid } = args;
     const exists = (uid: number | null): uid is number => uid !== null && availableUids.includes(uid);
 
     // collect referenced, existing scene uids
@@ -55,8 +60,10 @@ const buildPortalBundle = (args: {
         add(p.frontUid); add(p.backUid);
     });
 
-    // choose the start scene: explicit start if valid, else first referenced
-    const start = exists(startUid) ? startUid : (referenced[0] ?? null);
+    // choose the start scene: explicit start if valid; else the editor's
+    // visible/selected scene when it is portal-referenced; else first referenced
+    const preferred = (preferredStartUid != null && referenced.includes(preferredStartUid)) ? preferredStartUid : null;
+    const start = exists(startUid) ? startUid : (preferred ?? referenced[0] ?? null);
     if (start === null) return null;
 
     // index order: start first, then the rest in first-seen order
@@ -171,10 +178,11 @@ const resolvePortalExtras = (args: {
     collision: boolean,
     authored: Record<string, Vec3>,
     startSeed: Vec3,
-    environments: ('indoor' | 'outdoor')[]
+    environments: ('indoor' | 'outdoor')[],
+    preferredStartUid?: number | null
 }): { bundle: PortalBundle, extras: PortalExtra[] } | null => {
-    const { portals, startUid, availableUids, streaming, collision, authored, startSeed, environments } = args;
-    const bundle = buildPortalBundle({ portals, startUid, availableUids, streaming, collision });
+    const { portals, startUid, availableUids, streaming, collision, authored, startSeed, environments, preferredStartUid } = args;
+    const bundle = buildPortalBundle({ portals, startUid, availableUids, streaming, collision, preferredStartUid });
     if (!bundle) return null;
 
     const extras: PortalExtra[] = bundle.sceneUids.slice(1).map((uid, i) => {

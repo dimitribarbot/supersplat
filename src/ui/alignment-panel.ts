@@ -109,7 +109,7 @@ class AlignmentPanel extends Container {
         this.append(actionRow);
 
         const splatName = (splat: Splat) => {
-            const filename = (splat.asset.file as any)?.filename ?? splat.name ?? `Splat ${splat.uid}`;
+            const filename = splat.name ?? (splat.asset.file as any)?.filename ?? `Splat ${splat.uid}`;
             return `${splat.uid}: ${filename}`;
         };
 
