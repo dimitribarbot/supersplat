@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -220,7 +220,7 @@ describe('desiredResidentScenes', () => {
 describe('assignPinDepths', () => {
     // counts finest -> coarsest; pin cost at depth d = sum of counts[d..]
     const counts = [
-        [1000, 100, 10],   // scene 0 (start, never pin-managed)
+        [1000, 100, 10],   // scene 0 (start; pin-managed like the rest since the engine frees a disabled scene's blocks)
         [1000, 100, 10],   // scene 1: cost 1110 / 110 / 10 at depths 0/1/2
         [2000, 200, 20],   // scene 2: cost 2220 / 220 / 20
         [1000, 100, 10]    // scene 3: cost 1110 / 110 / 10
@@ -237,15 +237,22 @@ describe('assignPinDepths', () => {
         expect(assignPinDepths(1, [2, 3], counts, 0, 3000)).toEqual({ 1: 0, 2: 1, 3: 0 });
     });
 
-    it('never degrades the active scene, even when the budget cannot be met', () => {
-        // budget below the active cost alone: neighbours end at coarsest, active untouched
-        expect(assignPinDepths(1, [2, 3], counts, 0, 1000)).toEqual({ 1: 0, 2: 2, 3: 2 });
+    it('degrades the active scene only as a last resort (hard budget cap)', () => {
+        // budget below the active cost alone: neighbours first end at coarsest
+        // (1110 + 20 + 10 = 1140 > 1000), THEN the active degrades until the
+        // total fits (depth 1: 110 + 20 + 10 = 140 <= 1000). Never-OOM outranks
+        // instant-return, so the ceiling is a hard cap even for the active scene.
+        expect(assignPinDepths(1, [2, 3], counts, 0, 1000)).toEqual({ 1: 1, 2: 2, 3: 2 });
     });
 
-    it('stops degrading at each scene\'s coarsest level', () => {
-        const d = assignPinDepths(1, [2], counts, 0, 1);
-        expect(d[2]).toBe(2);
-        expect(d[1]).toBe(0);
+    it('does not degrade the active scene while a neighbour can still degrade', () => {
+        // active 1 (1110) + n2 (2220) = 3330 > 1200 -> n2 all the way to coarsest
+        // (1110 + 20 = 1130 <= 1200); active untouched
+        expect(assignPinDepths(1, [2], counts, 0, 1200)).toEqual({ 1: 0, 2: 2 });
+    });
+
+    it('stops at every scene\'s coarsest even when the budget is unreachable', () => {
+        expect(assignPinDepths(1, [2], counts, 0, 1)).toEqual({ 1: 2, 2: 2 });
     });
 
     it('clamps deviceFinest to each scene\'s coarsest and treats null as coarsest', () => {
@@ -253,8 +260,20 @@ describe('assignPinDepths', () => {
         expect(assignPinDepths(1, [2], counts, null, 100000)).toEqual({ 1: 2, 2: 2 });
     });
 
-    it('excludes scene 0 and de-duplicates the active out of the neighbour list', () => {
-        expect(assignPinDepths(0, [1, 0, 1], counts, 0, 100000)).toEqual({ 1: 0 });
+    it('manages scene 0 and de-duplicates the active out of the neighbour list', () => {
+        expect(assignPinDepths(0, [1, 0, 1], counts, 0, 100000)).toEqual({ 0: 0, 1: 0 });
+    });
+
+    it('degrades scene 0 like any other non-active resident under pressure', () => {
+        // active 1 (1110) + n0 (1110) + n2 (2220) = 4440 > 3000
+        // -> degrade costliest (scene 2) to depth 1 (220): total 2440 <= 3000
+        expect(assignPinDepths(1, [0, 2], counts, 0, 3000)).toEqual({ 0: 0, 1: 0, 2: 1 });
+    });
+
+    it('active scene 0 also degrades as a last resort under a hard cap', () => {
+        // n1 at coarsest (10) is not enough: active 0 degrades 1110 -> 110 -> 10
+        // until the total (20) fits the 100 cap
+        expect(assignPinDepths(0, [1], counts, 0, 100)).toEqual({ 0: 2, 1: 2 });
     });
 
     it('unknown budget (<= 0): neighbours at coarsest, active at base depth', () => {
@@ -265,6 +284,46 @@ describe('assignPinDepths', () => {
     it('scenes with missing counts get the base depth and zero cost', () => {
         // empty counts -> coarsest = 0 -> base depth 0; cost 0 so budget never trips
         expect(assignPinDepths(1, [2], [[], [], []], 1, 10)).toEqual({ 1: 0, 2: 0 });
+    });
+});
+
+describe('computeResidentCeiling', () => {
+    // (override, splatBudget, mult, isMobile, totalCost, deviceMemoryGb)
+    it('an explicit override always wins', () => {
+        expect(computeResidentCeiling(70000000, 4000000, 12, false, 61300000, 8)).toBe(70000000);
+        expect(computeResidentCeiling(1000, 4000000, 3, true, 61300000, 8)).toBe(1000);
+    });
+
+    it('returns 0 until the engine splat budget is known', () => {
+        expect(computeResidentCeiling(0, 0, 12, false, 61300000, 8)).toBe(0);
+        expect(computeResidentCeiling(0, -1, 12, false, 61300000, 8)).toBe(0);
+    });
+
+    it('mobile: a conservative multiple of the render budget (never project-sized)', () => {
+        expect(computeResidentCeiling(0, 2000000, 3, true, 61300000, 8)).toBe(6000000);
+    });
+
+    it('desktop: holds the whole project when it fits the RAM-derived cap', () => {
+        // real failing project: 4 pyramids totalling 61.3M; 8GB cap = 128M >= 61.3M
+        // -> ceiling = the project total, so nothing ever degrades or evicts
+        expect(computeResidentCeiling(0, 4000000, 12, false, 61300000, 8)).toBe(61300000);
+    });
+
+    it('desktop: caps an oversized project at the RAM-derived limit', () => {
+        // 20 huge scenes -> 400M splats; 8GB cap = 128M
+        expect(computeResidentCeiling(0, 4000000, 12, false, 400000000, 8)).toBe(128000000);
+    });
+
+    it('desktop: never drops below the render-budget floor', () => {
+        // tiny project (total below mult x budget) -> keep the floor as headroom
+        expect(computeResidentCeiling(0, 4000000, 12, false, 10000000, 8)).toBe(48000000);
+        // tiny reported deviceMemory cannot push the ceiling under the floor
+        expect(computeResidentCeiling(0, 4000000, 12, false, 61300000, 0.25)).toBe(48000000);
+    });
+
+    it('desktop: unknown deviceMemory assumes 8GB', () => {
+        expect(computeResidentCeiling(0, 4000000, 12, false, 61300000, undefined as any)).toBe(61300000);
+        expect(computeResidentCeiling(0, 4000000, 12, false, 400000000, null as any)).toBe(128000000);
     });
 });
 
@@ -299,5 +358,71 @@ describe('computeWarmSet', () => {
     it('returns empty for an out-of-range active scene or missing adjacency', () => {
         expect(computeWarmSet(9, chain, [])).toEqual([]);
         expect(computeWarmSet(0, null as any, [])).toEqual([]);
+    });
+});
+
+describe('selectResidentScenes', () => {
+    // linear chain 0-1-2-3-4 ; adjacency[s] = neighbours of s
+    const chain = [[1], [0, 2], [1, 3], [2, 4], [3]];
+    const cost = (n: number) => Array(n).fill(100);   // every scene costs 100
+
+    it('keeps every reachable scene when the ceiling is ample', () => {
+        // active 2, huge ceiling -> ALL scenes resident, including scene 0
+        expect(selectResidentScenes(chain, 2, [], cost(5), 100000)).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    it('admits only the guaranteed set when the ceiling is tight', () => {
+        // active 2: guaranteed = scene 0 + active 2 + neighbours {1,3}, cost 400;
+        // ceiling 450 -> scene 4 (dist 2) does not fit
+        expect(selectResidentScenes(chain, 2, [], cost(5), 450)).toEqual([0, 1, 2, 3]);
+    });
+
+    it('admits the guaranteed set even when it exceeds the ceiling', () => {
+        // ceiling smaller than the guaranteed cost -> still keep scene 0 + active + neighbours
+        expect(selectResidentScenes(chain, 2, [], cost(5), 10)).toEqual([0, 1, 2, 3]);
+    });
+
+    it('prefers a recently-visited scene over an equally-distant unvisited one', () => {
+        // active 0: guaranteed = {0, 1}, cost 200. ceiling 300 fits exactly ONE more
+        // scene. recencyOrder [3] -> the farther scene 3 (dist 3) wins the slot over
+        // the nearer BFS scene 2 (dist 2).
+        expect(selectResidentScenes(chain, 0, [3], cost(5), 300)).toEqual([0, 1, 3]);
+    });
+
+    it('fills remaining budget by BFS proximity (nearer first)', () => {
+        // active 0, no recency: guaranteed {0, 1} (cost 200); ceiling 350 fits exactly
+        // one more -> nearest unvisited is 2 (dist 2); 3 (dist 3, cost 400) does not fit.
+        expect(selectResidentScenes(chain, 0, [], cost(5), 350)).toEqual([0, 1, 2]);
+    });
+
+    it('always includes scene 0 and counts its cost against the ceiling', () => {
+        // active 1: guaranteed = {0, 1, 2}, cost 300. ceiling 350: scene 3 (dist 2,
+        // cost 100) does NOT fit -- proving scene 0's cost is accounted (were it
+        // free, the running cost would be 200 and scene 3 would be admitted).
+        expect(selectResidentScenes(chain, 1, [], cost(5), 350)).toEqual([0, 1, 2]);
+    });
+
+    it('treats a missing/zero cost as free (admitted)', () => {
+        // costs only defined for some scenes; undefined -> free
+        expect(selectResidentScenes(chain, 2, [], [0, 0, 0], 1)).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    it('with an unknown ceiling (<= 0) keeps only the guaranteed set', () => {
+        expect(selectResidentScenes(chain, 2, [4], cost(5), 0)).toEqual([0, 1, 2, 3]);
+    });
+
+    it('keeps a real 4-scene desktop project fully resident under the desktop ceiling', () => {
+        // Maison_Bueil-scale scenes: LOD pyramid [5.82M, 2.91M, 1.45M, 0.73M] ->
+        // resident cost 10 911 585 splats each at deviceFinest 0. Desktop ceiling
+        // = 12 x 4M splat budget = 48M >= 4 x 10.9M -> nothing ever evicts.
+        const pyramid = 5819512 + 2909756 + 1454878 + 727439;
+        const chain4 = [[1], [0, 2], [1, 3], [2]];
+        expect(selectResidentScenes(chain4, 0, [], [pyramid, pyramid, pyramid, pyramid], 48000000))
+        .toEqual([0, 1, 2, 3]);
+    });
+
+    it('returns [] for an out-of-range active scene or missing adjacency', () => {
+        expect(selectResidentScenes(chain, 9, [], cost(5), 100000)).toEqual([]);
+        expect(selectResidentScenes(null as any, 0, [], [], 100000)).toEqual([]);
     });
 });

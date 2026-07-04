@@ -20,7 +20,7 @@
     "dotenv": "17.4.2",
     "fastify": "5.8.5",
     "fflate": "0.8.3",
-    "playcanvas": "2.20.2",
+    "playcanvas": "2.20.5",
     "webgpu": "0.4.0"
   },
   "devDependencies": {

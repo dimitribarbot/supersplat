@@ -1,6 +1,6 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -67,6 +67,8 @@ const companionRuntime = `
   var collectSogBlockFileUrls = ${collectSogBlockFileUrls.toString()};
   var buildPortalAdjacency = ${buildPortalAdjacency.toString()};
   var desiredResidentScenes = ${desiredResidentScenes.toString()};
+  var selectResidentScenes = ${selectResidentScenes.toString()};
+  var computeResidentCeiling = ${computeResidentCeiling.toString()};
   var assignPinDepths = ${assignPinDepths.toString()};
   var computeWarmSet = ${computeWarmSet.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
@@ -80,12 +82,53 @@ const companionRuntime = `
   var deviceFinest = null;                  // finest (lowest) LOD level the engine has actually loaded for the start scene = the finest this DEVICE renders (0 desktop, coarser on tight budget). Running-min.
   var assets = [];                          // scene index -> loaded gsplat Asset
   var pinnedFiles = [];                     // scene index -> [octree file indices we incRefCount-ed]
-  var pinGen = [];                          // scene index -> pin generation; bumped on unpin to invalidate an in-flight awaitResident
+  var pinGen = [];                          // scene index -> pin generation; bumped on unpin to invalidate an in-flight pump
+  var pinBatches = [];                      // scene index -> [{files, markReady, done}] in level-major (coarsest-first) order
+  var pinPumping = [];                      // scene index -> a pump rAF loop is active
+  var PIN_WAVE = 4;                         // max not-yet-loaded pinned files kept in-flight per scene: the engine's per-scene block loader is a 2-concurrent FIFO, so flooding it with every pinned URL would starve interactive requests (the start scene's initial load + environment, a crossed-into scene's per-view files) behind the whole preload backlog
   var sceneMinLevel = [];                   // scene index -> device-depth level (its reveal lodRangeMin)
   var adjacency = null;                     // built in start() from data.portals
   var pinnedScenes = {};                    // scene index -> true when currently pinned
   var pinDepth = [];                        // scene index -> currently applied pin depth (min pinned level)
+  var recency = [];                         // scene indices, most-recently-active first (LRU)
+  // Mobile detection (UA-based, mirroring the viewer's own platform split; iPadOS
+  // reports as Mac + multi-touch). Used only to pick the resident multiplier.
+  var IS_MOBILE = (function () {
+    try {
+      var ua = navigator.userAgent || '';
+      if (/android|iphone|ipad|ipod|windows phone|mobile/i.test(ua)) { return true; }
+      return ((navigator.maxTouchPoints || 0) > 1 && /mac/i.test(navigator.platform || ''));
+    } catch (e) { return false; }
+  })();
+  // Render-budget multiple used by computeResidentCeiling: the whole ceiling
+  // on mobile (conservative -- never-OOM outranks instant crossings there),
+  // only a lower FLOOR on desktop, where the ceiling is project-aware (the
+  // summed pyramid cost of ALL scenes, capped by a RAM-derived limit) so any
+  // project that fits memory stays fully resident and never re-streams. Tune
+  // live via ?residentBudget=<n> (counts resident splats across ALL pinned
+  // LOD levels, ~1.9x the finest-level splat total).
+  var RESIDENT_BUDGET_MULT = IS_MOBILE ? 3 : 12;
+  var residentBudgetOverride = (function () {
+    // ?residentBudget=<n> overrides the ceiling for on-device tuning.
+    // String ops only: this runtime is authored inside a template literal,
+    // where regex character-class escapes lose their backslash at build time
+    // (the original digit-class regex shipped without it and never matched --
+    // the override was silently dead in the field). No backslashes here.
+    try {
+      var q = location.search || '';
+      var key = 'residentBudget=';
+      var k = q.indexOf(key);
+      while (k > 0 && q.charAt(k - 1) !== '?' && q.charAt(k - 1) !== '&') {
+        k = q.indexOf(key, k + 1);
+      }
+      if (k <= 0) { return 0; }
+      var v = parseInt(q.substring(k + key.length), 10);
+      return (isFinite(v) && v > 0) ? v : 0;
+    } catch (e) { return 0; }
+  })();
   var pinReady = false;                     // set once the budget + deviceFinest have first settled; later reconciles run immediately
+  var viewerReady = false;                  // set when the viewer fires 'firstFrame' (initial load done); preload waits for it
+  var lastDiag = '';                        // last logged residency diagnostic (dedupe)
   var sceneLoading = [];                    // scene index -> gsplat asset load in flight
   var liveApp = null;                       // pc.AppBase, captured once start() finds it
   var startEntityRef = null;                // the viewer's own start-scene entity (transform template for extra scenes)
@@ -112,6 +155,36 @@ const companionRuntime = `
     }
     return s;
   }
+  // --- GPU memory field diagnostic (mobile device-lost investigation) ----
+  // The Android "OOM" presents as a WebGPU device loss (Dawn: "A valid
+  // external Instance reference no longer exists" -> handleDeviceLost). Log
+  // the engine's own VRAM accounting (graphicsDevice._vram byte counters) so
+  // a remote-debug session shows the memory curve up to the death: a sample
+  // every 5s when the total moved >= 32MB, one on every crossing (the loss
+  // correlates with crossings), and a final line from the devicelost event.
+  var lastVramLogged = -1;                  // last logged total (MB), -1 = never
+  function vramLine() {
+    try {
+      var d = liveApp && liveApp.graphicsDevice;
+      var v = d && d._vram;
+      if (!v) { return ''; }
+      var mb = function (n) { return Math.round((n || 0) / 1048576); };
+      var total = (v.tex || 0) + (v.vb || 0) + (v.ib || 0) + (v.sb || 0) + (v.ub || 0);
+      return 'tex=' + mb(v.tex) + 'MB vb=' + mb(v.vb) + 'MB ib=' + mb(v.ib) +
+             'MB sb=' + mb(v.sb) + 'MB ub=' + mb(v.ub) + 'MB total=' + mb(total) + 'MB';
+    } catch (vramErr) { return ''; }
+  }
+  function logVram(tag, force) {
+    var line = vramLine();
+    if (!line) { return; }
+    try {
+      var total = parseInt(line.substring(line.lastIndexOf('total=') + 6), 10) || 0;
+      if (!force && lastVramLogged >= 0 && Math.abs(total - lastVramLogged) < 32) { return; }
+      lastVramLogged = total;
+      console.info('[portals] vram' + (tag ? ' (' + tag + ')' : '') + ' ' + line);
+    } catch (logVramErr) {}
+  }
+
   // Switch to scene idx: enable it, swap collision, reconcile the frontier and
   // arm the loading overlay when the destination is not ready (still streaming,
   // or a SOG scene whose asset has not finished loading). Tolerates a target
@@ -121,6 +194,8 @@ const companionRuntime = `
     if (idx === activeIndex || idx === null || idx === undefined) return;
     if (idx < 0 || idx >= data.portalScenes.length) return;
     activeIndex = idx;
+    noteVisit(idx);
+    logVram('crossing to ' + idx, true);
     applyActive();
     swapCollision(idx);
     scheduleRefine(idx);
@@ -332,7 +407,7 @@ const companionRuntime = `
     // If the user already crossed while we were waiting for the live instance,
     // bring collision in sync with the visuals now.
     if (activeIndex !== snapshotIdx && voxels[activeIndex]) { swapCollision(activeIndex); }
-    reconcileCollisions(adjacency ? desiredResidentScenes(adjacency, activeIndex) : []);
+    reconcileCollisions(adjacency ? residentScenes() : []);
   }
   function swapCollision(idx) {
     var live = liveCollision();
@@ -396,8 +471,11 @@ const companionRuntime = `
     var startEntity = startComp.entity;
     var Entity = startEntity.constructor;
     entities[0] = startEntity;
+    comps[0] = startComp;
     // The start entity's gsplat.asset is a numeric id (set up by the viewer), so
-    // resolve the Asset to reach its octree. Used to observe deviceFinest.
+    // resolve the Asset to reach its octree. Used to observe deviceFinest and to
+    // pin scene 0's blocks (the engine frees a disabled scene's blocks, so the
+    // start scene must be pin-managed like the extra scenes).
     octrees[0] = getOctree(app.assets.get(startComp.asset));
     adjacency = buildPortalAdjacency(
       (data.portals || []).map(function (p) { return { front: p.front, back: p.back }; }),
@@ -408,6 +486,12 @@ const companionRuntime = `
     // another scene, its buffers are stale -> refresh to the active scene.
     var ev = viewer && viewer.global && viewer.global.events;
     if (ev && ev.on) {
+      // The viewer fires 'firstFrame' when its initial load completes (the
+      // loading bar's ready gate). Preload/pinning waits for it: our traffic
+      // would otherwise compete with the start scene's own (deliberately
+      // small, coarsest-only) initial load and stall the bar. Reconcile right
+      // after so scene 0's own pins (strictly firstFrame-gated) get applied.
+      ev.on('firstFrame', function () { viewerReady = true; reconcileFrontier(); });
       ev.on('collisionOverlayEnabled:changed', function (on) { if (on) refreshOverlay(); });
       // The R shortcut and the viewer's reset menu both fire inputEvent 'reset',
       // returning the camera to its spawn pose. The spawn lives in the start
@@ -433,9 +517,161 @@ const companionRuntime = `
       if (u && u.indexOf('lod-meta.json') !== -1) { loadScene(i); }
     }
 
+    noteVisit(activeIndex);
     applyActive();
     reconcileFrontier();
     initCollisions();
+    // Stuck-loading-bar field diagnostic: the bar completes (and the viewer
+    // fires firstFrame) only when the gsplat manager reports
+    //   ready  = world.currentVersion === world.lastWorldStateVersion
+    //            && !world.awaitingLodUpdate      (sorter caught up, no LOD due)
+    //   loading = world.pendingLoadCount === 0    (instance pending + env)
+    // so dump BOTH sides plus the start scene's block-loader state. Logged at
+    // 20s and again at 45s (two samples show whether anything is moving).
+    function startupDiag(tag) {
+      try {
+        var out = tag + ':';
+        var oc = octrees[0];
+        if (oc && oc.files) {
+          var total = oc.files.length;
+          var res = 0;
+          for (var fi = 0; fi < total; fi++) { if (oc.getFileResource && oc.getFileResource(fi)) { res++; } }
+          out += ' files=' + res + '/' + total;
+          out += ' envUrl=' + (oc.environmentUrl || 'none') + ' envLoaded=' + !!oc.environmentResource;
+          var al = oc.assetLoader;
+          if (al) {
+            out += ' loaderQueue=' + (al._loadQueue ? al._loadQueue.length : '?') +
+                   ' loading=' + (al._currentlyLoading ? al._currentlyLoading.size : '?');
+            if (al._retryCount && al._retryCount.size) {
+              var retries = [];
+              al._retryCount.forEach(function (v, k) { retries.push(k + ' x' + v); });
+              out += ' retries=[' + retries.join(', ') + ']';
+            }
+          }
+        }
+        var dApp = getApp(window.__supersplatViewer);
+        var dir = dApp && dApp.renderer && dApp.renderer.gsplatDirector;
+        if (dir && dir.camerasMap) {
+          dir.camerasMap.forEach(function (cd) {
+            if (!cd || !cd.layersMap) { return; }
+            cd.layersMap.forEach(function (ld) {
+              var m = ld && ld.gsplatManager;
+              if (!m || !m.world) { return; }
+              var w = m.world;
+              out += ' | ver=' + w.currentVersion + '/' + w.lastWorldStateVersion +
+                     ' awaitingLod=' + !!w.awaitingLodUpdate +
+                     ' pendingLoad=' + w.pendingLoadCount;
+              if (m.cpuSorter) { out += ' sortJobs=' + m.cpuSorter.jobsInFlight; }
+            });
+          });
+        }
+        console.info('[portals] ' + out);
+      } catch (diagErr) {}
+    }
+    setTimeout(function () { if (!viewerReady) { startupDiag('startup not ready after 20s'); } }, 20000);
+    setTimeout(function () { if (!viewerReady) { startupDiag('startup still not ready after 45s'); } }, 45000);
+
+    // GPU-memory curve sampler + devicelost hook (see vramLine above): the
+    // periodic sample self-mutes while the total is stable, so a quiet run
+    // logs almost nothing and a climb toward device loss is fully visible.
+    setInterval(function () { logVram('', false); }, 5000);
+    try {
+      var gdev = app.graphicsDevice;
+      if (gdev && gdev.on) {
+        gdev.on('devicelost', function () {
+          console.warn('[portals] DEVICE LOST -- last vram: ' + (vramLine() || 'unavailable') +
+                       ' (previous logged total=' + lastVramLogged + 'MB)');
+        });
+      }
+    } catch (dlErr) {}
+
+    // --- engine ready-gate watchdog ------------------------------------
+    // Upstream engine race (reproduces on SINGLE-scene exports too, cold
+    // cache only): an octree instance's pending/prefetchPending can retain an
+    // entry that never completes while the block loader sits idle -- either
+    // the entry's placement was already nulled (the completion check requires
+    // it), or its asset ended up loaded-without-resource (ensureFileResource
+    // then no-ops forever). world.pendingLoadCount then never reaches 0, so
+    // the viewer's ready gate (ready && loading === 0) never fires: the
+    // loading bar parks at ~95%, firstFrame (walkthrough autostart) never
+    // fires, and splatBudget stays 0 = the engine budget balancer is DISABLED
+    // (unbounded streaming -> mobile OOM). Until fixed upstream, repair the
+    // bookkeeping in place; each pass logs what it fixed.
+    function unstickInstances() {
+      var fixed = 0;
+      var dApp = getApp(window.__supersplatViewer);
+      var dir = dApp && dApp.renderer && dApp.renderer.gsplatDirector;
+      if (!dir || !dir.camerasMap) { return 0; }
+      dir.camerasMap.forEach(function (cd) {
+        if (!cd || !cd.layersMap) { return; }
+        cd.layersMap.forEach(function (ld) {
+          var m = ld && ld.gsplatManager;
+          var w = m && m.world;
+          var insts = w && w._octreeInstances;
+          if (!insts || !insts.forEach) { return; }
+          insts.forEach(function (inst) {
+            try {
+              var oc = inst && inst.octree;
+              var al = oc && oc.assetLoader;
+              if (!oc || !al) { return; }
+              var busy = (al._currentlyLoading && al._currentlyLoading.size) ||
+                         (al._loadQueue && al._loadQueue.length);
+              if (busy) { return; }   // loader active -> not stuck, let it work
+              // Kick a file whose asset the loader considers done but that
+              // produced no resource: unload it so the instance's next
+              // ensureFileResource poll starts a FRESH load.
+              var kick = function (fi) {
+                if (oc.getFileResource && oc.getFileResource(fi)) { return; }   // completes naturally
+                var url = oc.files && oc.files[fi] && oc.files[fi].url;
+                var asset = url && al._urlToAsset && al._urlToAsset.get(url);
+                if (asset && asset.loaded && !asset.resource) { al.unload(url); fixed++; }
+              };
+              if (inst.pending && inst.pending.forEach) {
+                var stale = [];
+                inst.pending.forEach(function (fi) {
+                  // A pending entry whose placement is gone can never complete
+                  // (addFilePlacement requires the placement): drop it -- the
+                  // delete decrementFileRef should have done.
+                  if (!inst.filePlacements || !inst.filePlacements[fi]) { stale.push(fi); } else { kick(fi); }
+                });
+                for (var s = 0; s < stale.length; s++) { inst.pending.delete(stale[s]); fixed++; }
+              }
+              if (inst.prefetchPending && inst.prefetchPending.forEach) {
+                inst.prefetchPending.forEach(function (fi) { kick(fi); });
+              }
+              if (oc.environmentUrl && !inst.environmentPlacement && al._urlToAsset) {
+                var ea = al._urlToAsset.get(oc.environmentUrl);
+                if (ea && ea.loaded && !ea.resource) { al.unload(oc.environmentUrl); fixed++; }
+              }
+            } catch (instErr) {}
+          });
+        });
+      });
+      return fixed;
+    }
+    var watchdogTicks = 0;
+    var watchdogTimer = setInterval(function () {
+      if (viewerReady) { clearInterval(watchdogTimer); return; }
+      watchdogTicks++;
+      if (watchdogTicks < 3) { return; }   // grace: give a cold initial load 15s before touching anything
+      try {
+        var fixed = unstickInstances();
+        if (fixed > 0) { console.info('[portals] ready-gate watchdog repaired ' + fixed + ' stuck entr' + (fixed === 1 ? 'y' : 'ies')); }
+        // Priority-1 backstop: if the ready gate still has not fired, the
+        // viewer never applied a splat budget and the engine streams
+        // UNBOUNDED. Apply the viewer's own high-quality default so a phone
+        // can never OOM from an un-ready start (applyPerfSettings simply
+        // overwrites this with the same value once ready fires), and
+        // reconcile so pins pick up the now-real ceiling.
+        var bApp = getApp(window.__supersplatViewer);
+        var gs = bApp && bApp.scene && bApp.scene.gsplat;
+        if (gs && !gs.splatBudget) {
+          gs.splatBudget = (IS_MOBILE ? 2 : 4) * 1000000;
+          console.info('[portals] ready-gate watchdog applied fallback splatBudget=' + gs.splatBudget);
+          reconcileFrontier();
+        }
+      } catch (wdErr) {}
+    }, 5000);
     requestAnimationFrame(tick);
   }
 
@@ -546,6 +782,46 @@ const companionRuntime = `
     var b = app && app.scene && app.scene.gsplat && app.scene.gsplat.splatBudget;
     return (typeof b === 'number' && b > 0) ? b : 0;
   }
+  // Total resident splats we allow across all kept scenes (see
+  // computeResidentCeiling): mobile = MULT x render budget; desktop = the
+  // whole project's pyramid cost when a RAM-derived cap allows it. 0 until
+  // the budget is known.
+  function getResidentCeiling() {
+    var costs = sceneCosts();
+    var total = 0;
+    for (var i = 0; i < costs.length; i++) { total += (costs[i] || 0); }
+    var mem = 0;
+    try { mem = navigator.deviceMemory || 0; } catch (e) { mem = 0; }
+    return computeResidentCeiling(residentBudgetOverride, getSplatBudget(), RESIDENT_BUDGET_MULT, IS_MOBILE, total, mem);
+  }
+  // Per-scene resident cost in splats: streaming = whole-scene count at the
+  // device-finest level [deviceFinest..coarsest]; SOG = its single baked count.
+  // 0 (free) when no count is baked (older SOG exports).
+  function sceneCost(idx) {
+    var counts = (data.portalSceneLodCounts || [])[idx];
+    if (!counts || !counts.length) { return 0; }
+    var coarse = counts.length - 1;
+    var lv = (deviceFinest !== null) ? Math.min(Math.max(deviceFinest, 0), coarse) : coarse;
+    var sum = 0;
+    for (var i = lv; i < counts.length; i++) { sum += (counts[i] || 0); }
+    return sum;
+  }
+  function sceneCosts() {
+    var arr = [];
+    for (var i = 0; i < data.portalScenes.length; i++) { arr[i] = sceneCost(i); }
+    return arr;
+  }
+  // The budget-bounded resident set for the LIVE activeIndex (replaces Plan 3's
+  // adjacency-only desiredResidentScenes across the reconcile paths).
+  function residentScenes() {
+    return selectResidentScenes(adjacency, activeIndex, recency, sceneCosts(), getResidentCeiling());
+  }
+  // Track most-recently-active order for LRU eviction under a tight budget.
+  function noteVisit(idx) {
+    var i = recency.indexOf(idx);
+    if (i >= 0) { recency.splice(i, 1); }
+    recency.unshift(idx);
+  }
   // --- incremental cache-warming of distance-2 scenes --------------------
   // When the frontier shifts (startup + each crossing), warm the HTTP cache for
   // scenes at graph distance 2 (neighbours of the pinned frontier that are not
@@ -565,6 +841,10 @@ const companionRuntime = `
     fetchJson(u).then(function (meta) {
       var coarse = (meta && meta.lodLevels) ? meta.lodLevels - 1 : 0;
       var min = (deviceFinest !== null) ? Math.min(deviceFinest, coarse) : coarse;
+      // Phones: warm only the two coarsest levels. A future mobile pin is
+      // depth-degraded anyway (tight ceiling), and warming a full pyramid
+      // churns hundreds of MB through memory/data for blocks never pinned.
+      if (IS_MOBILE) { min = Math.max(min, coarse > 0 ? coarse - 1 : 0); }
       return collectLodFileUrls(meta, u, min);
     }).then(function (blockUrls) {
       return Promise.all(blockUrls.map(function (burl) {
@@ -626,41 +906,88 @@ const companionRuntime = `
     return (deviceFinest !== null) ? Math.min(deviceFinest, coarse) : coarse;
   }
 
-  // Pin LOD levels [minLevel .. coarsest] of an extra streaming scene RESIDENT
+  // Pin LOD levels [minLevel .. maxLevel] of a streaming scene RESIDENT
   // (decoded, in GPU) via the engine's octree loader, so a crossing into it shows
-  // device-appropriate quality with no cold streaming. incRefCount first so the
-  // files never enter the unload cooldown, then re-poll ensureFileResource each
-  // frame until they are resident (a disabled scene has no render instance to poll
-  // it). Records the pinned file indices for later reclaim. SOG scenes (no octree)
-  // are a no-op. Idempotent-ish: skips files already pinned for this scene.
-  function pinSceneToLevel(asset, idx, minLevel) {
-    var octree = getOctree(asset);
-    octrees[idx] = octree || null;
+  // device-appropriate quality with no cold streaming. incRefCount immediately
+  // (files never enter the unload cooldown), then enqueue the batch on the
+  // scene's pin pump, which loads it wave-by-wave (see pumpPins). markReady:
+  // set readyScenes[idx] once THIS batch is resident -- the caller passes it on
+  // the coarsest-level batch, so a crossing drops the loading overlay as soon
+  // as coarse whole-scene content is showable (finer levels keep streaming
+  // behind the visible scene). Records the pinned file indices for later
+  // reclaim. SOG scenes (no octree) are a no-op. Idempotent-ish: files already
+  // pinned are re-polled by the pump but not re-pinned.
+  function pinSceneToLevel(asset, idx, minLevel, maxLevel, markReady) {
+    // Scene 0 has no tracked asset (the viewer owns it): fall back to the octree
+    // captured in start() instead of clobbering it with null.
+    var octree = getOctree(asset) || octrees[idx] || null;
+    octrees[idx] = octree;
     if (!octree || !octree.lodLevels || !octree.files ||
         !octree.incRefCount || !octree.ensureFileResource || !octree.getFileResource) { return; }
+    if (maxLevel === undefined || maxLevel === null) { maxLevel = 1000000; }
     if (!pinnedFiles[idx]) { pinnedFiles[idx] = []; }
     var already = {};
     for (var p = 0; p < pinnedFiles[idx].length; p++) { already[pinnedFiles[idx][p]] = true; }
-    var added = [];
+    var batch = [];
     for (var i = 0; i < octree.files.length; i++) {
       var f = octree.files[i];
-      if (f && f.lodLevel >= minLevel && !already[i]) {
-        try { octree.incRefCount(i); pinnedFiles[idx].push(i); added.push(i); }
-        catch (e) { console.warn('portal pin block ' + i + ' (scene ' + idx + ') failed:', e); }
+      if (f && f.lodLevel >= minLevel && f.lodLevel <= maxLevel) {
+        if (!already[i]) {
+          try { octree.incRefCount(i); pinnedFiles[idx].push(i); }
+          catch (e) { console.warn('portal pin block ' + i + ' (scene ' + idx + ') failed:', e); continue; }
+        }
+        batch.push(i);
       }
     }
-    if (added.length === 0 && pinnedFiles[idx].length === 0) { return; }
-    var gen = pinGen[idx] || 0;   // a reclaim bumps pinGen[idx]; this loop then bails instead of marking a now-unpinned scene ready
-    var frames = 0;
-    (function awaitResident() {
-      if ((pinGen[idx] || 0) !== gen) { return; }   // scene was reclaimed mid-pin -> do NOT vacuously mark the emptied pin set ready
-      var allResident = true;
-      for (var j = 0; j < pinnedFiles[idx].length; j++) {
-        octree.ensureFileResource(pinnedFiles[idx][j]);
-        if (!octree.getFileResource(pinnedFiles[idx][j])) { allResident = false; }
+    if (!pinBatches[idx]) { pinBatches[idx] = []; }
+    pinBatches[idx].push({ files: batch, markReady: !!markReady, done: false });
+    pumpPins(idx);
+  }
+
+  // Per-scene pin pump: walk the scene's batches strictly in order (level-major,
+  // coarsest first) and keep at most PIN_WAVE not-yet-loaded files in flight.
+  // The engine's per-scene block loader is a 2-concurrent FIFO with no
+  // prioritisation, so a small wave leaves it responsive to interactive
+  // requests instead of burying them behind the whole preload. A completed
+  // batch flagged markReady marks the scene ready (drops a pending overlay).
+  // While a crossing is loading (pendingIndex), pumps of the OTHER scenes yield
+  // so the destination scene gets the bandwidth. A reclaim bumps pinGen and the
+  // pump exits (pinBatches was cleared).
+  function pumpPins(idx) {
+    if (pinPumping[idx]) { return; }
+    pinPumping[idx] = true;
+    var gen = pinGen[idx] || 0;
+    (function pump() {
+      if ((pinGen[idx] || 0) !== gen) { pinPumping[idx] = false; return; }
+      var octree = octrees[idx];
+      var batches = pinBatches[idx] || [];
+      if (!octree || !octree.ensureFileResource || !octree.getFileResource) { pinPumping[idx] = false; return; }
+      if (pendingIndex !== null && pendingIndex !== idx && activeIndex !== idx) {
+        requestAnimationFrame(pump);   // yield bandwidth to the scene being crossed into
+        return;
       }
-      if (allResident) { readyScenes[idx] = true; return; }
-      if (frames++ < 600) { requestAnimationFrame(awaitResident); }
+      var inflight = 0;
+      var allDone = true;
+      for (var b = 0; b < batches.length; b++) {
+        var bt = batches[b];
+        if (bt.done) { continue; }
+        var missing = 0;
+        for (var j = 0; j < bt.files.length; j++) {
+          if (!octree.getFileResource(bt.files[j])) {
+            missing++;
+            if (inflight < PIN_WAVE) { octree.ensureFileResource(bt.files[j]); inflight++; }
+          }
+        }
+        if (missing === 0) {
+          bt.done = true;
+          if (bt.markReady) { readyScenes[idx] = true; }
+          continue;
+        }
+        allDone = false;
+        break;   // strict order: don't start a finer batch before this one is resident
+      }
+      if (allDone) { pinPumping[idx] = false; return; }
+      requestAnimationFrame(pump);
     })();
   }
 
@@ -681,7 +1008,8 @@ const companionRuntime = `
       }
     }
     pinnedFiles[idx] = [];
-    pinGen[idx] = (pinGen[idx] || 0) + 1;   // invalidate any in-flight awaitResident for this scene
+    pinBatches[idx] = [];
+    pinGen[idx] = (pinGen[idx] || 0) + 1;   // invalidate the scene's in-flight pin pump
     readyScenes[idx] = false;
   }
 
@@ -701,8 +1029,11 @@ const companionRuntime = `
       updateDeviceFinest();
       if (deviceFinest !== last) { last = deviceFinest; stableFor = 0; } else { stableFor++; }
       // SOG exports have no start octree to observe, so deviceFinest never
-      // settles -- don't hold the first reconcile (and warming) ~10s for it.
-      if ((getSplatBudget() && (!streaming || deviceFinest !== null) && stableFor > 60) || waited++ > 600) {
+      // settles -- don't hold the first reconcile (and warming) for it. Also
+      // wait for the viewer's own initial load (firstFrame): preload traffic
+      // would otherwise compete with the start scene while the loading bar is
+      // up. Frame-capped fallback (~30s) in case firstFrame never fires.
+      if ((viewerReady && getSplatBudget() && (!streaming || deviceFinest !== null) && stableFor > 60) || waited++ > 1800) {
         pinReady = true; pinDesired(); return;
       }
       requestAnimationFrame(poll);
@@ -717,23 +1048,39 @@ const companionRuntime = `
   function pinDesired() {
     if (!adjacency) { return; }
     var active = activeIndex;
-    var want = desiredResidentScenes(adjacency, active);
-    // Budget-capped per-scene depths: active keeps deviceFinest, neighbours
-    // degrade toward coarser until the summed pinned splat count fits ~1x the
-    // engine budget (pinned blocks of disabled scenes bypass the budget
-    // balancer, so we must cap them ourselves).
+    var want = residentScenes();
+    // Budget-capped per-scene depths: the active scene keeps deviceFinest; the
+    // other resident scenes degrade toward coarser only if the summed pinned
+    // splat count exceeds the RESIDENT ceiling (getResidentCeiling(), a multiple
+    // of the engine budget). Pinned blocks of disabled scenes bypass the budget
+    // balancer, so we cap the whole resident set ourselves.
     var depths = assignPinDepths(
       active,
-      adjacency[active] || [],
+      want,
       data.portalSceneLodCounts || [],
       deviceFinest,
-      getSplatBudget()
+      getResidentCeiling()
     );
+    // One-line residency diagnostic (deduped) so a field E2E can read the
+    // decision at a glance: any depth above deviceFinest or a scene missing
+    // from resident=[] explains a visible re-stream on crossing.
+    try {
+      var diag = 'ceiling=' + getResidentCeiling() + ' costs=[' + sceneCosts().join(',') + ']' +
+        ' resident=[' + want.join(',') + '] depths=' + JSON.stringify(depths) +
+        ' deviceFinest=' + deviceFinest + ' active=' + active;
+      if (diag !== lastDiag) { lastDiag = diag; console.info('[portals] ' + diag); }
+    } catch (logErr) {}
     var wantSet = {};
+    var pinMins = {};                 // scene idx -> target min level this reconcile (absent = pins already correct)
+    var maxCoarse = 0;
     for (var i = 0; i < want.length; i++) {
       var idx = want[i];
       wantSet[idx] = true;
       if (!entities[idx] || !octrees[idx]) { continue; }
+      // Scene 0 shares its block loader with the viewer's own initial load:
+      // never queue its pins until firstFrame (the 30s fallback that unblocks
+      // the OTHER scenes' pins must not touch the start scene's loader).
+      if (idx === 0 && !viewerReady) { continue; }
       // Clamp the assigned depth to the loaded octree's real level span (the
       // payload counts can disagree with the octree; the octree is ground truth).
       var coarse = octrees[idx].lodLevels ? octrees[idx].lodLevels - 1 : 0;
@@ -747,11 +1094,32 @@ const companionRuntime = `
         // HTTP cache (cheap: coarse levels are small).
         unpinScene(idx);
       }
-      sceneMinLevel[idx] = min;
-      if (comps[idx]) { comps[idx].lodRangeMin = min; }
-      pinSceneToLevel(getAsset(idx), idx, min);   // additive when deepening; fresh pin otherwise
+      if (idx !== 0) {
+        // Scene 0's lodRange floor stays viewer-owned (the engine's balancer
+        // already drives the start scene); we only pin its blocks resident.
+        sceneMinLevel[idx] = min;
+        if (comps[idx]) { comps[idx].lodRangeMin = min; }
+      }
+      pinMins[idx] = min;
+      if (coarse > maxCoarse) { maxCoarse = coarse; }
       pinnedScenes[idx] = true;
       pinDepth[idx] = min;
+    }
+    // Pin LEVEL-MAJOR, coarsest level first ACROSS scenes: every resident
+    // scene's coarse (small, whole-scene) levels download before any scene's
+    // fine levels, so a crossing during the preload window shows coarse
+    // content almost immediately instead of the loading overlay. The coarsest
+    // batch marks its scene ready (drops a pending overlay); finer batches
+    // keep streaming behind the visible scene.
+    for (var lv = maxCoarse; lv >= 0; lv--) {
+      for (var w = 0; w < want.length; w++) {
+        var ps = want[w];
+        var pmin = pinMins[ps];
+        if (pmin === undefined || pmin > lv || !octrees[ps]) { continue; }
+        var pcoarse = octrees[ps].lodLevels ? octrees[ps].lodLevels - 1 : 0;
+        if (lv > pcoarse) { continue; }
+        pinSceneToLevel(getAsset(ps), ps, lv, lv, lv === pcoarse);
+      }
     }
     for (var k in pinnedScenes) {
       var s = Number(k);
@@ -818,7 +1186,7 @@ const companionRuntime = `
   function sceneWanted(idx) {
     if (idx === activeIndex) { return true; }
     if (!adjacency) { return true; }                    // before start() settles, keep everything
-    var want = desiredResidentScenes(adjacency, activeIndex);
+    var want = residentScenes();
     for (var i = 0; i < want.length; i++) { if (want[i] === idx) { return true; } }
     return false;
   }
@@ -840,7 +1208,8 @@ const companionRuntime = `
     entities[idx] = null; comps[idx] = null; octrees[idx] = null; assets[idx] = null;
     sceneMinLevel[idx] = null; readyScenes[idx] = false;
     pinDepth[idx] = null;
-    pinGen[idx] = (pinGen[idx] || 0) + 1;   // invalidate any in-flight awaitResident
+    pinBatches[idx] = [];
+    pinGen[idx] = (pinGen[idx] || 0) + 1;   // invalidate the scene's in-flight pin pump
     try { e.destroy(); } catch (err) { console.warn('portal scene ' + idx + ' entity destroy failed:', err); }
     if (a && liveApp) {
       try { liveApp.assets.remove(a); a.unload(); } catch (err) { console.warn('portal scene ' + idx + ' unload failed:', err); }
@@ -854,7 +1223,7 @@ const companionRuntime = `
   // or duplicate calls are harmless.
   function reconcileFrontier() {
     if (!adjacency || !liveApp) { return; }
-    var want = desiredResidentScenes(adjacency, activeIndex);
+    var want = residentScenes();
     var wantSet = {};
     for (var i = 0; i < want.length; i++) { wantSet[want[i]] = true; }
     for (var idx = 1; idx < data.portalScenes.length; idx++) {

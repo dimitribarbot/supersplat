@@ -19,8 +19,29 @@ import {
 import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subsetRowsWithinRadius, voxelResolutionLadder, type CollisionEnvironment } from './collision-voxel-options';
 import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
+import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from './viewer-companion/portals';
+import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
+
+// Apply the engine patches (#8998 loader stall + #9011 unload race, see
+// viewer-engine-patch.ts) to the viewer bundle in memFs: 'index.js' for
+// unbundled exports. Warns when a pattern is missing (bundled engine changed
+// shape) -- the injected portal companion's ready-gate watchdog then remains
+// the runtime fallback.
+const patchEngineLoaderInMemFs = (memFs: { results: Map<string, Uint8Array> }): void => {
+    const raw = memFs.results.get('index.js');
+    if (!raw) {
+        return;
+    }
+    const { source, patched } = patchViewerEngine(new TextDecoder().decode(raw));
+    if (patched < VIEWER_ENGINE_PATCH_COUNT) {
+        console.warn(`Viewer engine patch: ${patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`);
+    }
+    if (patched > 0) {
+        memFs.results.set('index.js', new TextEncoder().encode(source));
+    }
+};
 
 // Inject the annotation-link companion into an HTML string before </body>.
 // No-op (returns the input) when there are no annotation links.
@@ -33,6 +54,24 @@ const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string =>
         return html.replace('</body>', `${injection}</body>`);
     }
     return html + injection;
+};
+
+// Inject the WebGPU->WebGL2 crash-fallback companion into an HTML string
+// before </body>. ALWAYS injected (every export benefits: field-observed
+// Adreno WebGPU device loss kills plain single-scene viewers too). Publishes
+// the viewer handle itself via the same bootstrap soft-replace as the zones
+// injector, because on a plain export no other companion runs to publish it
+// (a duplicate assignment when both run is harmless).
+const injectDeviceFallback = (html: string): string => {
+    const injection = buildDeviceFallbackInjection();
+    const bootstrap = 'const viewer = await main(canvas, settingsJson, config);';
+    const withHandle = html.includes(bootstrap) ?
+        html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
+        html;
+    if (withHandle.includes('</body>')) {
+        return withHandle.replace('</body>', `${injection}</body>`);
+    }
+    return withHandle + injection;
 };
 
 // Inject the off-limits-zones companion into an HTML string before </body>.
@@ -611,7 +650,8 @@ const writeStreamingViewerCore = async (
     const withLinks = injectAnnotationLinks(repointed, settingsWithLods);
     const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
-    memFs.results.set('index.html', new TextEncoder().encode(withPortals));
+    memFs.results.set('index.html', new TextEncoder().encode(injectDeviceFallback(withPortals)));
+    patchEngineLoaderInMemFs(memFs);
     if (collision) {
         repointCollisionUrl(memFs);
     }
@@ -698,9 +738,14 @@ const writeViewerCore = async (
             if (!raw) {
                 throw new Error('HTML export failed: writeHtml did not produce output.html');
             }
-            const injected = injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson);
+            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson));
+            // Single-file export inlines the engine in the HTML: patch it there.
+            const enginePatch = patchViewerEngine(injected);
+            if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
+                console.warn(`Viewer engine patch (html): ${enginePatch.patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`);
+            }
             const writer = await fs.createWriter('output.html');
-            await writer.write(new TextEncoder().encode(injected));
+            await writer.write(new TextEncoder().encode(enginePatch.source));
             await writer.close();
         } else if (viewerType === 'streaming') {
             await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes);
@@ -718,8 +763,12 @@ const writeViewerCore = async (
             if (!rawIndex) {
                 throw new Error('Package export failed: writeHtml did not produce index.html');
             }
-            const injected = injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(rawIndex), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson);
+            const sogSettings = hasPortalScenes ?
+                { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...(extraScenes!.map(s => [s.dataTable.numRows]))] } :
+                viewerSettingsJson;
+            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(rawIndex), sogSettings), sogSettings), sogSettings));
             memFs.results.set('index.html', new TextEncoder().encode(injected));
+            patchEngineLoaderInMemFs(memFs);
             if (collision) {
                 repointCollisionUrl(memFs);
             }

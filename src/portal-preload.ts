@@ -229,16 +229,20 @@ const desiredResidentScenes = (adjacency: number[][], active: number): number[] 
 // sceneLodCounts[s][lv] is scene s's whole-scene splat count at level lv
 // (0 = finest .. last = coarsest); pinning scene s at depth d keeps levels
 // [d .. coarsest] resident, costing sum(counts[s][d..]) splats. The active scene
-// keeps the base depth (deviceFinest clamped to its own coarsest) and is never
-// degraded; neighbours degrade one level at a time -- costliest first, ties to
-// the earliest neighbour -- until the total fits or all sit at their coarsest.
+// starts at the base depth (deviceFinest clamped to its own coarsest);
+// neighbours degrade one level at a time -- costliest first, ties to the
+// earliest neighbour -- until the total fits or all sit at their coarsest.
+// If the total STILL exceeds the budget, the active scene itself degrades as a
+// last resort (never-OOM outranks instant-return): the budget is a hard cap,
+// bottoming out only when every scene sits at its coarsest.
 // deviceFinest null (not yet observed) -> each scene's coarsest. budget <= 0
 // (unknown) -> neighbours at coarsest, active at base. Missing/empty counts ->
 // base depth, cost 0 (unmeasurable; the runtime clamps to the real octree span).
-// Only extra scenes (index >= 1) are returned: scene 0 is the viewer's own
-// always-resident start scene, never pin-managed. Pure and self-contained (no
-// imports, no sibling-function calls) so it can be stringified verbatim into the
-// exported viewer runtime via Function.toString().
+// Scene 0 (the start scene) is managed like any other scene: the engine frees a
+// disabled scene's blocks (instance destroy decRefCounts them), so scene 0 is
+// NOT inherently resident and must be pinned and budgeted too. Pure and
+// self-contained (no imports, no sibling-function calls) so it can be
+// stringified verbatim into the exported viewer runtime via Function.toString().
 const assignPinDepths = (
     activeIdx: number,
     neighborIdxs: number[],
@@ -271,12 +275,12 @@ const assignPinDepths = (
     const hasBudget = typeof budget === 'number' && budget > 0;
     const depths: Record<number, number> = {};
     const neighbours: number[] = [];
-    if (activeIdx >= 1) {
+    if (activeIdx >= 0) {
         depths[activeIdx] = baseDepth(activeIdx);
     }
     for (let i = 0; i < (neighborIdxs || []).length; i++) {
         const n = neighborIdxs[i];
-        if (n >= 1 && n !== activeIdx && depths[n] === undefined) {
+        if (n >= 0 && n !== activeIdx && depths[n] === undefined) {
             depths[n] = hasBudget ? baseDepth(n) : coarsest(n);
             neighbours.push(n);
         }
@@ -307,11 +311,59 @@ const assignPinDepths = (
             }
         }
         if (pick < 0) {
-            break;                           // nothing left to degrade
+            break;                           // no neighbour left to degrade
         }
         depths[pick] += 1;
     }
+    // Last resort: every neighbour sits at its coarsest but the total still
+    // exceeds the budget -> degrade the active scene too (hard cap).
+    if (activeIdx >= 0 && depths[activeIdx] !== undefined) {
+        while (depths[activeIdx] < coarsest(activeIdx) && total() > budget) {
+            depths[activeIdx] += 1;
+        }
+    }
     return depths;
+};
+
+// Total resident-splat ceiling for the viewer. Priority:
+//   1. an explicit override (?residentBudget=) always wins;
+//   2. 0 (defer) until the engine splat budget is known;
+//   3. mobile: a conservative multiple of the render budget -- never-OOM
+//      outranks instant crossings on phones;
+//   4. desktop: hold the WHOLE project resident (totalCost = sum of every
+//      scene's pyramid cost at deviceFinest) when it fits a RAM-derived cap,
+//      so any project that fits memory never degrades or evicts. A fixed
+//      multiple of the RENDER budget cannot anticipate project size (a single
+//      scene's resident pyramid can exceed several render budgets), which is
+//      why totalCost drives the ceiling. The cap scales with
+//      navigator.deviceMemory (GB, Chrome-only, quantized <= 8; assume 8 when
+//      absent) at 16M resident splats per GB (~20-25 bytes of GPU textures
+//      per splat -> 8GB caps at 128M splats ~= 2.5-3GB). Never below the
+//      render-budget floor (mult x budget) so small projects keep headroom.
+// Pure and self-contained (no imports, no sibling-function calls) so it can be
+// stringified verbatim into the exported viewer runtime via Function.toString().
+const computeResidentCeiling = (
+    override: number,
+    splatBudget: number,
+    mult: number,
+    isMobile: boolean,
+    totalCost: number,
+    deviceMemoryGb: number
+): number => {
+    if (override > 0) {
+        return override;
+    }
+    if (!splatBudget || splatBudget <= 0) {
+        return 0;
+    }
+    const floor = splatBudget * mult;
+    if (isMobile) {
+        return floor;
+    }
+    const gb = (typeof deviceMemoryGb === 'number' && deviceMemoryGb > 0) ? deviceMemoryGb : 8;
+    const cap = gb * 16000000;
+    const want = Math.min((typeof totalCost === 'number' && totalCost > 0) ? totalCost : 0, cap);
+    return Math.max(floor, want);
 };
 
 // Scenes at graph distance 2 from the active scene: neighbours of the pinned
@@ -349,4 +401,85 @@ const computeWarmSet = (activeIdx: number, adjacency: number[][], pinnedSet: num
     return out;
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+// Choose which scenes to keep resident, in priority order, until the summed
+// per-scene cost would exceed `ceiling`:
+//   1. guaranteed: scene 0 (the reset/spawn target) + the active scene + its
+//      immediate portal neighbours (admitted even past the ceiling -- an
+//      immediate crossing must land on a resident scene);
+//   2. recently-visited scenes, most-recent first (recencyOrder);
+//   3. remaining scenes by BFS graph distance from active (nearer first, then index).
+// A candidate after the guaranteed set is admitted only if its cost still fits.
+// sceneCosts[i] is scene i's resident cost in splats (streaming: whole-scene count
+// at deviceFinest; SOG: full count). A missing / <= 0 cost is treated as free.
+// When ceiling <= 0 (budget not yet known) only the guaranteed set is admitted.
+// Scene 0 is included and its cost counted: the engine frees a disabled scene's
+// blocks, so the start scene is NOT inherently resident -- it must be pinned and
+// budgeted like the rest (it is guaranteed, so it is never evicted).
+// Sorted, de-duplicated. Pure and self-contained (no imports, no sibling calls)
+// so it can be stringified verbatim into the exported viewer runtime.
+const selectResidentScenes = (
+    adjacency: number[][],
+    activeIdx: number,
+    recencyOrder: number[],
+    sceneCosts: number[],
+    ceiling: number
+): number[] => {
+    if (!adjacency || activeIdx < 0 || activeIdx >= adjacency.length) {
+        return [];
+    }
+    const admitted: Record<number, boolean> = {};
+    let cost = 0;
+    const costOf = (i: number): number => {
+        const c = sceneCosts && sceneCosts[i];
+        return (typeof c === 'number' && c > 0) ? c : 0;
+    };
+    const admit = (i: number, forced: boolean): void => {
+        if (i < 0 || admitted[i]) {
+            return;
+        }
+        const c = costOf(i);
+        if (!forced && (ceiling <= 0 || cost + c > ceiling)) {
+            return;
+        }
+        admitted[i] = true;
+        cost += c;
+    };
+    // 1. guaranteed: scene 0 (reset target) + active + immediate neighbours
+    admit(0, true);
+    admit(activeIdx, true);
+    const neighbours = adjacency[activeIdx] || [];
+    for (let i = 0; i < neighbours.length; i++) {
+        admit(neighbours[i], true);
+    }
+    // 2. recently-visited (most-recent first)
+    for (let i = 0; i < (recencyOrder || []).length; i++) {
+        admit(recencyOrder[i], false);
+    }
+    // 3. remaining by BFS distance from active (nearer first, index tiebreak)
+    const seen: Record<number, boolean> = {};
+    seen[activeIdx] = true;
+    let frontier: number[] = [activeIdx];
+    while (frontier.length) {
+        const next: number[] = [];
+        for (let f = 0; f < frontier.length; f++) {
+            const nb = (adjacency[frontier[f]] || []).slice().sort((a, b) => a - b);
+            for (let j = 0; j < nb.length; j++) {
+                const n = nb[j];
+                if (!seen[n]) {
+                    seen[n] = true;
+                    admit(n, false);
+                    next.push(n);
+                }
+            }
+        }
+        frontier = next;
+    }
+    const out: number[] = [];
+    for (const k in admitted) {
+        out.push(Number(k));
+    }
+    out.sort((x, y) => x - y);
+    return out;
+};
+
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

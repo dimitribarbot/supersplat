@@ -117,6 +117,64 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('updateDeviceFinest');
     });
 
+    it('drives residency from a device budget (selectResidentScenes wired in)', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        expect(out).toContain('selectResidentScenes');
+        expect(out).toContain('getResidentCeiling');
+        expect(out).toContain('residentScenes');
+        // still budget-capped for per-scene depth, still pins/reclaims
+        expect(out).toContain('assignPinDepths');
+        expect(out).toContain('pinSceneToLevel');
+        // platform-split resident multiplier: desktop must hold several full
+        // LOD pyramids resident; mobile stays conservative (never-OOM first)
+        expect(out).toContain('IS_MOBILE ? 3 : 12');
+        // desktop ceiling is project-aware (whole project resident when the
+        // RAM-derived cap allows), and the residency decision is logged
+        expect(out).toContain('computeResidentCeiling');
+        expect(out).toContain('deviceMemory');
+        expect(out).toContain('[portals] ');
+        // scene 0 is pin-managed too (the engine frees a disabled scene's
+        // blocks, so the start scene is NOT inherently resident)
+        expect(out).toContain('comps[0] = startComp');
+        expect(out).toContain('admit(0, true)');
+        // preload waits for the viewer's initial load (firstFrame) so it never
+        // competes with the loading bar's own coarse start-scene load
+        expect(out).toContain('viewerReady');
+        expect(out).toContain("'firstFrame'");
+        // level-major coarse-first pinning: the coarsest batch marks its scene
+        // ready so a mid-preload crossing shows coarse content, not the overlay
+        expect(out).toContain('lv === pcoarse');
+        // wave-based pin pump: the engine's per-scene block loader is a
+        // 2-concurrent FIFO, so pins load a few files at a time instead of
+        // burying interactive requests behind the whole preload backlog
+        expect(out).toContain('pumpPins');
+        expect(out).toContain('PIN_WAVE');
+        // stuck-loading-bar field diagnostic
+        expect(out).toContain('startup not ready after 20s');
+        // ready-gate watchdog: repairs the upstream pendingLoadCount leak and
+        // applies a fallback splatBudget so the engine is never unbounded
+        expect(out).toContain('unstickInstances');
+        expect(out).toContain('ready-gate watchdog');
+        expect(out).toContain('fallback splatBudget');
+        // GPU-memory field diagnostic: vram curve (periodic + per-crossing)
+        // and a devicelost hook logging the last-known numbers -- evidence
+        // for the mobile device-lost ("OOM") investigation
+        expect(out).toContain('_vram');
+        expect(out).toContain('[portals] vram');
+        expect(out).toContain('DEVICE LOST');
+        expect(out).toContain("'devicelost'");
+        // ?residentBudget= override: the runtime lives inside a template
+        // literal, where a regex escape like \d cooks to plain 'd' (the
+        // override regex shipped as /residentBudget=(d+)/ and never matched).
+        // The parser must use string ops only -- no cooked-escape remnants.
+        expect(out).toContain("'residentBudget='");
+        expect(out).not.toContain('(d+)');
+    });
+
     it('frontier-manages SOG scenes: load on entry, full unload on exit', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
