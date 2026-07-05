@@ -94,7 +94,13 @@ class PortalShape extends Element {
     }
 
     destroy() {
+        // Entity destroy releases the render component, mesh instance and the
+        // mesh's GPU vertex/index buffers (the mesh is refcounted and this is
+        // its only instance). The material is not part of that chain — each
+        // shape news its own, so destroy it here too. Safe pre-add: all fields
+        // but pivot are set in add().
         this.pivot?.destroy();
+        this.material?.destroy();
     }
 
     // Fill the four quad vertices with cyan at the current selection alpha.

@@ -723,7 +723,10 @@ class PortalTool {
             // remove shapes for deleted portals
             for (const [id, shape] of shapes) {
                 if (!liveIds.has(id)) {
+                    // remove() only detaches; destroy() releases the entity,
+                    // mesh GPU buffers and material (mirrors scene.clear()).
                     scene.remove(shape);
+                    shape.destroy();
                     shapes.delete(id);
                 }
             }

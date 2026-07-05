@@ -713,10 +713,13 @@ class Camera extends Element {
 
         // Off-limits walls and portals share the zone shader, which needs a
         // per-frame splat depth texture to test against. Only pay the extra
-        // splat render when at least one zone or portal exists.
+        // splat render when at least one zone or portal exists AND the layer
+        // that draws them is enabled (render.ts disables it during image/video
+        // export when Show Debug is off; the walls aren't drawn then, so the
+        // depth pass would feed a shader that never runs).
         const zoneCount = (this.scene.events.invoke('offLimitsZones.list') as unknown[])?.length ?? 0;
         const portalCount = (this.scene.events.invoke('portals.list') as unknown[])?.length ?? 0;
-        if (zoneCount > 0 || portalCount > 0) {
+        if ((zoneCount > 0 || portalCount > 0) && this.scene.offLimitsLayer.enabled) {
             this.renderZoneDepth();
             this.scene.graphicsDevice.scope.resolve('zoneDepthTex').setValue(this.zoneDepthBuffer);
         }
