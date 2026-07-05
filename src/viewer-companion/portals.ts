@@ -1,6 +1,6 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -72,6 +72,7 @@ const companionRuntime = `
   var assignPinDepths = ${assignPinDepths.toString()};
   var computeWarmSet = ${computeWarmSet.toString()};
   var sceneResidentToDepth = ${sceneResidentToDepth.toString()};
+  var startSceneLodFloor = ${startSceneLodFloor.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
@@ -92,6 +93,7 @@ const companionRuntime = `
   var adjacency = null;                     // built in start() from data.portals
   var pinnedScenes = {};                    // scene index -> true when currently pinned
   var pinDepth = [];                        // scene index -> currently applied pin depth (min pinned level)
+  var startFloor = null;                    // active clamp on scene 0's lodRangeMin (null = floor viewer-owned; see applyStartFloor)
   var recency = [];                         // scene indices, most-recently-active first (LRU)
   // Mobile detection (UA-based, mirroring the viewer's own platform split; iPadOS
   // reports as Mac + multi-touch). Used only to pick the resident multiplier.
@@ -513,6 +515,22 @@ const companionRuntime = `
       // re-asserts the cursor's scene, so this is a harmless no-op there.
       ev.on('inputEvent', function (name) {
         if (name === 'reset') { switchTo(data.portalStart || 0); lastSafe = null; }
+      });
+      // The viewer's applyPerfSettings re-runs on this event: it reopens the
+      // start component's lodRangeMin to 0 (wiping the budget clamp) AND
+      // applies the new mode's splatBudget. A frame later (rAF: all listeners
+      // on the event run synchronously, so by then applyPerfSettings has
+      // definitely run), re-assert the clamp first, then re-reconcile the
+      // pins under the NEW budget -- without this, a raised budget would not
+      // release the clamp (or admit finer pin depths) until the next portal
+      // crossing, which may never come if the user lingers in one scene. The
+      // re-assert must precede pinDesired: its loop skips scenes whose
+      // assigned depth is unchanged, leaving the wiped floor unrepaired.
+      ev.on('performanceMode:changed', function () {
+        requestAnimationFrame(function () {
+          if (startFloor !== null && comps[0]) { comps[0].lodRangeMin = startFloor; }
+          if (pinReady) { pinDesired(); }
+        });
       });
     }
 
@@ -1050,6 +1068,24 @@ const companionRuntime = `
       requestAnimationFrame(poll);
     })();
   }
+  // Scene 0's lodRange floor stays viewer-owned (applyPerfSettings opens it
+  // to 0 once ready) EXCEPT when the budget degraded its assigned pin depth
+  // below the device's observed finest: the engine then endlessly requests
+  // finest-level blocks the device cannot hold (field case: ERR_FAILED-with-
+  // 200 churn on scene-0 level-0 webps under mobile memory pressure) for
+  // splats that can never be shown. Clamp the component floor to the pin
+  // depth, exactly as pinDesired does for extra scenes; release it (restore
+  // the viewer's 0) if a later reconcile lifts the degradation. A never-
+  // clamped device (floor null throughout -- desktop) never writes the
+  // component at all, so stock start-scene behavior is untouched.
+  // sceneMinLevel[0] stays unset: the reveal gate resolves pinDepth[0]
+  // first, which pinDesired always assigns for scene 0.
+  function applyStartFloor(floor) {
+    if (floor === null && startFloor === null) { return; }   // never clamped: strict no-op
+    startFloor = floor;
+    if (comps[0]) { comps[0].lodRangeMin = (floor !== null) ? floor : 0; }
+  }
+
   // Reconcile the resident frontier to the LIVE activeIndex (read here, never a
   // captured argument): a deferred poll may resolve a frame or a second after a
   // crossing, by which point activeIndex has changed. Reconciling to a stale scene
@@ -1106,10 +1142,15 @@ const companionRuntime = `
         unpinScene(idx);
       }
       if (idx !== 0) {
-        // Scene 0's lodRange floor stays viewer-owned (the engine's balancer
-        // already drives the start scene); we only pin its blocks resident.
+        // Extra scenes: the component floor IS the pin depth.
         sceneMinLevel[idx] = min;
         if (comps[idx]) { comps[idx].lodRangeMin = min; }
+      } else {
+        // Scene 0's floor is viewer-owned unless the budget degraded its pin
+        // depth below the device's observed finest (see applyStartFloor).
+        // pinDesired only runs pinReady-gated, so deviceFinest has settled
+        // by the time a clamp can engage.
+        applyStartFloor(startSceneLodFloor(min, deviceFinest));
       }
       pinMins[idx] = min;
       if (coarse > maxCoarse) { maxCoarse = coarse; }

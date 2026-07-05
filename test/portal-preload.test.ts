@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -471,5 +471,40 @@ describe('sceneResidentToDepth', () => {
     it('is false when no file sits at or coarser than min (empty gate set)', () => {
         expect(sceneResidentToDepth([{ lodLevel: 0 }], 3, 1, resident([0]))).toBe(false);
         expect(sceneResidentToDepth([], 3, 1, resident([]))).toBe(false);
+    });
+});
+
+describe('startSceneLodFloor', () => {
+    it('clamps when the assigned depth is coarser than the observed device finest', () => {
+        // Field case (Redmi Note 9S): depths={"0":3}, deviceFinest=0 -> the
+        // engine kept requesting level-0 blocks the device could not hold.
+        expect(startSceneLodFloor(3, 0)).toBe(3);
+        expect(startSceneLodFloor(2, 1)).toBe(2);
+    });
+
+    it('leaves the floor viewer-owned when the assigned depth equals the device finest (desktop)', () => {
+        expect(startSceneLodFloor(0, 0)).toBeNull();
+        expect(startSceneLodFloor(2, 2)).toBeNull();
+    });
+
+    it('leaves the floor viewer-owned when the assigned depth is finer than the device finest', () => {
+        expect(startSceneLodFloor(1, 2)).toBeNull();
+    });
+
+    it('never clamps before deviceFinest has been observed', () => {
+        // The clamp caps what updateDeviceFinest can observe; engaging on the
+        // coarse fallback would freeze a degraded value permanently.
+        expect(startSceneLodFloor(3, null)).toBeNull();
+        expect(startSceneLodFloor(3, undefined)).toBeNull();
+    });
+
+    it('never clamps without an assigned depth', () => {
+        expect(startSceneLodFloor(null, 0)).toBeNull();
+        expect(startSceneLodFloor(undefined, 0)).toBeNull();
+    });
+
+    it('treats a negative observed finest as 0', () => {
+        expect(startSceneLodFloor(1, -2)).toBe(1);
+        expect(startSceneLodFloor(0, -2)).toBeNull();
     });
 });

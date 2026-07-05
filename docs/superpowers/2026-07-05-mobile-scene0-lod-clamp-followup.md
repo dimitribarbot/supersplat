@@ -1,6 +1,12 @@
 # Follow-up: clamp scene 0's LOD floor to its pin depth on budget-degraded devices
 
-Status: PROPOSED (not started). Origin: streaming-blob fix E2E, 2026-07-05.
+Status: IMPLEMENTED 2026-07-05 (clamp in pinDesired via pure startSceneLodFloor
+helper + performanceMode:changed re-assert AND re-reconcile, so a raised
+budget releases the clamp without waiting for a crossing; sceneMinLevel[0]
+left unset -- reveal gate audited: pinDepth[0] always wins). E2E pending
+(Redmi + desktop).
+Plan: `docs/superpowers/plans/2026-07-05-mobile-scene0-lod-clamp.md`.
+Origin: streaming-blob fix E2E, 2026-07-05.
 Prerequisite reading: `docs/superpowers/2026-07-04-streaming-blob-session-memo.md`
 (the whole mobile diagnosis lives there).
 

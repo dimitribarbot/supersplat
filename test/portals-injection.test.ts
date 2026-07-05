@@ -215,6 +215,23 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('octrees[idx] ? sceneRevealResident(idx) : readyScenes[idx]');
     });
 
+    it('clamps scene 0\'s LOD floor to its pin depth only when budget-degraded', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // pure decision helper stringified in, applied via applyStartFloor
+        expect(out).toContain('startSceneLodFloor');
+        expect(out).toContain('applyStartFloor');
+        // the clamp survives the viewer's applyPerfSettings re-run (which
+        // reopens the start component's lodRangeMin to 0 on this event)
+        expect(out).toContain("'performanceMode:changed'");
+        // ...and the toggle also re-reconciles pins under the NEW budget, so
+        // a raised budget releases the clamp without waiting for a crossing
+        expect(out).toContain('if (pinReady) { pinDesired(); }');
+    });
+
     it('halts GPU-feeding work on devicelost and resumes on devicerestored', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],

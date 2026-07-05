@@ -75,6 +75,18 @@ describe('injectPoster', () => {
             expect(out).not.toContain('filter: none');
         });
 
+        // blur(40px) at 0% progress fades the poster's outer ~40px to
+        // semi-transparent; with the canvas forced composited (opacity 1)
+        // the live render bled through at the viewport borders (field case:
+        // canvas edges visible behind the blurred poster on mobile).
+        // Oversizing the poster pushes the fringe outside the viewport.
+        it('oversizes the poster so the blur fringe falls outside the viewport', () => {
+            const out = injectPoster(HTML, {}, './poster.jpg');
+            expect(out).toContain('top: -80px !important');
+            expect(out).toContain('left: -80px !important');
+            expect(out).toContain('calc(100% + 160px)');
+        });
+
         it('applies to the solid fallback too', () => {
             const out = injectPoster(HTML, { background: { color: [0, 0, 0] } }, null);
             expect(out).toContain('#application-canvas { opacity: 1 !important; }');

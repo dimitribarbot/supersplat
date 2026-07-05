@@ -57,9 +57,19 @@ const buildPosterFallbackUrl = (viewerSettingsJson: any): string => {
 // cause -- if a mobile regression ever points back at it, re-add
 // `#poster { filter: none !important; }` to the rule below.
 //
-// The override rides an author-stylesheet !important rule, which beats the
+// Keeping the canvas composited exposes a second, cosmetic artifact: the
+// progressive blur fades the poster's outer ~40px (the blur radius at 0%
+// progress) to semi-transparent, and the now-visible canvas bleeds through
+// at the viewport borders (field case: canvas edges visible behind the
+// blurred poster, showing the live render at a different camera pose).
+// Oversize the poster by 80px (2x the max blur) on every side so the fringe
+// falls outside the viewport; the visible area stays fully opaque. Desktop
+// is untouched (canvas held transparent there, the fringe shows only the
+// uniform page background).
+//
+// The overrides ride author-stylesheet !important rules, which beat the
 // viewer's inline style writes. The solid-color fallback poster takes the
-// same path, so it applies to both poster kinds. UA gate mirrors the
+// same path, so they apply to both poster kinds. UA gate mirrors the
 // portals companion's platform split (iPadOS = Mac + multi-touch).
 // Template literal: NO backslash escapes (cooked away at build time).
 const POSTER_CANVAS_KEEPALIVE = `<script>
@@ -69,7 +79,9 @@ const POSTER_CANVAS_KEEPALIVE = `<script>
     ((navigator.maxTouchPoints || 0) > 1 && /mac/i.test(navigator.platform || ''));
   if (!mobile) { return; }
   var s = document.createElement('style');
-  s.textContent = '#application-canvas { opacity: 1 !important; }';
+  s.textContent = '#application-canvas { opacity: 1 !important; }' +
+    ' #poster { top: -80px !important; left: -80px !important;' +
+    ' width: calc(100% + 160px) !important; height: calc(100% + 160px) !important; }';
   (document.head || document.documentElement).appendChild(s);
 })();
 </script>`;

@@ -513,4 +513,32 @@ const sceneResidentToDepth = (
     return seen;
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+// Scene 0 (the start scene)'s lodRange floor is viewer-owned: the stock
+// viewer's applyPerfSettings opens it to lodRangeMin = 0 once ready, so the
+// engine's per-view refine may show finer-than-pin near detail on devices
+// that can decode it. EXCEPT when the resident budget has degraded scene 0's
+// assigned pin depth below the device's OBSERVED finest level: the engine
+// then endlessly requests finest-level blocks the device cannot hold (field
+// case: net::ERR_FAILED-with-200 churn on scene-0 level-0 webps under mobile
+// memory pressure) for splats that can never be shown on that device.
+// Returns the lodRangeMin floor to clamp the start component to, or null to
+// leave the floor viewer-owned. deviceFinest null/undefined (not yet
+// observed -- SOG export, or the settle timeout) -> never clamp: the clamp
+// caps what updateDeviceFinest can ever observe, so it must only engage
+// after the running-min has settled. Pure and self-contained (no imports,
+// no sibling-function calls, no backslash escapes) so it can be stringified
+// verbatim into the exported viewer runtime via Function.toString().
+const startSceneLodFloor = (
+    assignedDepth: number | null | undefined,
+    deviceFinest: number | null | undefined
+): number | null => {
+    if (deviceFinest === null || deviceFinest === undefined) {
+        return null;
+    }
+    if (typeof assignedDepth !== 'number') {
+        return null;
+    }
+    return (assignedDepth > Math.max(deviceFinest, 0)) ? assignedDepth : null;
+};
+
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
