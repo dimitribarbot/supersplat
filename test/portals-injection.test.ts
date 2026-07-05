@@ -145,9 +145,12 @@ describe('buildPortalsInjection', () => {
         // competes with the loading bar's own coarse start-scene load
         expect(out).toContain('viewerReady');
         expect(out).toContain("'firstFrame'");
-        // level-major coarse-first pinning: the coarsest batch marks its scene
-        // ready so a mid-preload crossing shows coarse content, not the overlay
-        expect(out).toContain('lv === pcoarse');
+        // level-major coarse-first pinning: the scene is marked ready only when
+        // its FINEST pinned batch (the reveal-depth floor) is resident, so a
+        // mid-preload crossing keeps the overlay up instead of revealing a
+        // mixed-quality scene
+        expect(out).toContain('lv === pmin');
+        expect(out).not.toContain('lv === pcoarse');
         // wave-based pin pump: the engine's per-scene block loader is a
         // 2-concurrent FIFO, so pins load a few files at a time instead of
         // burying interactive requests behind the whole preload backlog
@@ -173,6 +176,56 @@ describe('buildPortalsInjection', () => {
         // The parser must use string ops only -- no cooked-escape remnants.
         expect(out).toContain("'residentBudget='");
         expect(out).not.toContain('(d+)');
+    });
+
+    it('gates the crossing overlay on reveal-depth residency, not coarse-only', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // pure gate helper stringified in, wrapped by the runtime's per-scene probe
+        expect(out).toContain('sceneResidentToDepth');
+        expect(out).toContain('sceneRevealResident');
+        // the old coarsest-level-only gate is gone (it revealed mixed quality)
+        expect(out).not.toContain('sceneCoarseResident');
+        // gate depth resolution: ASSIGNED pin depth first (pinDepth -- the only
+        // depth tracked for scene 0, whose lodRange floor is viewer-owned and
+        // whose sceneMinLevel is never set; field case: crossing back to the
+        // start scene gated at deviceMinLevel(0)=0 and the overlay waited for
+        // the whole desktop-depth pyramid -- stuck forever on mobile), then
+        // the component floor, then the device fallback
+        expect(out).toContain('(pinDepth[idx] != null) ? pinDepth[idx]');
+        expect(out).toContain('sceneMinLevel[idx] != null');
+        // anti-stick frame cap survives as the overlay's only other exit
+        expect(out).toContain('LOADING_MAX_FRAMES');
+    });
+
+    it('arms the crossing overlay from a live residency probe, not the ready flag alone', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // budget-degraded devices pin neighbours coarser than the active depth
+        // the crossing itself assigns: the scene is "ready" at the old depth
+        // but visibly refines after the swap (field: mobile first crossing
+        // drew regions in with no overlay). Streaming scenes probe residency
+        // at the live reveal depth; SOG scenes keep the flag (no octree).
+        expect(out).toContain('octrees[idx] ? sceneRevealResident(idx) : readyScenes[idx]');
+    });
+
+    it('halts GPU-feeding work on devicelost and resumes on devicerestored', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // a lost context makes every load/pin a no-op that still costs
+        // decode CPU + error spam (field case: pin pump kept feeding
+        // ensureFileResource into a dead device for 45s+)
+        expect(out).toContain('deviceDead');
+        expect(out).toContain("'devicerestored'");
     });
 
     it('frontier-manages SOG scenes: load on entry, full unload on exit', () => {

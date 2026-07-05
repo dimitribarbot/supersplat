@@ -561,6 +561,18 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             return;
         }
 
+        // Viewer exports carry a load-time poster: a screenshot of the current
+        // view (== the export's start pose) rendered against the export
+        // background. Rendered once here so the local, server and package
+        // paths all ship it. null (render failure) => solid-color cover.
+        if (exportType === 'viewer' && options.viewerExportSettings) {
+            const bg = (options.viewerExportSettings.experienceSettings?.background?.color ?? [0, 0, 0]) as [number, number, number];
+            const poster = await events.invoke('render.poster', 1920, 1080, bg) as Uint8Array | null;
+            if (poster) {
+                options.viewerExportSettings.poster = poster;
+            }
+        }
+
         const fileType: FileType =
             (exportType === 'viewer') ? (options.viewerExportSettings!.type === 'zip' ? 'packageViewer' : 'htmlViewer') :
                 (exportType === 'viewerSettings') ? 'viewerSettings' :
@@ -620,8 +632,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 serializeSettings.removeInvalid = true;
             }
 
-            // Send to the server; it returns the finished file.
-            const wire = { ...options, fileType };
+            // Send to the server; it returns the finished file. The poster
+            // bytes travel as their own multipart part, not inside the JSON
+            // options (a Uint8Array does not survive JSON.stringify).
+            const posterBytes = options.viewerExportSettings?.poster;
+            const wire = {
+                ...options,
+                fileType,
+                ...(options.viewerExportSettings ? { viewerExportSettings: { ...options.viewerExportSettings, poster: undefined } } : {})
+            };
 
             // Portal walkthrough: the PRIMARY scene is the START scene ALONE (not all
             // visible splats — that would merge every loaded scene into the primary and
@@ -662,7 +681,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (!useSpinner) {
                     events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
                 }
-            }, extraPlyGz);
+            }, extraPlyGz, posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined);
 
             // Save through the same path the local export uses (stream or download).
             const outFs = new BrowserFileSystem(filename, stream);

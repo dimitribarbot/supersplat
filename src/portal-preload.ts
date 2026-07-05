@@ -482,4 +482,35 @@ const selectResidentScenes = (
     return out;
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+// True when EVERY octree file at LOD levels [minLevel .. coarsest] has a
+// resident (decoded) resource -- the crossed-into scene is showable at its
+// pin/reveal depth everywhere, with nothing left for the engine to refine on
+// this device (revealing earlier shows mixed-quality regions). minLevel is
+// clamped to the octree's real level span. False when no file sits in the
+// gated range (unknown/drifted octree shape -- the caller's frame cap then
+// bounds the overlay). Pure and self-contained (no imports, no sibling calls)
+// so it can be stringified verbatim into the exported viewer runtime.
+const sceneResidentToDepth = (
+    files: ({ lodLevel: number } | null)[],
+    lodLevels: number,
+    minLevel: number,
+    hasResource: (fileIndex: number) => boolean
+): boolean => {
+    if (!files || !lodLevels) {
+        return false;
+    }
+    const min = Math.min(Math.max(minLevel, 0), lodLevels - 1);
+    let seen = false;
+    for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        if (f && f.lodLevel >= min) {
+            seen = true;
+            if (!hasResource(i)) {
+                return false;
+            }
+        }
+    }
+    return seen;
+};
+
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

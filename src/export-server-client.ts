@@ -32,11 +32,13 @@ export const runServerExport = async (
     plyGz: Blob,
     options: object & { fileType: string; filename: string },
     onProgress: (p: ServerProgress) => void,
-    extraPlyGz?: Blob[]
+    extraPlyGz?: Blob[],
+    poster?: Blob
 ): Promise<Blob> => {
     const form = new FormData();
     form.append('ply', plyGz, 'scene.ply.gz');
     (extraPlyGz ?? []).forEach((b, i) => form.append('extraPly', b, `scene-${i + 1}.ply.gz`));
+    if (poster) form.append('poster', poster, 'poster.jpg');
     form.append('options', JSON.stringify(options));
     const startRes = await fetch(`${location.origin}/api/export`, { method: 'POST', body: form });
     if (!startRes.ok) throw new Error(`server export failed to start (${startRes.status})`);
@@ -102,11 +104,13 @@ export const runServerPublish = async (
     plyGz: Blob,
     options: object & { name: string; public: boolean; overwrite: boolean },
     onProgress: (p: ServerProgress) => void,
-    extraPlyGz?: Blob[]
+    extraPlyGz?: Blob[],
+    poster?: Blob
 ): Promise<PublishResult> => {
     const form = new FormData();
     form.append('ply', plyGz, 'scene.ply.gz');
     (extraPlyGz ?? []).forEach((b, i) => form.append('extraPly', b, `scene-${i + 1}.ply.gz`));
+    if (poster) form.append('poster', poster, 'poster.jpg');
     form.append('options', JSON.stringify(options));
     const startRes = await fetch(`${location.origin}/api/publish`, { method: 'POST', body: form });
     if (startRes.status === 409) {

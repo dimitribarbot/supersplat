@@ -1,61 +1,59 @@
-# DRAFT — upstream issue for github.com/playcanvas/engine
+# RESOLVED LOCALLY — no engine bug; optional supersplat-viewer suggestion below
 
-Status: ready for Dimitri to review, attach screenshots, and file. Evidence
-gathered 2026-07-03/04 during portal-viewer E2E rounds 3–9; reproduces
-WITHOUT any of our fork's viewer modifications.
+Status: the original draft (an engine issue about "transient dark/garbled
+splat regions" during LOD streaming) was WITHDRAWN after a full diagnosis on
+2026-07-04 falsified it. Kept for the record, with the corrected findings and
+an optional upstream suggestion Dimitri may still file — against
+**supersplat-viewer**, not the engine.
 
----
+## What the diagnosis established (evidence-backed)
 
-**Title:** Unified gsplat LOD streaming: transient dark/garbled splat regions
-while files are still streaming; `GSPLAT_DEBUG_LOD` colors also absent until
-loading completes
+Full chain in `docs/superpowers/specs/2026-07-04-streaming-blob-fix-design.md`
+(ROOT CAUSE section). Summary:
 
-**Engine version:** 2.20.2 as bundled in the `@playcanvas/splat-transform`
-2.7.1 exported viewer — and unchanged after back-porting PR #8998 and #9011,
-i.e. with `gsplat-unified` byte-identical to the 2.20.5 build. WebGPU
-renderer (`Renderer: webgpu` in the viewer log).
+- **The engine renders correctly.** A bake-bookkeeping detector in an
+  unminified-engine harness (2.20.5 debug build, same gsplat code we ship
+  after the parity patch) never observed a live sorted interval whose
+  work-buffer texels had not been baked — across cold throttled loads,
+  with and without `GSPLAT_DEBUG_LOD`.
+- **The stock viewer's coarse-LOD lock and reveal gate work.** Instrumenting
+  the real export showed `lodRangeMin/Max = lodLevels - 1` engaging at load,
+  `loading` counting 22→0 monotonically, and the `ready && loading === 0`
+  unlock firing exactly once at coarse-complete.
+- **The "dark garbled blobs" are background holes.** The coarsest LOD level
+  is spatially chunked (~512K splats per chunk); until a region's coarse
+  chunk arrives it has no splats at all, so the scene background (black in
+  the field case) shows through, edged by giant boundary splats of the
+  neighbouring loaded chunk. The missing LOD debug tint that motivated the
+  original draft is trivially explained: there were no splats to tint.
+- **Why superspl.at never shows this:** its CDN delivers the few-MB coarse
+  level near-instantly, and gallery scenes ship a poster — supersplat-viewer's
+  `initPoster` path blurs the poster by `(100 - progress)` and holds the
+  canvas at opacity 0 until `loaded`. The visible pre-reveal window simply
+  never exists there.
 
-**Platforms observed:** Windows 11 desktop (Chromium) and Android
-(Redmi Note 9S).
+## Local fix (this fork, branch fix/streaming-blob)
 
-## Repro
+- Every viewer export/publish now ships a poster (an export-time screenshot
+  from the start camera; solid background-color cover when no screenshot is
+  available) and defaults the viewer's `?poster=` to it — activating the
+  stock poster path: covered canvas + progress until reveal, then the
+  complete coarse scene refining to sharp. `?poster=` (empty) disables.
+- Portal crossings: the companion overlay now reveals on per-destination
+  coarse-file residency instead of a global splat-count threshold (which
+  multi-scene residency had invalidated).
 
-1. Export a single-scene SOG LOD streaming viewer with
-   `@playcanvas/splat-transform` (`writeLod` + `writeHtml`, the stock viewer —
-   no custom code).
-2. Load it with a **cold cache** (large scene helps, e.g. ~5.8M splats /
-   4 LOD levels).
-3. While the LOD files are still downloading, a large region of the scene
-   renders as dark, garbled, blob-like splats (screenshot attached).
-4. Once downloads finish the region heals completely; steady state is always
-   clean. A warm-cache reload never shows it.
+## Optional upstream suggestion (supersplat-viewer)
 
-## Evidence that it is not simply "coarse LOD looks coarse"
+**Title:** Cover the canvas during initial LOD streaming when no poster is
+present (avoid background holes showing through partially streamed scenes)
 
-With `config.colorize = true` (`GSPLAT_DEBUG_LOD`), the affected region shows
-**no debug tint at all during the streaming window** — the LOD debug colors
-only appear after loading completes. So the region is being rendered from
-work-buffer data whose color population hasn't happened yet, rather than
-being an already-rendered node at a coarse LOD (which would carry its LOD
-debug color).
-
-## What we ruled out
-
-- Not fixed by 2.20.3–2.20.5: we diffed the 2.20.2 and 2.20.5 builds — the
-  only gsplat changes in that range are #8998 and #9011, and the repro
-  persists with both applied.
-- Not caused by viewer-side load scheduling: reproduces on a stock
-  single-scene export with no custom code.
-- Not the #8998 ready-gate stall (fixed separately; blob persists).
-
-## Question
-
-Is this a known/expected transitional state (freshly streamed blocks
-rendered before their color/SH work-buffer pass), or a bug in work-buffer /
-color population ordering for newly streamed octree files? Happy to provide
-the export or a hosted repro.
-
----
-
-*Attachments to add before filing: r3 blob screenshot, viewer console log,
-optionally a short screen capture of the streaming window.*
+Locally exported/self-hosted streamed scenes have no poster, so the canvas is
+visible during the pre-reveal window while coarse octree chunks pop in;
+regions whose coarse chunk has not arrived render as holes showing the
+background color (screenshots available — dramatic with a black background on
+slow connections). Suggestion: when `config.poster` is absent, fall back to a
+solid cover in the scene background color (or keep `--canvas-opacity` at 0)
+until the existing `loaded` state fires, so self-hosted exports get the same
+clean first frame as superspl.at gallery scenes. Happy to provide a repro or
+a PR.

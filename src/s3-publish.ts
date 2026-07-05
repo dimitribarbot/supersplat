@@ -54,16 +54,24 @@ const registerS3PublishEvents = (events: Events) => {
                 new Blob([plyBytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
             ).blob();
 
+            // Load-time poster: screenshot of the current view (== published
+            // start pose) against the publish background; travels as its own
+            // multipart part (never inside the JSON options).
+            const bg = (es?.background?.color ?? [0, 0, 0]) as [number, number, number];
+            const posterBytes = await events.invoke('render.poster', 1920, 1080, bg) as Uint8Array | null;
+
             const publishOptions = {
                 subfolder: options.subfolder,
                 name: options.name,
                 public: options.public,
                 overwrite: true,   // already confirmed (or didn't exist)
                 serializeSettings: options.serializeSettings,
+                // S3PublishOptions.viewerExportSettings never carries poster
+                // bytes (the poster travels as its own multipart part below)
                 viewerExportSettings: options.viewerExportSettings,
                 ...(upload ? { portalExtras: upload.portalExtras } : {})
             };
-            const result = await runServerPublish(plyGz, publishOptions, p => events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc }), upload?.extraPlyGz);
+            const result = await runServerPublish(plyGz, publishOptions, p => events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc }), upload?.extraPlyGz, posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined);
 
             events.fire('progressEnd');
             await events.invoke('showPopup', {

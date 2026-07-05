@@ -22,6 +22,7 @@ import { buildAnnotationLinksInjection } from './viewer-companion/annotation-lin
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from './viewer-companion/portals';
+import { injectPoster } from './viewer-companion/poster';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
 
 // Apply the engine patches (#8998 loader stall + #9011 unload race, see
@@ -41,6 +42,43 @@ const patchEngineLoaderInMemFs = (memFs: { results: Map<string, Uint8Array> }): 
     if (patched > 0) {
         memFs.results.set('index.js', new TextEncoder().encode(source));
     }
+};
+
+// Environment-agnostic base64 (no Buffer/btoa: shared between browser and the
+// Node export server via dist-shared). Used to inline the poster into the
+// single-file HTML export.
+const bytesToBase64 = (bytes: Uint8Array): string => {
+    const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+        const b0 = bytes[i];
+        const b1 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+        const b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+        out += ALPHA[b0 >> 2] + ALPHA[((b0 & 3) << 4) | (b1 >> 4)];
+        out += i + 1 < bytes.length ? ALPHA[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+        out += i + 2 < bytes.length ? ALPHA[b2 & 63] : '=';
+    }
+    return out;
+};
+
+// Poster for the exported viewer (see viewer-companion/poster.ts): a real
+// export-time screenshot when the browser provided one, else the solid
+// background-color cover. memFs given -> emit poster.jpg next to the viewer;
+// memFs null (single-file HTML) -> inline as a data URI.
+const applyPoster = (
+    html: string,
+    viewerSettingsJson: any,
+    posterBytes: Uint8Array | undefined,
+    memFs: { results: Map<string, Uint8Array> } | null
+): string => {
+    if (!posterBytes) {
+        return injectPoster(html, viewerSettingsJson, null);
+    }
+    if (memFs) {
+        memFs.results.set('poster.jpg', posterBytes);
+        return injectPoster(html, viewerSettingsJson, './poster.jpg');
+    }
+    return injectPoster(html, viewerSettingsJson, `data:image/jpeg;base64,${bytesToBase64(posterBytes)}`);
 };
 
 // Inject the annotation-link companion into an HTML string before </body>.
@@ -537,7 +575,8 @@ const writeStreamingViewerCore = async (
     onLog?: (level: string, text: string) => void,
     shouldCancel?: () => boolean,
     collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
-    extraScenes?: ExtraPortalScene[]
+    extraScenes?: ExtraPortalScene[],
+    posterBytes?: Uint8Array
 ): Promise<void> => {
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
@@ -647,7 +686,8 @@ const writeStreamingViewerCore = async (
         throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (writeHtml output format changed)');
     }
     const settingsWithLods = { ...viewerSettingsJson, portalSceneLodCounts: [primaryLodCounts, ...extraLodCounts] };
-    const withLinks = injectAnnotationLinks(repointed, settingsWithLods);
+    const withPoster = applyPoster(repointed, settingsWithLods, posterBytes, memFs);
+    const withLinks = injectAnnotationLinks(withPoster, settingsWithLods);
     const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(injectDeviceFallback(withPortals)));
@@ -702,7 +742,8 @@ const writeViewerCore = async (
     onLog?: (level: string, text: string) => void,
     shouldCancel?: () => boolean,
     collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
-    extraScenes?: ExtraPortalScene[]
+    extraScenes?: ExtraPortalScene[],
+    posterBytes?: Uint8Array
 ): Promise<void> => {
     // Scene-prefixed progress support: when extra portal scenes are present, we
     // label the primary write as "Scene 1/total" and each extra as "Scene N/total".
@@ -738,7 +779,9 @@ const writeViewerCore = async (
             if (!raw) {
                 throw new Error('HTML export failed: writeHtml did not produce output.html');
             }
-            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(raw), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson));
+            // Single-file output: the poster is inlined as a data URI (no memFs).
+            const withPoster = applyPoster(new TextDecoder().decode(raw), viewerSettingsJson, posterBytes, null);
+            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson));
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
@@ -748,7 +791,7 @@ const writeViewerCore = async (
             await writer.write(new TextEncoder().encode(enginePatch.source));
             await writer.close();
         } else if (viewerType === 'streaming') {
-            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes);
+            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes);
         } else {
             // Package (ZIP) path: write primary scene, then extra portal scenes, then ZIP everything.
             const memFs = new MemoryFileSystem();
@@ -766,7 +809,8 @@ const writeViewerCore = async (
             const sogSettings = hasPortalScenes ?
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...(extraScenes!.map(s => [s.dataTable.numRows]))] } :
                 viewerSettingsJson;
-            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(new TextDecoder().decode(rawIndex), sogSettings), sogSettings), sogSettings));
+            const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
+            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings));
             memFs.results.set('index.html', new TextEncoder().encode(injected));
             patchEngineLoaderInMemFs(memFs);
             if (collision) {

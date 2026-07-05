@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -424,5 +424,52 @@ describe('selectResidentScenes', () => {
     it('returns [] for an out-of-range active scene or missing adjacency', () => {
         expect(selectResidentScenes(chain, 9, [], cost(5), 100000)).toEqual([]);
         expect(selectResidentScenes(null as any, 0, [], [], 100000)).toEqual([]);
+    });
+});
+
+describe('sceneResidentToDepth', () => {
+    // files indexed 0..n; hasResource reports residency by file index
+    const files = [
+        { lodLevel: 0 }, { lodLevel: 0 },   // finest
+        { lodLevel: 1 },                    // mid
+        { lodLevel: 2 }, { lodLevel: 2 }    // coarsest
+    ];
+    const resident = (set: number[]) => (i: number) => set.includes(i);
+
+    it('is true when every file at levels [min .. coarsest] is resident', () => {
+        expect(sceneResidentToDepth(files, 3, 1, resident([2, 3, 4]))).toBe(true);
+    });
+
+    it('is false while a coarsest-level file is missing', () => {
+        expect(sceneResidentToDepth(files, 3, 1, resident([2, 3]))).toBe(false);
+    });
+
+    it('is false while an intermediate level above min is missing, even with full coarse coverage', () => {
+        // old coarse-only gate would return true here (3,4 resident) -> mixed quality on reveal
+        expect(sceneResidentToDepth(files, 3, 1, resident([3, 4]))).toBe(false);
+    });
+
+    it('ignores files finer than min', () => {
+        // level-0 files absent, min=1 -> still ready
+        expect(sceneResidentToDepth(files, 3, 1, resident([2, 3, 4]))).toBe(true);
+        // min=0 pulls the finest level into the gate
+        expect(sceneResidentToDepth(files, 3, 0, resident([2, 3, 4]))).toBe(false);
+        expect(sceneResidentToDepth(files, 3, 0, resident([0, 1, 2, 3, 4]))).toBe(true);
+    });
+
+    it('clamps an out-of-range min to the valid level span', () => {
+        expect(sceneResidentToDepth(files, 3, -5, resident([0, 1, 2, 3, 4]))).toBe(true);
+        expect(sceneResidentToDepth(files, 3, -5, resident([1, 2, 3, 4]))).toBe(false);
+        expect(sceneResidentToDepth(files, 3, 99, resident([3, 4]))).toBe(true); // clamped to coarsest-only
+    });
+
+    it('skips null file entries', () => {
+        const holey = [null, { lodLevel: 2 }] as any;
+        expect(sceneResidentToDepth(holey, 3, 2, resident([1]))).toBe(true);
+    });
+
+    it('is false when no file sits at or coarser than min (empty gate set)', () => {
+        expect(sceneResidentToDepth([{ lodLevel: 0 }], 3, 1, resident([0]))).toBe(false);
+        expect(sceneResidentToDepth([], 3, 1, resident([]))).toBe(false);
     });
 });

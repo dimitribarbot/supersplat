@@ -1,6 +1,6 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -71,6 +71,7 @@ const companionRuntime = `
   var computeResidentCeiling = ${computeResidentCeiling.toString()};
   var assignPinDepths = ${assignPinDepths.toString()};
   var computeWarmSet = ${computeWarmSet.toString()};
+  var sceneResidentToDepth = ${sceneResidentToDepth.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
@@ -80,6 +81,7 @@ const companionRuntime = `
   var comps = [];                           // scene index -> gsplat component (for per-scene lodRange control)
   var octrees = [];                         // scene index -> GSplatOctree (or null for SOG)
   var deviceFinest = null;                  // finest (lowest) LOD level the engine has actually loaded for the start scene = the finest this DEVICE renders (0 desktop, coarser on tight budget). Running-min.
+  var deviceDead = false;                   // graphics device lost: every load/pin is a dead-device no-op that still costs decode CPU + error spam, so the GPU-feeding paths halt until 'devicerestored'
   var assets = [];                          // scene index -> loaded gsplat Asset
   var pinnedFiles = [];                     // scene index -> [octree file indices we incRefCount-ed]
   var pinGen = [];                          // scene index -> pin generation; bumped on unpin to invalidate an in-flight pump
@@ -200,7 +202,18 @@ const companionRuntime = `
     swapCollision(idx);
     scheduleRefine(idx);
     reconcileFrontier();
-    if (!readyScenes[idx] && pendingIndex !== idx) { beginLoading(idx); }
+    // Arm the overlay from a LIVE residency probe, not the readyScenes flag
+    // alone: on a budget-degraded device the destination was pinned (and
+    // flag-marked ready) at a NEIGHBOUR depth coarser than the active depth
+    // this crossing just assigned (reconcileFrontier above re-ran
+    // assignPinDepths and lowered sceneMinLevel/lodRangeMin), so the scene
+    // would otherwise visibly refine region-by-region after the swap with no
+    // overlay (field case: mobile first crossing). The probe reads the live
+    // sceneMinLevel, so it is exact on both platforms: a fully-resident
+    // destination (desktop preload done) still crosses instantly. SOG scenes
+    // have no octree to probe -- the flag stays their truth.
+    var showable = octrees[idx] ? sceneRevealResident(idx) : readyScenes[idx];
+    if (!showable && pendingIndex !== idx) { beginLoading(idx); }
   }
 
   // --- device-depth reveal -----------------------------------------------
@@ -221,20 +234,24 @@ const companionRuntime = `
   }
 
   // --- streaming loading overlay ---------------------------------------
-  // First crossing into a streaming scene enables an entity whose splat data
-  // has not streamed yet (LOD is camera-driven; disabled scenes stream
-  // nothing), so the viewer briefly shows its clear color. Cover that with a
-  // backdrop+spinner+label until the scene's splats are visibly present.
+  // A crossing into a streaming scene that is not showable at its reveal
+  // depth would expose the viewer's clear color (nothing streamed yet) or a
+  // region-by-region refine (budget-degraded pin depth promoted to active
+  // depth by the crossing). Cover both with a backdrop+spinner+label until
+  // the scene is resident at the depth it will actually be shown at.
   //
-  // Readiness uses the GLOBAL renderer splat count. That is valid per-scene
-  // because the companion keeps exactly ONE scene enabled at a time, so right
-  // after a crossing the global count is effectively the active scene's
-  // resident-splat count. We cannot know a scene's target count in advance, so
-  // "visibly present" is detected three ways (whichever fires first):
-  //   1. LOD threshold - resident count reaches the payload-baked splat count
-  //                     for the chosen LOD level (deterministic early reveal),
-  //   2. plateau      - count stopped climbing (fully streamed for this view),
-  //   3. safety cap   - absolute frame bound so the overlay can never stick.
+  // Readiness = per-DESTINATION residency at the scene's pin/reveal depth
+  // (octree introspection, same handles the pin pump uses): every octree file
+  // at levels [sceneMinLevel .. coarsest] has a resident resource. That is the
+  // scene's final quality on THIS device (scheduleRefine floors lodRangeMin at
+  // the same depth, and the depth is budget-degraded on mobile), so the reveal
+  // shows a uniformly sharp scene with nothing left to pop in. Coarse-only
+  // gating revealed earlier but with visibly mixed LOD regions; a global
+  // renderer-splat-count threshold before that was invalidated by
+  // budget-bounded multi-scene residency (field case: black regions after a
+  // crossing). An absolute frame cap remains purely as an anti-stick bound
+  // (it only fires if the engine's octree shape drifts and the residency
+  // probe goes blind).
   // A short SHOW_DELAY defers showing the backdrop so an already-resident scene
   // (e.g. a non-streaming SOG export) never flashes it.
   var readyScenes = {};            // scene index -> true once revealed
@@ -242,16 +259,8 @@ const companionRuntime = `
   var pendingIndex = null;         // scene index currently loading (or null)
   var pendingFrames = 0;           // frames since the crossing
   var overlayShown = false;        // backdrop currently visible
-  var peakCount = 0;               // highest count seen since the crossing
-  var plateauFrames = 0;           // consecutive frames near the peak
-  var revealThreshold = 0;         // resident-splat count that means "shown enough" (0 = unknown)
-  var crossedBelow = false;        // count dipped below the threshold after the swap (we're now measuring the NEW scene)
-  var SETTLE_FRAMES = 4;           // let the enable/disable swap settle before tracking the plateau
   var SHOW_DELAY = 0;              // streaming-only (SOG gated out) => show immediately
-  var REVEAL_LOD = 0;              // which LOD level's count to reveal at: 0 = coarsest (earliest/sparsest, kept resident by pinSceneToLevel), higher = finer/denser/later
-  var PLATEAU_TOL = 0.9;           // "near peak" fraction for plateau detection
-  var PLATEAU_FRAMES = 15;         // near-peak frames => plateau reached (fallback when the threshold is never met)
-  var LOADING_MAX_FRAMES = 600;    // ~10s absolute safety cap (rAF-counted)
+  var LOADING_MAX_FRAMES = 3600;   // ~60s anti-stick bound (residency is the real trigger; blurry-late beats black-early)
 
   var lBackdrop = document.createElement('div');
   lBackdrop.className = 'ss-portal-loading-backdrop';
@@ -267,31 +276,33 @@ const companionRuntime = `
   function showLoading() { lBackdrop.classList.add('active'); }
   function hideLoading() { lBackdrop.classList.remove('active'); }
 
-  // Global resident-splat count (see note above). 0 when unavailable.
-  function gsplatCount() {
-    var app = getApp(window.__supersplatViewer);
-    return (app && app.renderer && app.renderer._gsplatCount) || 0;
-  }
-
-  // Resident-splat count at which scene idx is "shown enough", taken from the
-  // per-scene LOD level counts baked into the payload (level 0 = finest/full,
-  // last = coarsest). REVEAL_LOD selects the level from the coarsest end. 0 when
-  // unknown (e.g. counts absent) -> the threshold trigger is then disabled and
-  // the overlay relies on the plateau/cap fallbacks.
-  function lodThreshold(idx) {
-    var counts = (data.portalSceneLodCounts || [])[idx];
-    if (!counts || !counts.length) { return 0; }
-    var i = counts.length - 1 - REVEAL_LOD;
-    if (i < 0) { i = 0; }
-    return counts[i] || 0;
+  // True when EVERY octree file of scene idx at levels [reveal depth ..
+  // coarsest] has a resident (decoded) resource -- the scene is showable at
+  // the depth the pin machinery keeps it at, everywhere. Reveal depth
+  // resolution order:
+  //   1. pinDepth -- the ASSIGNED (budget-degraded) pin depth. The only
+  //      depth tracked for scene 0, whose lodRange floor is viewer-owned so
+  //      sceneMinLevel[0] is never set (field case: crossing back to the
+  //      start scene fell through to deviceMinLevel(0)=0 and the overlay
+  //      waited for the whole desktop-depth pyramid -- stuck, even though
+  //      scene 0 was resident at its assigned depth 3 the whole time).
+  //   2. sceneMinLevel -- the component floor, set at loadScene before the
+  //      first reconcile has assigned a pin depth.
+  //   3. deviceMinLevel -- device-observed fallback (coarsest until known).
+  // False while the octree is unknown or the engine's shape drifted (the
+  // caller's frame cap then bounds the overlay).
+  function sceneRevealResident(idx) {
+    var oc = octrees[idx];
+    if (!oc || !oc.files || !oc.getFileResource || !oc.lodLevels) { return false; }
+    var min = (pinDepth[idx] != null) ? pinDepth[idx] :
+      ((sceneMinLevel[idx] != null) ? sceneMinLevel[idx] : deviceMinLevel(idx));
+    return sceneResidentToDepth(oc.files, oc.lodLevels, min, function (i) { return !!oc.getFileResource(i); });
   }
 
   // Arm the overlay for a first-time crossing into scene idx. showLoading is
   // deferred to the poll (SHOW_DELAY) so an already-resident scene never flashes.
   function beginLoading(idx) {
     pendingIndex = idx; pendingFrames = 0; overlayShown = false;
-    peakCount = 0; plateauFrames = 0; crossedBelow = false;
-    revealThreshold = lodThreshold(idx);
   }
   function endLoading() {
     if (pendingIndex !== null) { readyScenes[pendingIndex] = true; }
@@ -579,8 +590,14 @@ const companionRuntime = `
       var gdev = app.graphicsDevice;
       if (gdev && gdev.on) {
         gdev.on('devicelost', function () {
-          console.warn('[portals] DEVICE LOST -- last vram: ' + (vramLine() || 'unavailable') +
+          deviceDead = true;
+          console.warn('[portals] DEVICE LOST -- halting scene loads/pins -- last vram: ' + (vramLine() || 'unavailable') +
                        ' (previous logged total=' + lastVramLogged + 'MB)');
+        });
+        gdev.on('devicerestored', function () {
+          deviceDead = false;
+          console.info('[portals] device restored -- resuming scene loads/pins');
+          reconcileFrontier();
         });
       }
     } catch (dlErr) {}
@@ -652,6 +669,7 @@ const companionRuntime = `
     var watchdogTicks = 0;
     var watchdogTimer = setInterval(function () {
       if (viewerReady) { clearInterval(watchdogTimer); return; }
+      if (deviceDead) { return; }   // kicking the loader / budget on a lost device only adds churn
       watchdogTicks++;
       if (watchdogTicks < 3) { return; }   // grace: give a cold initial load 15s before touching anything
       try {
@@ -719,20 +737,12 @@ const companionRuntime = `
         pendingFrames++;
         var pApp = getApp(window.__supersplatViewer);
         if (pApp) { pApp.renderNextFrame = true; }
-        var c = gsplatCount();
-        // Threshold reveal needs us to be measuring the NEW scene: after the
-        // swap the count briefly lags at the old scene's (high) value, so only
-        // arm the trigger once it has dipped below the threshold.
-        if (revealThreshold > 0 && c < revealThreshold) { crossedBelow = true; }
-        // Plateau tracking (fallback), after the swap lag clears.
-        if (pendingFrames >= SETTLE_FRAMES) {
-          if (c > peakCount) { peakCount = c; plateauFrames = 0; }
-          else if (c >= peakCount * PLATEAU_TOL) { plateauFrames++; }
-          else { plateauFrames = 0; }
-        }
+        // Reveal when the DESTINATION scene is resident down to its reveal
+        // depth (device-final quality, no mixed-LOD regions); the frame cap
+        // only bounds the overlay if the residency probe goes blind (engine
+        // drift).
         var ready =
-          (revealThreshold > 0 && crossedBelow && c >= revealThreshold) ||
-          (peakCount > 0 && plateauFrames >= PLATEAU_FRAMES) ||
+          sceneRevealResident(pendingIndex) ||
           (pendingFrames > LOADING_MAX_FRAMES);
         if (ready) {
           endLoading();
@@ -859,7 +869,7 @@ const companionRuntime = `
     }).catch(function (err) { console.warn('portal warm lod-meta failed (' + u + '):', err); });
   }
   function warmFrontier(want) {
-    if (!adjacency) return;
+    if (!adjacency || deviceDead) return;
     var warmSet = computeWarmSet(activeIndex, adjacency, want);
     for (var i = 0; i < warmSet.length; i++) {
       var idx = warmSet[i];
@@ -912,9 +922,9 @@ const companionRuntime = `
   // (files never enter the unload cooldown), then enqueue the batch on the
   // scene's pin pump, which loads it wave-by-wave (see pumpPins). markReady:
   // set readyScenes[idx] once THIS batch is resident -- the caller passes it on
-  // the coarsest-level batch, so a crossing drops the loading overlay as soon
-  // as coarse whole-scene content is showable (finer levels keep streaming
-  // behind the visible scene). Records the pinned file indices for later
+  // the finest pinned batch (the reveal-depth floor), so a crossing holds the
+  // loading overlay until the scene is showable at device-final quality
+  // everywhere. Records the pinned file indices for later
   // reclaim. SOG scenes (no octree) are a no-op. Idempotent-ish: files already
   // pinned are re-polled by the pump but not re-pinned.
   function pinSceneToLevel(asset, idx, minLevel, maxLevel, markReady) {
@@ -958,6 +968,7 @@ const companionRuntime = `
     pinPumping[idx] = true;
     var gen = pinGen[idx] || 0;
     (function pump() {
+      if (deviceDead) { pinPumping[idx] = false; return; }   // devicerestored reconciles and re-pumps
       if ((pinGen[idx] || 0) !== gen) { pinPumping[idx] = false; return; }
       var octree = octrees[idx];
       var batches = pinBatches[idx] || [];
@@ -1046,7 +1057,7 @@ const companionRuntime = `
   // makes every (possibly stale) call idempotent, and the "s !== active" check then
   // protects the true active scene.
   function pinDesired() {
-    if (!adjacency) { return; }
+    if (!adjacency || deviceDead) { return; }
     var active = activeIndex;
     var want = residentScenes();
     // Budget-capped per-scene depths: the active scene keeps deviceFinest; the
@@ -1107,10 +1118,11 @@ const companionRuntime = `
     }
     // Pin LEVEL-MAJOR, coarsest level first ACROSS scenes: every resident
     // scene's coarse (small, whole-scene) levels download before any scene's
-    // fine levels, so a crossing during the preload window shows coarse
-    // content almost immediately instead of the loading overlay. The coarsest
-    // batch marks its scene ready (drops a pending overlay); finer batches
-    // keep streaming behind the visible scene.
+    // fine levels, so no scene monopolises the bandwidth. A scene is marked
+    // ready only when its FINEST pinned batch (the reveal-depth floor, lv ===
+    // pmin) is resident: revealing on coarse alone showed visibly mixed LOD
+    // regions right after a crossing, and the preference is to hold the
+    // loading overlay until the scene shows at device-final quality.
     for (var lv = maxCoarse; lv >= 0; lv--) {
       for (var w = 0; w < want.length; w++) {
         var ps = want[w];
@@ -1118,7 +1130,7 @@ const companionRuntime = `
         if (pmin === undefined || pmin > lv || !octrees[ps]) { continue; }
         var pcoarse = octrees[ps].lodLevels ? octrees[ps].lodLevels - 1 : 0;
         if (lv > pcoarse) { continue; }
-        pinSceneToLevel(getAsset(ps), ps, lv, lv, lv === pcoarse);
+        pinSceneToLevel(getAsset(ps), ps, lv, lv, lv === pmin);
       }
     }
     for (var k in pinnedScenes) {
@@ -1138,7 +1150,7 @@ const companionRuntime = `
   // entity. Extracted from start() so the frontier reconcile can (re)load SOG
   // scenes on demand. No-op until start() has captured the live handles.
   function loadScene(idx) {
-    if (entities[idx] || sceneLoading[idx] || !liveApp) { return; }
+    if (entities[idx] || sceneLoading[idx] || !liveApp || deviceDead) { return; }
     var url = data.portalScenes[idx];
     if (!url) { return; }
     var isStreamingScene = url.indexOf('lod-meta.json') !== -1;

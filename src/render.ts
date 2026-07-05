@@ -116,6 +116,54 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
         }
     });
 
+    // Render a poster JPEG of the current view for the exported viewer's
+    // load-time cover (stock poster path: blurred while streaming, canvas
+    // revealed at `loaded`). bgColor is the EXPORT's background ([r,g,b]
+    // floats), not the editor background. Returns null on any failure so the
+    // export falls back to the solid-color cover rather than aborting.
+    events.function('render.poster', async (width: number, height: number, bgColor: [number, number, number]): Promise<Uint8Array | null> => {
+        try {
+            // offscreen render of the current camera view, editor aids hidden
+            scene.camera.startOffscreenMode(width, height);
+            scene.camera.renderOverlays = false;
+            scene.offLimitsLayer.enabled = false;
+            scene.gizmoLayer.enabled = false;
+            scene.camera.clearPass.setClearColor(new Color(bgColor[0], bgColor[1], bgColor[2], 1));
+
+            scene.forceRender = true;
+            await postRender();
+
+            const data = new Uint8Array(width * height * 4);
+            const { mainTarget, workTarget } = scene.camera;
+            scene.dataProcessor.copyRt(mainTarget, workTarget);
+            await workTarget.colorBuffer.read(0, 0, width, height, { renderTarget: workTarget, data });
+
+            // flip y positions to have 0,0 at the top
+            let line = new Uint8Array(width * 4);
+            for (let y = 0; y < height / 2; y++) {
+                line = data.slice(y * width * 4, (y + 1) * width * 4);
+                data.copyWithin(y * width * 4, (height - y - 1) * width * 4, (height - y) * width * 4);
+                data.set(line, (height - y - 1) * width * 4);
+            }
+
+            // JPEG-encode (poster is opaque: JPEG drops alpha, bg already set)
+            const canvas = new OffscreenCanvas(width, height);
+            const ctx = canvas.getContext('2d');
+            ctx.putImageData(new ImageData(new Uint8ClampedArray(data.buffer), width, height), 0, 0);
+            const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+            return new Uint8Array(await blob.arrayBuffer());
+        } catch (error) {
+            console.warn('poster render failed (export continues without screenshot poster):', error);
+            return null;
+        } finally {
+            scene.camera.endOffscreenMode();
+            scene.camera.renderOverlays = true;
+            scene.offLimitsLayer.enabled = true;
+            scene.gizmoLayer.enabled = true;
+            scene.camera.clearPass.setClearColor(nullClr);
+        }
+    });
+
     events.function('render.image', async (imageSettings: ImageSettings) => {
         events.fire('startSpinner');
 

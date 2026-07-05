@@ -15,7 +15,7 @@ export type ExportOptions = {
     filename: string;
     serializeSettings?: { maxSHBands?: number };
     sogIterations?: number;
-    viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number } };
+    viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number }; poster?: Uint8Array };
     // per-extra-scene metadata for a portal walkthrough (index-aligned to extraPlyGz)
     portalExtras?: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; collisionUrl: string | null; streaming: boolean }[];
 };
@@ -192,9 +192,14 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
         return scenes;
     };
 
+    // Poster bytes may arrive as a plain object after JSON/structured-clone
+    // hops; normalise to Uint8Array (or drop when empty).
+    const posterRaw = options.viewerExportSettings?.poster;
+    const posterBytes = posterRaw && (posterRaw as any).byteLength ? new Uint8Array(posterRaw as any) : undefined;
+
     if (options.fileType === 'htmlViewer') {
         const extraScenes = await buildExtraScenes();
-        await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes);
+        await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes);
         const data = memFs.results.get('output.html')!;
         console.log(`Created ${options.filename} (${fmtSize(data.length)})`);
         return { files: [{ name: options.filename, data }] };
@@ -203,7 +208,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // packageViewer
     const viewerType = options.viewerExportSettings!.streaming ? 'streaming' : 'package';
     const extraScenes = await buildExtraScenes();
-    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes);
+    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes);
     flushChunk();
     return { files: [{ name: options.filename, data: memFs.results.get('output.zip')! }] };
 };

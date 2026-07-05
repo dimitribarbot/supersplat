@@ -144,6 +144,9 @@ type ViewerExportSettings = {
     events?: Events;
     // resolved per-scene export inputs for a portal walkthrough (index 0 = primary, omitted)
     portalScenes?: { splat: Splat; url: string; collisionUrl: string | null; environment: 'indoor' | 'outdoor'; seed: [number, number, number] }[];
+    // export-time screenshot from the start camera (JPEG bytes); shown blurred
+    // by the viewer's stock poster path until the coarse batch is streamed
+    poster?: Uint8Array;
 };
 
 type ProgressFunc = (loaded: number, total: number) => void;
@@ -1247,7 +1250,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
         })) ?? [] :
         [];
 
-    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision, extraScenes);
+    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision, extraScenes, options.poster);
 };
 const serializeViewerSettings = async (
     experienceSettings: ExperienceSettings,

@@ -45,12 +45,15 @@ export const buildApp = async () => {
     app.post('/api/export', async (req, reply) => {
         let plyGz: Buffer | null = null;
         let options: any = null;
+        let poster: Buffer | null = null;
         const extraPlyGz: Buffer[] = [];
         for await (const part of req.parts()) {
             if (part.type === 'file' && part.fieldname === 'ply') {
                 plyGz = await part.toBuffer();
             } else if (part.type === 'file' && part.fieldname === 'extraPly') {
                 extraPlyGz.push(await part.toBuffer());
+            } else if (part.type === 'file' && part.fieldname === 'poster') {
+                poster = await part.toBuffer();
             } else if (part.type === 'field' && part.fieldname === 'options') {
                 try {
                     options = JSON.parse(part.value as string);
@@ -61,6 +64,11 @@ export const buildApp = async () => {
         }
         if (!plyGz || !options || typeof options.fileType !== 'string' || typeof options.filename !== 'string') {
             return reply.code(400).send({ error: 'missing ply file or options { fileType, filename }' });
+        }
+        // Poster bytes travel as their own multipart part; reattach for the
+        // worker (Uint8Array survives the structured-clone postMessage).
+        if (poster && options.viewerExportSettings) {
+            options.viewerExportSettings.poster = new Uint8Array(poster);
         }
         const filenameOk = /^[A-Za-z0-9._-]+$/.test(options.filename) && !options.filename.includes('..');
         if (!filenameOk) {
@@ -136,15 +144,21 @@ export const buildApp = async () => {
         if (!s3IsConfigured()) return reply.code(503).send({ error: 'publishing not configured' });
         let plyGz: Buffer | null = null;
         let options: any = null;
+        let poster: Buffer | null = null;
         const extraPlyGz: Buffer[] = [];
         for await (const part of req.parts()) {
             if (part.type === 'file' && part.fieldname === 'ply') {
                 plyGz = await part.toBuffer();
             } else if (part.type === 'file' && part.fieldname === 'extraPly') {
                 extraPlyGz.push(await part.toBuffer());
+            } else if (part.type === 'file' && part.fieldname === 'poster') {
+                poster = await part.toBuffer();
             } else if (part.type === 'field' && part.fieldname === 'options') {
                 try { options = JSON.parse(part.value as string); } catch { return reply.code(400).send({ error: 'options is not valid JSON' }); }
             }
+        }
+        if (poster && options?.viewerExportSettings) {
+            options.viewerExportSettings.poster = new Uint8Array(poster);
         }
         if (!plyGz || !options || !options.viewerExportSettings) {
             return reply.code(400).send({ error: 'missing ply file or viewer options' });
