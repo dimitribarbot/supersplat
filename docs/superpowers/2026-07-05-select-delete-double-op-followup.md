@@ -1,6 +1,6 @@
 # Follow-up candidate: `select.delete` double-op when portal / off-limits tool is active
 
-**Status:** Not fixed — logged during E2E of plan #4 (`2026-07-02-editor-zonedepth-gate-and-shape-destroy.md`) on 2026-07-05. Pre-existing defect, unrelated to that plan's changes (confirmed by code trace; the plan's diff never touches these paths).
+**Status:** FIXED 2026-07-06 — `select.delete` guard in `src/editor.ts` extended to the `portals` and `offLimitsZones` tools (note: the off-limits tool id is `offLimitsZones`, not `offLimits` as guessed below). All four verification checks user-confirmed E2E. Originally logged during E2E of plan #4 (`2026-07-02-editor-zonedepth-gate-and-shape-destroy.md`) on 2026-07-05 as a pre-existing defect, unrelated to that plan's changes (confirmed by code trace; the plan's diff never touches these paths).
 
 ## Symptom
 

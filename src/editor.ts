@@ -544,10 +544,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     });
 
     events.on('select.delete', () => {
-        // Don't delete gaussians when the measure or annotation tool is active
-        // (Delete/Backspace removes the active measure point / annotation instead)
+        // Don't delete gaussians when the measure, annotation, portal or off-limits-zone
+        // tool is active (Delete/Backspace removes the tool's selected item instead)
         const activeTool = events.invoke('tool.active');
-        if (activeTool === 'measure' || activeTool === 'annotation') {
+        if (activeTool === 'measure' || activeTool === 'annotation' ||
+            activeTool === 'portals' || activeTool === 'offLimitsZones') {
             return;
         }
         // Don't delete gaussians while a polygon selection is in progress (backspace removes the last point instead)
