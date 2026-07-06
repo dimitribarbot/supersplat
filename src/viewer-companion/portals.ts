@@ -1,4 +1,5 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
+import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
 import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor } from '../portal-preload';
 
@@ -51,9 +52,10 @@ const companionStyle = `
 
 // Runtime companion injected verbatim into the exported viewer. It creates one
 // disabled gsplat per extra scene, switches the visible scene when the camera
-// crosses a portal, and swaps the walk/fly collision to match. The two pure
-// crossing helpers are stringified in from portal-geom so the geometry is shared
-// and unit-tested. Everything else is dep-internal (the live pc.AppBase and the
+// crosses a portal, and swaps the walk/fly collision to match. The pure crossing
+// helpers (portal-geom) and the crossing/overlay lifecycle reducer
+// (portal-crossing) are stringified in so they stay shared and unit-tested.
+// Everything else is dep-internal (the live pc.AppBase and the
 // viewer's collision instance), verified by the Task 8/9 console spikes and the
 // Task 12 end-to-end walkthrough rather than unit tests.
 const companionRuntime = `
@@ -62,6 +64,7 @@ const companionRuntime = `
   if (!data || !data.portals || !data.portalScenes || data.portalScenes.length < 2) return;
   var segmentCrossesRect = ${segmentCrossesRect.toString()};
   var resolveActiveSplat = ${resolveActiveSplat.toString()};
+  var crossingReducer = ${crossingReducer.toString()};
   var resolveLoadingMessage = ${resolveLoadingMessage.toString()};
   var collectLodFileUrls = ${collectLodFileUrls.toString()};
   var collectSogBlockFileUrls = ${collectSogBlockFileUrls.toString()};
@@ -189,11 +192,11 @@ const companionRuntime = `
     } catch (logVramErr) {}
   }
 
-  // Switch to scene idx: enable it, swap collision, reconcile the frontier and
-  // arm the loading overlay when the destination is not ready (still streaming,
-  // or a SOG scene whose asset has not finished loading). Tolerates a target
-  // whose entity does not exist yet: activeIndex flips immediately (the frontier
-  // reconcile loads it) and the load callback enables it on arrival.
+  // Switch to scene idx: enable it, swap collision, refine + re-pin via the
+  // frontier reconcile. Overlay arming/cancelling is decided by crossingReducer
+  // (via dispatch), not here. Tolerates a target whose entity does not exist
+  // yet: activeIndex flips immediately (the frontier reconcile loads it) and
+  // the load callback enables it on arrival.
   function switchTo(idx) {
     if (idx === activeIndex || idx === null || idx === undefined) return;
     if (idx < 0 || idx >= data.portalScenes.length) return;
@@ -204,33 +207,34 @@ const companionRuntime = `
     swapCollision(idx);
     scheduleRefine(idx);
     reconcileFrontier();
-    // Arm the overlay from a LIVE residency probe, not the readyScenes flag
-    // alone: on a budget-degraded device the destination was pinned (and
-    // flag-marked ready) at a NEIGHBOUR depth coarser than the active depth
-    // this crossing just assigned (reconcileFrontier above re-ran
-    // assignPinDepths and lowered sceneMinLevel/lodRangeMin), so the scene
-    // would otherwise visibly refine region-by-region after the swap with no
-    // overlay (field case: mobile first crossing). The probe reads the live
-    // sceneMinLevel, so it is exact on both platforms: a fully-resident
-    // destination (desktop preload done) still crosses instantly. SOG scenes
-    // have no octree to probe -- the flag stays their truth.
-    var showable = octrees[idx] ? sceneRevealResident(idx) : readyScenes[idx];
-    if (!showable && pendingIndex !== idx) { beginLoading(idx); }
   }
 
   // --- device-depth reveal -----------------------------------------------
-  // Clamp a crossed-into scene to the device-budget LOD depth (sceneMinLevel)
-  // so it shows the pinned-resident levels everywhere INSTANTLY (no black).
-  // No re-open needed: the device level is already the final floor; the engine
-  // will stream + refine anything finer on its own.
+  // Floor a crossed-into scene (the start scene included) at the finest
+  // FULLY-resident level (never a blob fallback) and let pumpFloor open it
+  // toward the canonical floor as finer levels complete.
   function scheduleRefine(idx) {
-    if (idx === 0) return;                                   // start scene is the viewer's own
+    // Scene 0 is included: its CANONICAL floor stays viewer-owned (see
+    // canonicalFloor), but the held-floor descent applies to it like any
+    // other crossed-into scene (field case: retreating to the start scene
+    // rendered blob fallbacks over a nearly-complete L1 because scene 0 was
+    // exempt from the invariant while its floor pointed at a mostly-missing
+    // L0). Startup is unaffected: scheduleRefine only runs on crossings.
     var comp = comps[idx];
     if (!comp) return;
-    var min = (sceneMinLevel[idx] != null) ? sceneMinLevel[idx] : deviceMinLevel(idx);
-    sceneMinLevel[idx] = min;
-    comp.lodRangeMin = min;                                  // floor at device-depth (all pinned resident -> instant)
-    comp.lodRangeMax = 1000;                                 // allow coarser for far nodes (also pinned)
+    if (idx !== 0) {
+      if (sceneMinLevel[idx] == null) { sceneMinLevel[idx] = deviceMinLevel(idx); }
+      comp.lodRangeMax = 1000;                               // allow coarser for far nodes (also pinned)
+    }
+    floorGen[idx] = (floorGen[idx] || 0) + 1;
+    var fine = finestFullLevel(idx);
+    heldFloor[idx] = (fine === null) ? null : Math.max(canonicalFloor(idx), fine);
+    applySceneFloor(idx);
+    if (heldFloor[idx] != null && heldFloor[idx] > canonicalFloor(idx)) {
+      pumpFloor(idx);
+    } else {
+      heldFloor[idx] = null;
+    }
     var app = getApp(window.__supersplatViewer);
     if (app) app.renderNextFrame = true;
   }
@@ -258,11 +262,14 @@ const companionRuntime = `
   // (e.g. a non-streaming SOG export) never flashes it.
   var readyScenes = {};            // scene index -> true once revealed
   readyScenes[activeIndex] = true; // start scene is already loaded; never overlay it
+  var shown = {};                  // scene index -> displayed to the user (no overlay covering it) this session; cleared when reclaim frees the scene
+  shown[activeIndex] = true;       // the start scene is on screen from the first frame
   var pendingIndex = null;         // scene index currently loading (or null)
   var pendingFrames = 0;           // frames since the crossing
   var overlayShown = false;        // backdrop currently visible
   var SHOW_DELAY = 0;              // streaming-only (SOG gated out) => show immediately
-  var LOADING_MAX_FRAMES = 3600;   // ~60s anti-stick bound (residency is the real trigger; blurry-late beats black-early)
+  var LOADING_MAX_FRAMES = 3600;      // ~60s cap: reveal-with-blur, but ONLY once coarse coverage is complete (no missing regions)
+  var LOADING_ABS_MAX_FRAMES = 21600; // ~6min absolute anti-stick bound (fires even without coverage: overlay must never stick)
 
   var lBackdrop = document.createElement('div');
   lBackdrop.className = 'ss-portal-loading-backdrop';
@@ -278,38 +285,191 @@ const companionRuntime = `
   function showLoading() { lBackdrop.classList.add('active'); }
   function hideLoading() { lBackdrop.classList.remove('active'); }
 
-  // True when EVERY octree file of scene idx at levels [reveal depth ..
+  // The LOD level a crossing's loading overlay waits for -- the "coarsest
+  // acceptable" quality: the assigned pin depth when that is genuinely
+  // coarser (budget-degraded devices), otherwise REVEAL_MARGIN levels above
+  // the scene's coarsest. On desktop the pin depth is the FULL pyramid
+  // (deviceFinest=0), which takes minutes on a slow network; the overlay
+  // instead reveals at the same near-coarse quality the viewer's own initial
+  // loading bar accepts for the start scene, and the engine refines in view
+  // afterwards (the final pin depth is unchanged; only the overlay gate and
+  // the temporary streaming floor below read this).
+  var REVEAL_MARGIN = 2;   // reveal at most this many levels finer than coarsest
+  function revealLevel(idx) {
+    var oc = octrees[idx];
+    var coarse = (oc && oc.lodLevels) ? oc.lodLevels - 1 : 0;
+    var acceptable = Math.max(coarse - REVEAL_MARGIN, 0);
+    // Only the ASSIGNED pin depth may RAISE the gate above the margin: a
+    // budget-degraded pin never loads finer blocks, so waiting for them
+    // would stick the overlay. The early-session fallbacks must NOT raise
+    // it -- sceneMinLevel is initialised at COARSEST by loadScene while
+    // deviceFinest is still unknown, and gating there passes on a handful
+    // of tiny coarse files (field case: Fast 4G crossing right after the
+    // start scene's bar revealed a scene of blobs with no overlay at all).
+    var pin = pinDepth[idx];
+    return (pin != null && pin > acceptable) ? pin : acceptable;
+  }
+  // True when EVERY octree file of scene idx at levels [revealLevel ..
   // coarsest] has a resident (decoded) resource -- the scene is showable at
-  // the depth the pin machinery keeps it at, everywhere. Reveal depth
-  // resolution order:
-  //   1. pinDepth -- the ASSIGNED (budget-degraded) pin depth. The only
-  //      depth tracked for scene 0, whose lodRange floor is viewer-owned so
-  //      sceneMinLevel[0] is never set (field case: crossing back to the
-  //      start scene fell through to deviceMinLevel(0)=0 and the overlay
-  //      waited for the whole desktop-depth pyramid -- stuck, even though
-  //      scene 0 was resident at its assigned depth 3 the whole time).
-  //   2. sceneMinLevel -- the component floor, set at loadScene before the
-  //      first reconcile has assigned a pin depth.
-  //   3. deviceMinLevel -- device-observed fallback (coarsest until known).
-  // False while the octree is unknown or the engine's shape drifted (the
-  // caller's frame cap then bounds the overlay).
+  // the acceptable reveal quality, everywhere. False while the octree is
+  // unknown or the engine's shape drifted (the caller's frame caps then bound
+  // the overlay).
   function sceneRevealResident(idx) {
     var oc = octrees[idx];
     if (!oc || !oc.files || !oc.getFileResource || !oc.lodLevels) { return false; }
-    var min = (pinDepth[idx] != null) ? pinDepth[idx] :
-      ((sceneMinLevel[idx] != null) ? sceneMinLevel[idx] : deviceMinLevel(idx));
-    return sceneResidentToDepth(oc.files, oc.lodLevels, min, function (i) { return !!oc.getFileResource(i); });
+    return sceneResidentToDepth(oc.files, oc.lodLevels, revealLevel(idx), function (i) { return !!oc.getFileResource(i); });
   }
 
-  // Arm the overlay for a first-time crossing into scene idx. showLoading is
-  // deferred to the poll (SHOW_DELAY) so an already-resident scene never flashes.
+  // True when EVERY region of scene idx has at least COARSEST-level data
+  // resident -- the scene renders with no missing/black regions (possibly
+  // blurry; the engine refines in view after the reveal). Vacuously true when
+  // the octree is unknown (SOG or engine drift), so a probe-blind scene exits
+  // at the 60s cap; the absolute cap only matters when coverage is probeable
+  // but incomplete.
+  function sceneCoverageResident(idx) {
+    var oc = octrees[idx];
+    if (!oc || !oc.files || !oc.getFileResource || !oc.lodLevels) { return true; }
+    return sceneResidentToDepth(oc.files, oc.lodLevels, oc.lodLevels - 1, function (i) { return !!oc.getFileResource(i); });
+  }
+
+  // --- progressive rendering floor ---------------------------------------
+  // A crossed-into streaming scene renders at the finest level that is FULLY
+  // resident, and the floor descends one level at a time as finer levels
+  // complete, until the canonical pin floor is reached. Rendering a floor
+  // finer than what is fully resident makes the engine select missing files
+  // and draw coarse blob fallbacks (field case: crossing with L1 100%
+  // resident but L0 at 3/9 rendered giant blobs over a perfectly good L1);
+  // holding the floor also keeps the engine from scattering bandwidth over
+  // missing finest in-view blocks while the pins complete the next level.
+  // The pin pump fetches ALL pinned levels regardless of the floor, so the
+  // descent cannot deadlock. Scene 0's floor stays viewer-owned
+  // (applyStartFloor); SOG scenes have no octree and are never held.
+  var heldFloor = [];   // scene index -> held floor level while descending (null/undefined = open at canonical)
+  var floorGen = [];    // scene index -> generation; bumped to invalidate an in-flight pump
+  function canonicalFloor(idx) {
+    // Scene 0's floor is viewer-owned: the budget clamp when degraded
+    // (startFloor), else fully open -- the viewer's applyPerfSettings opens
+    // it to 0 once ready. sceneMinLevel is deliberately never set for it.
+    if (idx === 0) { return (startFloor !== null) ? startFloor : 0; }
+    return (sceneMinLevel[idx] != null) ? sceneMinLevel[idx] : deviceMinLevel(idx);
+  }
+  // Finest level L such that every file at levels [L..coarsest] is resident
+  // (the finest the scene can render everywhere without blob fallbacks);
+  // coarsest when nothing is complete yet; null when the octree is unknown.
+  function finestFullLevel(idx) {
+    var oc = octrees[idx];
+    if (!oc || !oc.files || !oc.getFileResource || !oc.lodLevels) { return null; }
+    for (var lv = 0; lv < oc.lodLevels; lv++) {
+      if (sceneResidentToDepth(oc.files, oc.lodLevels, lv, function (i) { return !!oc.getFileResource(i); })) { return lv; }
+    }
+    return oc.lodLevels - 1;
+  }
+  function applySceneFloor(idx) {
+    var comp = comps[idx];
+    if (!comp) { return; }
+    var canon = canonicalFloor(idx);
+    comp.lodRangeMin = (heldFloor[idx] != null) ? Math.max(canon, heldFloor[idx]) : canon;
+  }
+  // Descend the held floor as levels complete; exits when fully open, when
+  // the scene stops being active, or when a newer generation supersedes it.
+  function pumpFloor(idx) {
+    var gen = floorGen[idx];
+    (function step() {
+      if (floorGen[idx] !== gen) { return; }
+      if (idx !== activeIndex || heldFloor[idx] == null) { heldFloor[idx] = null; applySceneFloor(idx); return; }
+      var canon = canonicalFloor(idx);
+      var fine = finestFullLevel(idx);
+      var target = (fine === null) ? canon : Math.max(canon, fine);
+      if (target < heldFloor[idx]) {
+        heldFloor[idx] = target;
+        var app = getApp(window.__supersplatViewer);
+        if (app) { app.renderNextFrame = true; }
+      }
+      // Re-assert every step (not only on change): the viewer's
+      // applyPerfSettings (ready / performance-mode) and applyStartFloor
+      // write scene 0's floor directly and would otherwise reopen a held
+      // floor mid-descent.
+      applySceneFloor(idx);
+      if (heldFloor[idx] <= canon) { heldFloor[idx] = null; applySceneFloor(idx); return; }
+      requestAnimationFrame(step);
+    })();
+  }
+
+  // Arm the overlay for a crossing into scene idx. showLoading is deferred to
+  // the poll (SHOW_DELAY) so an already-resident scene never flashes.
   function beginLoading(idx) {
     pendingIndex = idx; pendingFrames = 0; overlayShown = false;
   }
-  function endLoading() {
-    if (pendingIndex !== null) { readyScenes[pendingIndex] = true; }
-    hideLoading();
-    pendingIndex = null; overlayShown = false;
+  // A scene is "ready" when a crossing into it needs no loading overlay.
+  // A scene the user has ALREADY had on screen this session shows instantly at
+  // whatever quality it currently has -- it is exactly what they were looking
+  // at when they left it (field case: desktop on a slow network, retreating to
+  // the start scene armed an overlay gated on the FULL pyramid -- deviceFinest
+  // reveal depth -- which only the 60s anti-stick cap could exit, over a
+  // half-streamed scene). Otherwise: streaming scenes probe LIVE residency at
+  // the reveal depth (a budget-degraded device may have pinned the destination
+  // coarser than the depth the crossing just assigned -- the flag alone would
+  // reveal region-by-region refine); SOG scenes have no octree to probe, so
+  // the flag (set on asset load) stays their truth.
+  function sceneReady(idx) {
+    if (shown[idx]) return true;
+    return !!(octrees[idx] ? sceneRevealResident(idx) : readyScenes[idx]);
+  }
+  // Crossing/overlay lifecycle. ALL decisions (switch now, hold a crossing into
+  // a not-yet-loadable scene, arm/drop the reveal poll, mark revealed) live in
+  // the pure, unit-tested crossingReducer; this wiring just applies its actions.
+  // 'hide' and 'show' deliberately clear pendingIndex WITHOUT touching
+  // readyScenes: an abandoned poll must never mark its target ready (a stale
+  // poll once did, and frontier reclaim could then be undone by it). On a
+  // blocked entry ('show') loadScene retries the target: it is a no-op while
+  // loaded/loading, and re-fetches after a failed load so a blocked crossing
+  // can actually complete.
+  var crossState = { mode: 'idle', target: null };
+  // Field diagnostic: per-LOD-level resident-file counts for scene idx
+  // ('L0:3/12 L1:4/4 ...'), so a crossing/reveal decision can be checked
+  // against what was ACTUALLY resident at that moment.
+  function residencySummary(idx) {
+    var oc = octrees[idx];
+    if (!oc || !oc.files || !oc.getFileResource || !oc.lodLevels) { return 'no-octree'; }
+    var have = [], total = [];
+    for (var l = 0; l < oc.lodLevels; l++) { have[l] = 0; total[l] = 0; }
+    for (var i = 0; i < oc.files.length; i++) {
+      var f = oc.files[i];
+      if (!f) { continue; }
+      total[f.lodLevel]++;
+      if (oc.getFileResource(i)) { have[f.lodLevel]++; }
+    }
+    var parts = [];
+    for (var lv = 0; lv < oc.lodLevels; lv++) { parts.push('L' + lv + ':' + have[lv] + '/' + total[lv]); }
+    return parts.join(' ');
+  }
+  function dispatch(ev) {
+    // Field diagnostic: log every crossing DECISION with the gate inputs and
+    // the destination's live residency -- the reveal log is blind in the
+    // no-overlay path (ready at the crossing itself), which is exactly the
+    // path early-reveal field reports come from. The blocked re-fire (same
+    // target every frame while lastSafe is frozen) is suppressed.
+    if (ev.type === 'crossing' && !(crossState.mode === 'blocked' && crossState.target === ev.target)) {
+      try {
+        var dComp = comps[ev.target];
+        console.info('[portals] crossing -> ' + ev.target + ' loaded=' + ev.loaded + ' ready=' + ev.ready +
+          ' shown=' + !!shown[ev.target] + ' gate=' + revealLevel(ev.target) +
+          ' pinDepth=' + pinDepth[ev.target] + ' sceneMinLevel=' + sceneMinLevel[ev.target] +
+          ' lodRangeMin=' + (dComp ? dComp.lodRangeMin : 'n/a') + ' | ' + residencySummary(ev.target));
+      } catch (xLogErr) {}
+    }
+    var res = crossingReducer(crossState, ev);
+    crossState = res.state;
+    var a = res.actions;
+    if (a.switchTo !== null) { switchTo(a.switchTo); }
+    // Displayed-without-overlay bookkeeping: a switch not covered by a poll
+    // ('keep'/'hide') puts the scene straight on screen; a reveal (markReady,
+    // incl. the anti-stick cap) uncovers it.
+    if (a.switchTo !== null && a.overlay !== 'poll') { shown[a.switchTo] = true; }
+    if (a.markReady !== null) { readyScenes[a.markReady] = true; shown[a.markReady] = true; }
+    if (a.overlay === 'show') { pendingIndex = null; overlayShown = true; showLoading(); loadScene(crossState.target); }
+    else if (a.overlay === 'poll') { beginLoading(crossState.target); }
+    else if (a.overlay === 'hide') { pendingIndex = null; overlayShown = false; hideLoading(); }
   }
 
   // Portal rects carry index-based front/back: the export (buildPortalBundle)
@@ -509,12 +669,18 @@ const companionRuntime = `
       // The R shortcut and the viewer's reset menu both fire inputEvent 'reset',
       // returning the camera to its spawn pose. The spawn lives in the start
       // scene, but free-nav crossing detection can't see the move (it need not
-      // pass through a doorway), so force the start scene here. lastSafe is
-      // cleared so the spawn discontinuity isn't read as a spurious crossing on
-      // the next frame. In anim mode the timeline-driven switchTo immediately
-      // re-asserts the cursor's scene, so this is a harmless no-op there.
+      // pass through a doorway), so force the start scene here via the reducer
+      // -- which also drops any blocked/loading overlay WITHOUT falsely marking
+      // its abandoned target ready. lastSafe is cleared so the spawn
+      // discontinuity isn't read as a spurious crossing on the next frame. In
+      // anim mode the timeline-driven dispatch immediately re-asserts the
+      // cursor's scene, so this is a harmless no-op there.
       ev.on('inputEvent', function (name) {
-        if (name === 'reset') { switchTo(data.portalStart || 0); lastSafe = null; }
+        if (name === 'reset') {
+          var sIdx = data.portalStart || 0;
+          dispatch({ type: 'crossing', target: sIdx, loaded: !!(entities[sIdx] || sceneLoading[sIdx]), ready: sceneReady(sIdx) });
+          lastSafe = null;
+        }
       });
       // The viewer's applyPerfSettings re-runs on this event: it reopens the
       // start component's lodRangeMin to 0 (wiping the budget clamp) AND
@@ -528,7 +694,7 @@ const companionRuntime = `
       // assigned depth is unchanged, leaving the wiped floor unrepaired.
       ev.on('performanceMode:changed', function () {
         requestAnimationFrame(function () {
-          if (startFloor !== null && comps[0]) { comps[0].lodRangeMin = startFloor; }
+          if (startFloor !== null && comps[0]) { comps[0].lodRangeMin = (heldFloor[0] != null) ? Math.max(startFloor, heldFloor[0]) : startFloor; }
           if (pinReady) { pinDesired(); }
         });
       });
@@ -706,6 +872,21 @@ const companionRuntime = `
           console.info('[portals] ready-gate watchdog applied fallback splatBudget=' + gs.splatBudget);
           reconcileFrontier();
         }
+        // The gate is stuck (firstFrame never fired) but a budget is in place:
+        // treat the viewer as ready. viewerReady is what gates scene 0's pins
+        // (pinDesired skips idx 0 without it), and the engine FREES a disabled
+        // scene's unpinned blocks -- so an unpinned start scene came back
+        // BLACK (and re-downloaded from scratch) on every retreat/reset after
+        // a crossing. pinSceneToLevel incRefCounts already-resident files
+        // immediately, so this retains exactly what the user was looking at;
+        // the real firstFrame handler firing later is an idempotent no-op.
+        // Gated on a present splatBudget so the budget backstop above cannot
+        // be skipped by this latch clearing the watchdog.
+        if (!viewerReady && gs && gs.splatBudget) {
+          viewerReady = true;
+          console.info('[portals] ready-gate watchdog: firstFrame never fired -- treating viewer as ready so the start scene gets pinned');
+          reconcileFrontier();
+        }
       } catch (wdErr) {}
     }, 5000);
     requestAnimationFrame(tick);
@@ -726,23 +907,37 @@ const companionRuntime = `
         // In animation mode the camera is driven by the authored path, so the
         // active scene is a pure function of the cursor time (handles play,
         // scrub, scrubTo and loop wrap). In free navigation, detect crossings
-        // from frame-to-frame motion. lastSafe is kept fresh in both so the
-        // hand-off between modes never produces a spurious crossing.
+        // from frame-to-frame motion; both paths route through dispatch so the
+        // crossingReducer owns every activeIndex change. lastSafe is kept fresh
+        // in anim mode so the hand-off between modes never produces a spurious
+        // crossing; in free nav it is FROZEN while a crossing is blocked, so
+        // the frozen segment re-fires the crossing every frame (the reducer is
+        // idempotent for it) and the switch completes the frame the target
+        // becomes loadable.
         // If state is unreachable (st null) we fall back to the free-nav branch;
         // exports always bake a truthy timeline, so this only degrades to
         // delta-detection in the unexpected case where the viewer state is missing.
         if (st && st.cameraMode === 'anim' && timeline) {
-          switchTo(sceneAtTime(st.animationTime || 0));
-        } else if (lastSafe) {
-          // A crossing whose target has neither loaded nor started loading is
-          // skipped (defensive: frontier preloading starts every reachable
-          // neighbour's load, so this only bites after a load failure).
-          var next = resolveActiveSplat(lastSafe, cur, rects, activeIndex, segmentCrossesRect);
-          if (next !== activeIndex && next !== null && (entities[next] || sceneLoading[next])) {
-            switchTo(next);
+          var want = sceneAtTime(st.animationTime || 0);
+          if (want !== activeIndex && want !== null && want !== undefined) {
+            dispatch({ type: 'crossing', target: want, loaded: !!(entities[want] || sceneLoading[want]), ready: sceneReady(want) });
+          } else if (crossState.mode === 'blocked') {
+            dispatch({ type: 'noCrossing' });   // timeline moved back before the target loaded
           }
+          lastSafe = cur;                       // anim mode: keep fresh for the mode hand-off
+        } else if (lastSafe) {
+          var next = resolveActiveSplat(lastSafe, cur, rects, activeIndex, segmentCrossesRect);
+          if (next !== activeIndex && next !== null) {
+            dispatch({ type: 'crossing', target: next, loaded: !!(entities[next] || sceneLoading[next]), ready: sceneReady(next) });
+          } else if (crossState.mode === 'blocked') {
+            dispatch({ type: 'noCrossing' });   // user retreated to the known side
+          }
+          // Freeze lastSafe while blocked so the pending crossing keeps firing;
+          // advance it normally otherwise.
+          if (crossState.mode !== 'blocked') { lastSafe = cur; }
+        } else {
+          lastSafe = cur;
         }
-        lastSafe = cur;
       }
     } catch (err) {
       if (!tickErrored) { tickErrored = true; console.warn('portal tick error (suppressed further):', err); }
@@ -755,22 +950,47 @@ const companionRuntime = `
         pendingFrames++;
         var pApp = getApp(window.__supersplatViewer);
         if (pApp) { pApp.renderNextFrame = true; }
-        // Reveal when the DESTINATION scene is resident down to its reveal
-        // depth (device-final quality, no mixed-LOD regions); the frame cap
-        // only bounds the overlay if the residency probe goes blind (engine
-        // drift).
-        var ready =
-          sceneRevealResident(pendingIndex) ||
-          (pendingFrames > LOADING_MAX_FRAMES);
+        // Reveal when the DESTINATION scene is ready at its reveal depth
+        // (device-final quality, no mixed-LOD regions; SOG: asset-load flag);
+        // the 60s cap reveals blurry-but-complete (coarse coverage required:
+        // a slow network must never expose missing regions), and the absolute
+        // cap is the only unconditional exit for a probeable scene whose
+        // coverage never completes.
+        // Reveal routes through dispatch so a stale poll
+        // for an abandoned target is ignored by the reducer.
+        var capHit = pendingFrames > LOADING_MAX_FRAMES;
+        var readyByGate = sceneReady(pendingIndex);
+        var readyByCoverage = !readyByGate && capHit && sceneCoverageResident(pendingIndex);
+        var ready = readyByGate || readyByCoverage || (pendingFrames > LOADING_ABS_MAX_FRAMES);
         if (ready) {
-          endLoading();
+          // Field diagnostic: WHICH exit revealed, at what gate depth, and
+          // whether the pin machinery had assigned that depth yet -- an early
+          // blurry reveal is otherwise indistinguishable from a cap timeout.
+          try {
+            var rIdx = pendingIndex;
+            var rDepth = revealLevel(rIdx);
+            console.info('[portals] reveal ' + rIdx +
+              (readyByGate ? ' via readiness' : (readyByCoverage ? ' via NO-HOLES CAP' : ' via ABSOLUTE CAP')) +
+              ' after ' + pendingFrames + ' frames, gateDepth=' + rDepth +
+              ' (pinDepth=' + pinDepth[rIdx] + ' sceneMinLevel=' + sceneMinLevel[rIdx] +
+              ' deviceFinest=' + deviceFinest + ' pinReady=' + pinReady + ') | ' + residencySummary(rIdx));
+          } catch (revLogErr) {}
+          dispatch({ type: 'revealed', target: pendingIndex });
         } else if (!overlayShown && pendingFrames >= SHOW_DELAY) {
           showLoading();
           overlayShown = true;
         }
       }
     } catch (e) {
-      endLoading();
+      // Defensive: never leave the overlay stuck (mark the in-flight scene
+      // ready so we don't re-arm forever). Logged: a swallowed error here
+      // force-reveals the scene and would otherwise masquerade as an early
+      // legitimate reveal.
+      console.warn('portal overlay poll error (overlay dropped):', e);
+      if (crossState.mode === 'loading' && crossState.target !== null) { readyScenes[crossState.target] = true; shown[crossState.target] = true; }
+      crossState = { mode: 'idle', target: null };
+      pendingIndex = null; overlayShown = false;
+      hideLoading();
     }
     requestAnimationFrame(tick);
   }
@@ -1040,6 +1260,9 @@ const companionRuntime = `
     pinBatches[idx] = [];
     pinGen[idx] = (pinGen[idx] || 0) + 1;   // invalidate the scene's in-flight pin pump
     readyScenes[idx] = false;
+    shown[idx] = false;
+    heldFloor[idx] = null;
+    floorGen[idx] = (floorGen[idx] || 0) + 1;   // invalidate an in-flight floor pump
   }
 
   function getAsset(idx) { return assets[idx] || null; }
@@ -1083,7 +1306,10 @@ const companionRuntime = `
   function applyStartFloor(floor) {
     if (floor === null && startFloor === null) { return; }   // never clamped: strict no-op
     startFloor = floor;
-    if (comps[0]) { comps[0].lodRangeMin = (floor !== null) ? floor : 0; }
+    if (comps[0]) {
+      var base = (floor !== null) ? floor : 0;
+      comps[0].lodRangeMin = (heldFloor[0] != null) ? Math.max(base, heldFloor[0]) : base;
+    }
   }
 
   // Reconcile the resident frontier to the LIVE activeIndex (read here, never a
@@ -1143,8 +1369,11 @@ const companionRuntime = `
       }
       if (idx !== 0) {
         // Extra scenes: the component floor IS the pin depth.
+        // applySceneFloor respects a pump-held floor (a scene mid-descent
+        // must not reopen to the final depth before its finer levels are
+        // fully resident).
         sceneMinLevel[idx] = min;
-        if (comps[idx]) { comps[idx].lodRangeMin = min; }
+        applySceneFloor(idx);
       } else {
         // Scene 0's floor is viewer-owned unless the budget degraded its pin
         // depth below the device's observed finest (see applyStartFloor).
@@ -1259,7 +1488,9 @@ const companionRuntime = `
     var e = entities[idx];
     var a = assets[idx];
     entities[idx] = null; comps[idx] = null; octrees[idx] = null; assets[idx] = null;
-    sceneMinLevel[idx] = null; readyScenes[idx] = false;
+    sceneMinLevel[idx] = null; readyScenes[idx] = false; shown[idx] = false;
+    heldFloor[idx] = null;
+    floorGen[idx] = (floorGen[idx] || 0) + 1;   // invalidate an in-flight floor pump
     pinDepth[idx] = null;
     pinBatches[idx] = [];
     pinGen[idx] = (pinGen[idx] || 0) + 1;   // invalidate the scene's in-flight pin pump

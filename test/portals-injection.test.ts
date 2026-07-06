@@ -189,15 +189,12 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('sceneRevealResident');
         // the old coarsest-level-only gate is gone (it revealed mixed quality)
         expect(out).not.toContain('sceneCoarseResident');
-        // gate depth resolution: ASSIGNED pin depth first (pinDepth -- the only
-        // depth tracked for scene 0, whose lodRange floor is viewer-owned and
-        // whose sceneMinLevel is never set; field case: crossing back to the
-        // start scene gated at deviceMinLevel(0)=0 and the overlay waited for
-        // the whole desktop-depth pyramid -- stuck forever on mobile), then
-        // the component floor, then the device fallback
-        expect(out).toContain('(pinDepth[idx] != null) ? pinDepth[idx]');
-        expect(out).toContain('sceneMinLevel[idx] != null');
-        // anti-stick frame cap survives as the overlay's only other exit
+        // gate depth: only an ASSIGNED pin depth (budget-degraded devices,
+        // which never load finer blocks) may raise the gate; the early-session
+        // sceneMinLevel placeholder (coarsest until deviceFinest is observed)
+        // must not
+        expect(out).toContain('pin != null && pin > acceptable');
+        // the anti-stick caps survive as the overlay's only other exits
         expect(out).toContain('LOADING_MAX_FRAMES');
     });
 
@@ -268,6 +265,126 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('reconcileCollisions');
         expect(out).toContain('snapshotTaken');
         expect(out).not.toContain('preloadCollisions');
+    });
+
+    it('routes crossings through the pure crossing reducer', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // the reducer is stringified into the runtime and driven via dispatch
+        expect(out).toContain('crossingReducer');
+        expect(out).toContain('noCrossing');
+        expect(out).toContain('revealed');
+        // blocked crossings freeze lastSafe so the crossing re-fires until the target loads
+        expect(out).toContain("mode !== 'blocked'");
+        // switching away mid-load must never keep the old arming/ready paths
+        // (scoped past pumpPins' unrelated own "pendingIndex !== idx" yield check)
+        expect(out).not.toContain('!showable && pendingIndex !== idx');
+        expect(out).not.toContain('function endLoading');
+    });
+
+    it('never re-arms the overlay for a scene already shown this session', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // a scene the user has already seen displays at its current quality
+        expect(out).toContain('if (shown[idx]) return true;');
+        // reveal (incl. the anti-stick cap) marks the scene shown
+        expect(out).toContain('shown[a.markReady] = true');
+        // frontier reclaim invalidates shown so a freed scene overlays again
+        expect(out).toContain('shown[idx] = false;');
+    });
+
+    it('the anti-stick cap only reveals once every region has coarse coverage', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // the 60s cap is gated on no-missing-regions; a longer absolute cap
+        // remains the only unconditional exit
+        expect(out).toContain('sceneCoverageResident');
+        expect(out).toContain('LOADING_ABS_MAX_FRAMES');
+    });
+
+    it('reveals at a near-coarse acceptable level and aligns the streaming floor with it', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // the overlay gate never waits finer than REVEAL_MARGIN levels above coarsest
+        expect(out).toContain('REVEAL_MARGIN');
+        expect(out).toContain('revealLevel');
+        // while loading, the destination renders at the finest fully-resident
+        // level (held floor), so bandwidth and rendering track the gate
+        expect(out).toContain('applySceneFloor');
+    });
+
+    it('an unassigned pin depth gates at the acceptable margin, not the coarsest placeholder', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // only a genuinely ASSIGNED pin depth may raise the gate above the margin
+        expect(out).toContain('pin != null && pin > acceptable');
+    });
+
+    it('a crossed-into scene renders at the finest FULLY resident level, opening as levels complete', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // floor invariant: never render a level whose files are not all resident
+        expect(out).toContain('finestFullLevel');
+        expect(out).toContain('heldFloor');
+        // the floor descends progressively and opens at the canonical pin floor
+        expect(out).toContain('pumpFloor');
+        // the old poll-scoped clamp is gone (superseded by the invariant)
+        expect(out).not.toContain('pendingFloor');
+    });
+
+    it('watchdog treats a stuck ready gate as ready so the start scene gets pinned', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // firstFrame never firing left scene 0 unpinned; the engine frees a
+        // disabled scene's unpinned blocks, so retreating came back black
+        expect(out).toContain('treating viewer as ready');
+        expect(out).toContain('idx === 0 && !viewerReady');
+    });
+
+    it('the floor invariant covers the start scene on crossings back into it', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // scene 0's canonical floor stays viewer-owned (startFloor clamp or open)
+        expect(out).toContain('(startFloor !== null) ? startFloor : 0');
+        // scheduleRefine no longer exempts the start scene
+        expect(out).not.toContain('if (idx === 0) return;');
+        // direct writes to scene 0's floor are held-floor-aware
+        expect(out).toContain('Math.max(base, heldFloor[0])');
+    });
+
+    it('keys the startup collision snapshot by the start scene index, not activeIndex', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0,
+            portalCollision: ['', 'scenes/1/collision.voxel.json']
+        });
+        expect(out).toContain('voxels[snapshotIdx] = snapshot(live)');
+        expect(out).not.toContain('voxels[activeIndex] = snapshot');
     });
 });
 
