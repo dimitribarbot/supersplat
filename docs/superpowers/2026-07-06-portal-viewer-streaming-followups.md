@@ -20,6 +20,25 @@ remaining levels before feeding any neighbour's finer levels. `pumpPins` already
 Watch out: don't starve neighbour coarse pins (they're the instant-crossing floor), and re-evaluate
 on every `reconcileFrontier` (active scene changes).
 
+Status (2026-07-06): IMPLEMENTED — spec `docs/superpowers/specs/2026-07-06-active-scene-first-pins-design.md`,
+plan `docs/superpowers/plans/2026-07-06-active-scene-first-pins.md`. Combined policy: strict hold while the
+start scene's bar is up (residency-probed startRevealed latch), then coarser-than-active-pin-depth neighbour
+levels flow while equal-or-finer wait for the active scene (pinBatchAllowed gate in pumpPins); distance-2
+warming waits for the same gate.
+
+Slow-network `deviceFinest` fix (2026-07-06, E2E-verified during the above): the feature was ineffective on a
+throttled network because `deviceFinest` (which drives every scene's pin depth) froze at coarsest. Two coupled
+causes, both fixed: (a) `shouldSampleDeviceFinest` permanently stopped after ~10s of stability even while the
+start scene's render floor was still finer than the observed finest, so late-arriving finer residency went
+unobserved — now it keeps sampling (throttled, up to a 3600-frame no-improvement backstop) while
+`floorBelowFinest`, and stops early only when the floor is clamped up (low-end/churn, preserving plan #6
+steady-state-zero); (b) on Slow-3G the viewer opens scene 0's LOD floor to 0 only minutes in (firstFrame never
+fires), long after sampling stopped — `sampleDeviceFinest` now re-arms (`dfStable = 0`) on the
+`floorBelowFinest` false→true edge and re-pins (`pinDesired`) on each finer ratchet so neighbours upgrade
+without a crossing. Diagnosed via a temporary `df-probe` log (removed). Note: when the device is capable
+(`deviceFinest` reaches 0) a neighbour's whole coarser-than-finest pyramid is its instant-crossing floor and
+flows alongside the active scene by design — only the neighbour's finest (= active pin depth) is held.
+
 ## 2. Re-download churn: measure with real cache headers first
 
 Observed: ~350 MB transferred for a 245 MB project during one session, with visible duplicate

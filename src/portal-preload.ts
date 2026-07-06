@@ -541,6 +541,49 @@ const startSceneLodFloor = (
     return (assignedDepth > Math.max(deviceFinest, 0)) ? assignedDepth : null;
 };
 
+// Decide whether a pin pump may fetch one LOD-level batch right now, under the
+// active-scene-first priority policy (levels: 0 = finest .. coarsest):
+//   - the active scene's own batches always flow;
+//   - while the active scene is not revealed (startup: the viewer's progress
+//     bar is up and the user cannot move), every non-active batch holds;
+//   - once revealed, non-active batches STRICTLY COARSER than the active
+//     scene's pin depth flow (the cheap instant-crossing floor), while batches
+//     at or finer than that depth hold until the active scene is fully
+//     resident at its pin depth (activeAtDepth);
+//   - once the active scene is at depth, everything flows (today's behavior).
+// activePinDepth null/undefined (active not yet reconciled) falls back to
+// deviceFinest (what the reconcile will assign it); when that too is unknown,
+// only the probed scene's coarsest level flows (sceneCoarsest). Pure and
+// self-contained (no imports, no sibling-function calls, no backslash escapes)
+// so it can be stringified verbatim into the exported viewer runtime via
+// Function.toString().
+const pinBatchAllowed = (
+    batchLevel: number,
+    sceneIdx: number,
+    activeIdx: number,
+    activePinDepth: number | null | undefined,
+    deviceFinest: number | null | undefined,
+    sceneCoarsest: number,
+    revealed: boolean,
+    activeAtDepth: boolean
+): boolean => {
+    if (sceneIdx === activeIdx) {
+        return true;
+    }
+    if (!revealed) {
+        return false;
+    }
+    if (activeAtDepth) {
+        return true;
+    }
+    const threshold = (typeof activePinDepth === 'number') ? activePinDepth :
+        ((typeof deviceFinest === 'number') ? deviceFinest : null);
+    if (threshold === null) {
+        return batchLevel >= sceneCoarsest;
+    }
+    return batchLevel > threshold;
+};
+
 // Sampling cadence for the runtime's deviceFinest observation (the running-min
 // finest LOD level the engine has made resident for the start scene). Scanning
 // the octree is O(files) per call, so unconditional per-frame sampling is a
@@ -550,15 +593,28 @@ const startSceneLodFloor = (
 // to every 30th frame (~0.5s -- a late ratchet is still caught quickly at 1/30
 // the cost); stop permanently once finest reaches 0 (the engine's finest level:
 // a running-min cannot improve) or once it has been stable for 600 consecutive
-// frames AND the first pin cycle has consumed it (pinConsumed). Pure and
+// frames AND the first pin cycle has consumed it (pinConsumed).
+// EXCEPTION (floorBelowFinest): on a SLOW network the start scene's coarsest
+// level goes resident within the ~10s window but its finer levels arrive much
+// later, so "stable for 600 frames" wrongly reads as "the device has maxed out"
+// and freezes deviceFinest at a coarse level -- capping every neighbour scene at
+// coarsest forever (field case: deviceFinest stuck at 3 while the start scene
+// visibly sharpened to finest and vram climbed 63->500MB). While the start
+// scene's render floor is still FINER than the observed finest, the engine is
+// allowed to -- and still will -- make finer levels resident, so keep observing
+// (that path resets stableFrames on every improvement); only a long stall with
+// no improvement at all (the 3600-frame backstop) finally stops it, so a
+// genuinely capped device (floor clamped up to finest, or churning) is never
+// sampled forever and plan #6's steady-state-zero holds there. Pure and
 // self-contained (no imports, no sibling-function calls) so it can be
 // stringified verbatim into the exported viewer runtime via Function.toString().
-const shouldSampleDeviceFinest = (frame: number, finest: number | null, stableFrames: number, pinConsumed: boolean): boolean => {
+const shouldSampleDeviceFinest = (frame: number, finest: number | null, stableFrames: number, pinConsumed: boolean, floorBelowFinest?: boolean): boolean => {
     if (finest !== null && finest <= 0) {
         return false;                    // already at the finest possible level: nothing left to ratchet
     }
-    if (pinConsumed && finest !== null && stableFrames >= 600) {
-        return false;                    // settled (~10s unchanged) and the first pin cycle used it
+    const stableCap = floorBelowFinest ? 3600 : 600;   // slow-net: wait for a late ratchet; else settle at ~10s
+    if (pinConsumed && finest !== null && stableFrames >= stableCap) {
+        return false;                    // settled and the first pin cycle used it (no finer coming)
     }
     if (frame < 600) {
         return true;                     // initial settle window: sample every frame
@@ -566,4 +622,4 @@ const shouldSampleDeviceFinest = (frame: number, finest: number | null, stableFr
     return frame % 30 === 0;             // steady state: back off
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

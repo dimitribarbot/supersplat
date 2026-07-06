@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -537,5 +537,61 @@ describe('shouldSampleDeviceFinest', () => {
     it('keeps sampling while deviceFinest is still unknown (null)', () => {
         expect(shouldSampleDeviceFinest(1200, null, 600, true)).toBe(true); // 1200 % 30 === 0
         expect(shouldSampleDeviceFinest(1201, null, 601, true)).toBe(false);
+    });
+
+    it('keeps sampling past the short cap while the start-scene floor is still finer than the observed finest', () => {
+        // floorBelowFinest true (slow network: the engine is allowed to, and still will,
+        // make finer levels resident) -> a late ratchet must be caught, not stopped at 600.
+        expect(shouldSampleDeviceFinest(1200, 2, 600, true, true)).toBe(true);   // 1200 % 30 === 0
+        expect(shouldSampleDeviceFinest(1200, 2, 3599, true, true)).toBe(true);
+    });
+
+    it('gives up at the large no-improvement backstop even while the floor wants finer', () => {
+        expect(shouldSampleDeviceFinest(1200, 2, 3600, true, true)).toBe(false);
+    });
+
+    it('still stops at the short cap when the floor is not finer than the observed finest', () => {
+        // floorBelowFinest false (budget-clamped / device maxed) -> plan #6 steady-state-zero preserved.
+        expect(shouldSampleDeviceFinest(1200, 2, 600, true, false)).toBe(false);
+    });
+
+    it('stops at the finest level (0) regardless of the floor signal', () => {
+        expect(shouldSampleDeviceFinest(1200, 0, 100, true, true)).toBe(false);
+    });
+});
+
+describe('pinBatchAllowed', () => {
+    // Levels: 0 = finest .. coarsest. The probed scene's coarsest level is 3.
+    it('always allows the active scene, even before reveal', () => {
+        expect(pinBatchAllowed(0, 2, 2, 0, 0, 3, false, false)).toBe(true);
+    });
+    it('holds every non-active batch until the active scene is revealed', () => {
+        expect(pinBatchAllowed(3, 1, 0, 0, 0, 3, false, false)).toBe(false); // even the coarsest
+        expect(pinBatchAllowed(0, 1, 0, 0, 0, 3, false, false)).toBe(false);
+    });
+    it('allows everything once the active scene is resident at its pin depth', () => {
+        expect(pinBatchAllowed(0, 1, 0, 0, 0, 3, true, true)).toBe(true);
+        expect(pinBatchAllowed(3, 1, 0, 0, 0, 3, true, true)).toBe(true);
+    });
+    it('after reveal, allows only batches strictly coarser than the active pin depth', () => {
+        expect(pinBatchAllowed(2, 1, 0, 1, 0, 3, true, false)).toBe(true);   // coarser -> flows
+        expect(pinBatchAllowed(1, 1, 0, 1, 0, 3, true, false)).toBe(false);  // equal -> held
+        expect(pinBatchAllowed(0, 1, 0, 1, 0, 3, true, false)).toBe(false);  // finer -> held
+    });
+    it('holds neighbour L0 while a desktop active scene (pin depth 0) is filling', () => {
+        expect(pinBatchAllowed(1, 1, 0, 0, 0, 3, true, false)).toBe(true);
+        expect(pinBatchAllowed(0, 1, 0, 0, 0, 3, true, false)).toBe(false);
+    });
+    it('falls back to deviceFinest when the active pin depth is unassigned', () => {
+        expect(pinBatchAllowed(2, 1, 0, null, 1, 3, true, false)).toBe(true);   // 2 > 1
+        expect(pinBatchAllowed(1, 1, 0, null, 1, 3, true, false)).toBe(false);  // 1 === 1
+    });
+    it('allows only the coarsest level when both thresholds are unknown', () => {
+        expect(pinBatchAllowed(3, 1, 0, null, null, 3, true, false)).toBe(true);
+        expect(pinBatchAllowed(2, 1, 0, null, null, 3, true, false)).toBe(false);
+    });
+    it('treats undefined thresholds like null', () => {
+        expect(pinBatchAllowed(3, 1, 0, undefined, undefined, 3, true, false)).toBe(true);
+        expect(pinBatchAllowed(2, 1, 0, undefined, undefined, 3, true, false)).toBe(false);
     });
 });

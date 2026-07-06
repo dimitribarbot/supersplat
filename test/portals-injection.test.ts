@@ -51,6 +51,7 @@ describe('buildPortalsInjection', () => {
         expect(out).not.toContain('</script>'.replace('>', '>') + 'window');
         expect(out).toContain('portalSceneLodCounts');
         expect(out).toContain('62500');
+        expect(out).toContain('pinBatchAllowed'); // active-scene-first gate helper baked into the runtime
     });
 
     it('escapes angle brackets so a payload cannot break out of the script tag', () => {

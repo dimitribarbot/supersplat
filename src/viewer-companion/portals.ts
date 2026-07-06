@@ -1,7 +1,7 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -77,6 +77,7 @@ const companionRuntime = `
   var computeWarmSet = ${computeWarmSet.toString()};
   var sceneResidentToDepth = ${sceneResidentToDepth.toString()};
   var startSceneLodFloor = ${startSceneLodFloor.toString()};
+  var pinBatchAllowed = ${pinBatchAllowed.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
@@ -1152,11 +1153,35 @@ const companionRuntime = `
   // per-frame freshness for its own stability check).
   var dfFrame = 0;    // frames since the runtime started ticking (sampling clock)
   var dfStable = 0;   // frames since deviceFinest last ratcheted
+  var dfFloorWasBelow = false;   // previous floorBelowFinest, to catch the floor-open edge
   function sampleDeviceFinest() {
-    if (!shouldSampleDeviceFinest(dfFrame++, deviceFinest, dfStable, pinReady)) { dfStable++; return; }
+    // floorBelowFinest: the start scene is still allowed to render finer than the
+    // finest level we have observed resident (its viewer-owned floor is open below
+    // deviceFinest). On a slow network the finer levels arrive well after the 10s
+    // settle window, so keep observing while this holds (see shouldSampleDeviceFinest).
+    var floorBelowFinest = !!comps[0] && deviceFinest !== null && comps[0].lodRangeMin < deviceFinest;
+    // Re-arm on the floor-OPEN edge: on a slow network (firstFrame never fires)
+    // the viewer opens scene 0's LOD floor to 0 only minutes in -- long after the
+    // deviceFinest sampler stopped (stable ~10s while the floor was still closed
+    // at coarsest). Without this, the finer levels then stream in with nobody
+    // observing and deviceFinest stays frozen at coarsest, capping every
+    // neighbour scene. Resetting dfStable when the floor first drops below the
+    // observed finest resumes sampling so the imminent finer residency is caught.
+    if (floorBelowFinest && !dfFloorWasBelow) { dfStable = 0; }
+    dfFloorWasBelow = floorBelowFinest;
+    if (!shouldSampleDeviceFinest(dfFrame++, deviceFinest, dfStable, pinReady, floorBelowFinest)) { dfStable++; return; }
     var before = deviceFinest;
     updateDeviceFinest();
-    dfStable = (deviceFinest === before) ? dfStable + 1 : 0;
+    if (deviceFinest === before) {
+      dfStable++;
+    } else {
+      dfStable = 0;
+      // deviceFinest only ratchets FINER (running-min). After the first pin cycle
+      // (pinReady), re-pin so neighbour scenes upgrade to the newly-observed depth
+      // without waiting for the next crossing; the active-scene-first gates hold
+      // that finer neighbour traffic until the active scene is resident at depth.
+      if (pinReady) { pinDesired(); }
+    }
   }
 
   function deviceMinLevel(idx) {
@@ -1206,8 +1231,70 @@ const companionRuntime = `
       }
     }
     if (!pinBatches[idx]) { pinBatches[idx] = []; }
-    pinBatches[idx].push({ remaining: batch, markReady: !!markReady, done: false });
+    pinBatches[idx].push({ remaining: batch, markReady: !!markReady, done: false, level: minLevel });
     pumpPins(idx);
+  }
+
+  // --- active-scene-first pin priority gates -----------------------------
+  // Gate 1 (gateRevealed): the active scene has been revealed to the user.
+  // For crossed-into scenes this is shown[active] (crossing reducer). For the
+  // START scene, shown[] is pre-latched true at init and the viewer's own
+  // progress bar is not observable (viewerReady deliberately latches early
+  // under throttling), so a one-shot startRevealed latch probes residency at
+  // revealLevel(startSceneIdx) -- the same condition that drops a crossing
+  // overlay -- throttled (the probe is O(files)), with an anti-stick frame
+  // cap so neighbours are never held forever.
+  // Gate 2 (gateActiveDone): every pin batch of the active scene is done (it
+  // is resident at its pin depth). While its pins are not queued yet (e.g.
+  // firstFrame has not fired so pinDesired skips scene 0), the same anti-
+  // stick cap bounds the hold. There is deliberately NO cap on a queued-and-
+  // loading active scene: on a slow network it may legitimately take minutes,
+  // and that is exactly when neighbours' fine levels must wait.
+  // Gates recompute at most once per frame (dfFrame-stamped) and ONLY while a
+  // pump asks, so gate work stops with the pumps -- steady-state per-frame
+  // cost stays zero. The closed->open transition of gate 2 fires the deferred
+  // distance-2 warming (warmedScenes dedups against pinDesired's own call).
+  var startSceneIdx = data.portalStart || 0;
+  var startRevealed = false;      // one-shot: start scene revealed at startup
+  var startRevealFrames = 0;      // frames observed while unlatched (cap clock)
+  var gateRevealed = false;       // gate 1, valid for gateFrame
+  var gateActiveDone = false;     // gate 2, valid for gateFrame
+  var gateStuckFrames = 0;        // frames with active pins not queued (cap clock)
+  var gateFrame = -1;             // dfFrame the gates were last computed for
+  var REVEAL_PROBE_EVERY = 15;    // start-reveal probe cadence while unlatched
+  function refreshGates() {
+    if (gateFrame === dfFrame) { return; }
+    gateFrame = dfFrame;
+    if (!startRevealed) {
+      if (!streaming || !octrees[startSceneIdx]) {
+        startRevealed = true;     // SOG start (no octree to probe): the viewer's own bar handles it
+      } else {
+        startRevealFrames++;
+        if (startRevealFrames > LOADING_MAX_FRAMES) {
+          startRevealed = true;
+          console.info('[portals] start-reveal gate opened via cap');
+        } else if (startRevealFrames % REVEAL_PROBE_EVERY === 0 && sceneRevealResident(startSceneIdx)) {
+          startRevealed = true;
+          console.info('[portals] start-reveal gate opened via residency');
+        }
+      }
+    }
+    gateRevealed = (activeIndex !== startSceneIdx || startRevealed) && !!shown[activeIndex];
+    var wasDone = gateActiveDone;
+    var batches = pinBatches[activeIndex] || [];
+    if (!octrees[activeIndex]) {
+      gateActiveDone = true;      // SOG active: no batches to wait for
+      gateStuckFrames = 0;
+    } else if (pinnedScenes[activeIndex] && batches.length) {
+      gateStuckFrames = 0;
+      var done = true;
+      for (var i = 0; i < batches.length; i++) { if (!batches[i].done) { done = false; break; } }
+      gateActiveDone = done;
+    } else {
+      gateStuckFrames++;
+      gateActiveDone = gateStuckFrames > LOADING_MAX_FRAMES;
+    }
+    if (!wasDone && gateActiveDone && pinReady) { warmFrontier(residentScenes()); }
   }
 
   // Per-scene pin pump: walk the scene's batches strictly in order (level-major,
@@ -1244,6 +1331,18 @@ const companionRuntime = `
       for (var b = 0; b < batches.length; b++) {
         var bt = batches[b];
         if (bt.done) { continue; }
+        // Active-scene-first priority: a non-active batch may be held until
+        // the active scene is revealed / resident at its pin depth. Strict
+        // batch order means holding this batch holds everything finer too;
+        // spin (rAF below) exactly like the crossing yield above.
+        if (idx !== activeIndex) {
+          refreshGates();
+          if (!pinBatchAllowed(bt.level, idx, activeIndex, pinDepth[activeIndex], deviceFinest,
+            (octree.lodLevels ? octree.lodLevels - 1 : 0), gateRevealed, gateActiveDone)) {
+            allDone = false;
+            break;
+          }
+        }
         var j = 0;
         while (j < bt.remaining.length) {
           if (octree.getFileResource(bt.remaining[j])) {
@@ -1262,7 +1361,11 @@ const companionRuntime = `
         allDone = false;
         break;   // strict order: don't start a finer batch before this one is resident
       }
-      if (allDone) { pinPumping[idx] = false; return; }
+      if (allDone) {
+        if (idx === activeIndex) { gateFrame = -1; refreshGates(); }   // catch the gate-2 transition (fires deferred warming) even if no held pump remains
+        pinPumping[idx] = false;
+        return;
+      }
       requestAnimationFrame(pump);
     })();
   }
@@ -1439,8 +1542,13 @@ const companionRuntime = `
       }
     }
     // Warm here (not in reconcileFrontier): pinDesired runs once deviceFinest
-    // has settled, so streaming scenes warm at the depth a future pin will fetch.
-    warmFrontier(want);
+    // has settled, so streaming scenes warm at the depth a future pin will
+    // fetch. Deferred behind gate 2 (active scene resident at its pin depth):
+    // distance-2 warming is the lowest-value traffic and must never compete
+    // with the scene on screen. When gate 2 is still closed here, refreshGates
+    // fires the warming on its closed->open transition instead.
+    refreshGates();
+    if (gateActiveDone) { warmFrontier(want); }
   }
 
   // Load scene idx's gsplat asset and create its (disabled unless active)
