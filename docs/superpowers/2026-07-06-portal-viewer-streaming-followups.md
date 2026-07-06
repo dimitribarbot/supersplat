@@ -67,3 +67,24 @@ finestFullLevel, hold, pumpFloor). Also worth a comment there: that path clears 
 while the scene is on screen, which is deliberate (residency just degraded; the next crossing
 should re-probe). While there, consider a single-pass finestFullLevel (per-level counts like
 residencySummary) — the current form is O(files x levels) per rAF during a descent.
+
+## 5. R-reset after exiting walkthrough autoplay returns to the walkthrough pose (from plan-#6 E2E)
+
+Observed (2026-07-06, plan-#6 frame-cost E2E; reproduced on a PRE-branch export, so pre-existing
+on main — NOT a perf-branch regression): the viewer starts with the walkthrough (animation) in
+autoplay; starting to walk exits the walkthrough into free navigation. Pressing R then returns the
+camera to where the user was IN the walkthrough (sometimes a different orbit position), not to the
+scene's initial position. Pressing R while the walkthrough is still running works as expected
+(back to the scene initial position).
+
+Not yet root-caused. The companion's own reset handling is scene-selection only (the
+`inputEvent`/`reset` listener switches back to the start scene and clears `lastSafe`); the camera
+POSE on reset is owned by the stock supersplat-viewer, so the suspect is the viewer's reset
+semantics interacting with cameraMode: reset in anim mode restarts the path (correct), while reset
+in free-nav after an anim→fnav hand-off appears to restore an anim-derived pose (the cursor's
+last pose, or an orbit pose captured at the hand-off) instead of the initial camera. Investigate
+in the viewer state handling (`getState().cameraMode`, animationTime, and whatever pose the reset
+event restores), not in the companion. The "sometimes another orbit position" variant suggests the
+restored pose depends on which controller (anim/orbit/fly) was active when the pose snapshot was
+taken. Decide desired behavior with the user first: R always returns to the scene's initial spawn
+pose, regardless of how the walkthrough was exited, is the stated expectation.
