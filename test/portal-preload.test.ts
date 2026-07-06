@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -506,5 +506,36 @@ describe('startSceneLodFloor', () => {
     it('treats a negative observed finest as 0', () => {
         expect(startSceneLodFloor(1, -2)).toBe(1);
         expect(startSceneLodFloor(0, -2)).toBeNull();
+    });
+});
+
+describe('shouldSampleDeviceFinest', () => {
+    it('samples every frame during the initial settle window', () => {
+        expect(shouldSampleDeviceFinest(0, null, 0, false)).toBe(true);
+        expect(shouldSampleDeviceFinest(1, 3, 1, false)).toBe(true);
+        expect(shouldSampleDeviceFinest(599, 2, 599, false)).toBe(true);
+    });
+
+    it('backs off to every 30th frame after the settle window', () => {
+        expect(shouldSampleDeviceFinest(600, 2, 0, false)).toBe(true);   // 600 % 30 === 0
+        expect(shouldSampleDeviceFinest(601, 2, 1, false)).toBe(false);
+        expect(shouldSampleDeviceFinest(629, 2, 29, false)).toBe(false);
+        expect(shouldSampleDeviceFinest(630, 2, 30, false)).toBe(true);
+    });
+
+    it('stops permanently once the finest possible level (0) is reached', () => {
+        expect(shouldSampleDeviceFinest(10, 0, 0, false)).toBe(false);   // even inside the settle window
+        expect(shouldSampleDeviceFinest(900, 0, 500, true)).toBe(false);
+    });
+
+    it('stops once stable for 600 frames AND the first pin cycle has consumed it', () => {
+        expect(shouldSampleDeviceFinest(1200, 2, 600, true)).toBe(false);
+        expect(shouldSampleDeviceFinest(1200, 2, 600, false)).toBe(true);  // pin not consumed -> keep sampling (1200 % 30 === 0)
+        expect(shouldSampleDeviceFinest(1200, 2, 599, true)).toBe(true);   // not yet stable long enough
+    });
+
+    it('keeps sampling while deviceFinest is still unknown (null)', () => {
+        expect(shouldSampleDeviceFinest(1200, null, 600, true)).toBe(true); // 1200 % 30 === 0
+        expect(shouldSampleDeviceFinest(1201, null, 601, true)).toBe(false);
     });
 });

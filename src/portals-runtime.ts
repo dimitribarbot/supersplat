@@ -26,9 +26,15 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
         });
     };
 
-    const buildRects = (): PortalRect[] => {
+    // Cached portal rects for the per-frame crossing test. Rebuilt on
+    // walkthrough activation and on portals.changed (fired by every portal
+    // mutation - see fireChanged() call sites in portals.ts) instead of
+    // re-invoking portals.list + re-mapping every prerender frame.
+    let rects: PortalRect[] = [];
+
+    const buildRects = () => {
         const data = events.invoke('portals.list') as PortalData[];
-        return data.map(p => ({
+        rects = data.map(p => ({
             position: p.position,
             rotation: p.rotation,
             width: p.width,
@@ -48,6 +54,7 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
         const start = events.invoke('portals.startSplat') as number | null;
         activeUid = (start !== null && list.some(s => s.uid === start)) ? start : (list[0]?.uid ?? null);
         applyVisibility();
+        buildRects();
     };
 
     const disable = () => {
@@ -80,19 +87,20 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
     });
 
     // Per-frame: scene.ts fires 'prerender' with this.camera.worldTransform (a Mat4).
-    // Mat4.getTranslation() returns the camera's world position as a Vec3.
+    // Mat4.getTranslation(target) writes the camera's world position into the
+    // scratch Vec3 (no per-frame allocation); the two tuples are likewise reused.
+    const curVec = new Vec3();
+    const prevTuple: [number, number, number] = [0, 0, 0];
+    const curTuple: [number, number, number] = [0, 0, 0];
     events.on('prerender', (cameraWorldTransform: Mat4) => {
         if (!active) {
             return;
         }
-        const cur = cameraWorldTransform.getTranslation();
+        const cur = cameraWorldTransform.getTranslation(curVec);
         if (havePrev) {
-            const newUid = resolveActiveSplat(
-                [prev.x, prev.y, prev.z],
-                [cur.x, cur.y, cur.z],
-                buildRects(),
-                activeUid
-            );
+            prevTuple[0] = prev.x; prevTuple[1] = prev.y; prevTuple[2] = prev.z;
+            curTuple[0] = cur.x; curTuple[1] = cur.y; curTuple[2] = cur.z;
+            const newUid = resolveActiveSplat(prevTuple, curTuple, rects, activeUid);
             if (newUid !== activeUid) {
                 activeUid = newUid;
                 applyVisibility();
@@ -102,8 +110,16 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
         havePrev = true;
     });
 
-    // If walkthrough is on and all portals get deleted, leaving it on is fine;
-    // exiting is the panel toggle's job. Nothing to do on portals.changed here.
+    // Keep the cached rects in sync with portal mutations while walkthrough is
+    // on (add/remove/update/setStart/entrypoint/clear/deserialize all fire
+    // portals.changed). When walkthrough is off the cache is stale by design;
+    // enable() rebuilds it on activation. If all portals get deleted the empty
+    // cache simply never crosses; exiting is the panel toggle's job.
+    events.on('portals.changed', () => {
+        if (active) {
+            buildRects();
+        }
+    });
 };
 
 export { registerPortalsRuntime };

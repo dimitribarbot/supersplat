@@ -541,4 +541,29 @@ const startSceneLodFloor = (
     return (assignedDepth > Math.max(deviceFinest, 0)) ? assignedDepth : null;
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+// Sampling cadence for the runtime's deviceFinest observation (the running-min
+// finest LOD level the engine has made resident for the start scene). Scanning
+// the octree is O(files) per call, so unconditional per-frame sampling is a
+// steady battery/CPU drain on mobile. Cadence: sample every frame for an
+// initial 600-frame settle window (~10s at 60fps, matching the runtime's other
+// settle caps) while the start scene streams its near detail in; then back off
+// to every 30th frame (~0.5s -- a late ratchet is still caught quickly at 1/30
+// the cost); stop permanently once finest reaches 0 (the engine's finest level:
+// a running-min cannot improve) or once it has been stable for 600 consecutive
+// frames AND the first pin cycle has consumed it (pinConsumed). Pure and
+// self-contained (no imports, no sibling-function calls) so it can be
+// stringified verbatim into the exported viewer runtime via Function.toString().
+const shouldSampleDeviceFinest = (frame: number, finest: number | null, stableFrames: number, pinConsumed: boolean): boolean => {
+    if (finest !== null && finest <= 0) {
+        return false;                    // already at the finest possible level: nothing left to ratchet
+    }
+    if (pinConsumed && finest !== null && stableFrames >= 600) {
+        return false;                    // settled (~10s unchanged) and the first pin cycle used it
+    }
+    if (frame < 600) {
+        return true;                     // initial settle window: sample every frame
+    }
+    return frame % 30 === 0;             // steady state: back off
+};
+
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

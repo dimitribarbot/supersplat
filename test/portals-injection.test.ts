@@ -115,6 +115,9 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('incRefCount');
         expect(out).toContain('buildPortalAdjacency');
         expect(out).toContain('updateDeviceFinest');
+        // the octree scan is throttled+stopped by the pure cadence helper
+        expect(out).toContain('shouldSampleDeviceFinest');
+        expect(out).toContain('sampleDeviceFinest');
     });
 
     it('drives residency from a device budget (selectResidentScenes wired in)', () => {

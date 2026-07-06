@@ -1,7 +1,7 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -70,6 +70,7 @@ const companionRuntime = `
   var collectSogBlockFileUrls = ${collectSogBlockFileUrls.toString()};
   var buildPortalAdjacency = ${buildPortalAdjacency.toString()};
   var desiredResidentScenes = ${desiredResidentScenes.toString()};
+  var shouldSampleDeviceFinest = ${shouldSampleDeviceFinest.toString()};
   var selectResidentScenes = ${selectResidentScenes.toString()};
   var computeResidentCeiling = ${computeResidentCeiling.toString()};
   var assignPinDepths = ${assignPinDepths.toString()};
@@ -89,7 +90,7 @@ const companionRuntime = `
   var assets = [];                          // scene index -> loaded gsplat Asset
   var pinnedFiles = [];                     // scene index -> [octree file indices we incRefCount-ed]
   var pinGen = [];                          // scene index -> pin generation; bumped on unpin to invalidate an in-flight pump
-  var pinBatches = [];                      // scene index -> [{files, markReady, done}] in level-major (coarsest-first) order
+  var pinBatches = [];                      // scene index -> [{remaining, markReady, done}] in level-major (coarsest-first) order; remaining shrinks (swap-remove) as files become resident
   var pinPumping = [];                      // scene index -> a pump rAF loop is active
   var PIN_WAVE = 4;                         // max not-yet-loaded pinned files kept in-flight per scene: the engine's per-scene block loader is a 2-concurrent FIFO, so flooding it with every pinned URL would starve interactive requests (the start scene's initial load + environment, a crossed-into scene's per-view files) behind the whole preload backlog
   var sceneMinLevel = [];                   // scene index -> device-depth level (its reveal lodRangeMin)
@@ -146,7 +147,9 @@ const companionRuntime = `
   // enter the adjacency frontier, fully unloaded when they leave), so a fast
   // crossing into a still-loading SOG scene shows the loading overlay too.
   var streaming = (data.portalScenes || []).some(function (u) { return u && u.indexOf('lod-meta.json') !== -1; });
-  var lastSafe = null;
+  var lastSafe = null;                      // null until primed / cleared on reset; otherwise === lastSafeBuf
+  var lastSafeBuf = [0, 0, 0];              // persistent storage behind lastSafe (no per-frame allocation)
+  var curPos = [0, 0, 0];                   // per-frame scratch for the camera position
   var timeline = data.portalAnimTimeline || null;   // [{t, scene}] sorted ascending; null/absent when no animation
   function getState() {
     var v = window.__supersplatViewer;
@@ -897,12 +900,12 @@ const companionRuntime = `
     // Never let a stray error kill the rAF loop (which would freeze navigation
     // entirely and switching with it); log it once and keep ticking.
     try {
-      updateDeviceFinest();
+      sampleDeviceFinest();
       var viewer = window.__supersplatViewer;
       var cm = viewer && viewer.cameraManager;
       var cam = cm && cm.camera;
       if (cam && cam.position) {
-        var cur = [cam.position.x, cam.position.y, cam.position.z];
+        curPos[0] = cam.position.x; curPos[1] = cam.position.y; curPos[2] = cam.position.z;
         var st = getState();
         // In animation mode the camera is driven by the authored path, so the
         // active scene is a pure function of the cursor time (handles play,
@@ -924,9 +927,10 @@ const companionRuntime = `
           } else if (crossState.mode === 'blocked') {
             dispatch({ type: 'noCrossing' });   // timeline moved back before the target loaded
           }
-          lastSafe = cur;                       // anim mode: keep fresh for the mode hand-off
+          // Copy (never alias curPos) so next frame's fill can't corrupt lastSafe.
+          lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf;   // anim mode: keep fresh for the mode hand-off
         } else if (lastSafe) {
-          var next = resolveActiveSplat(lastSafe, cur, rects, activeIndex, segmentCrossesRect);
+          var next = resolveActiveSplat(lastSafe, curPos, rects, activeIndex, segmentCrossesRect);
           if (next !== activeIndex && next !== null) {
             dispatch({ type: 'crossing', target: next, loaded: !!(entities[next] || sceneLoading[next]), ready: sceneReady(next) });
           } else if (crossState.mode === 'blocked') {
@@ -934,9 +938,9 @@ const companionRuntime = `
           }
           // Freeze lastSafe while blocked so the pending crossing keeps firing;
           // advance it normally otherwise.
-          if (crossState.mode !== 'blocked') { lastSafe = cur; }
+          if (crossState.mode !== 'blocked') { lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf; }
         } else {
-          lastSafe = cur;
+          lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf;
         }
       }
     } catch (err) {
@@ -1141,6 +1145,20 @@ const companionRuntime = `
     if (best !== null && (deviceFinest === null || best < deviceFinest)) { deviceFinest = best; }
   }
 
+  // Gate the O(files) octree scan behind the pure cadence helper: full rate
+  // during the settle window, then throttled, then stopped once settled/consumed
+  // (see shouldSampleDeviceFinest). pinWhenBudgetReady's bounded pre-pinReady
+  // poll still calls updateDeviceFinest directly (it self-terminates and needs
+  // per-frame freshness for its own stability check).
+  var dfFrame = 0;    // frames since the runtime started ticking (sampling clock)
+  var dfStable = 0;   // frames since deviceFinest last ratcheted
+  function sampleDeviceFinest() {
+    if (!shouldSampleDeviceFinest(dfFrame++, deviceFinest, dfStable, pinReady)) { dfStable++; return; }
+    var before = deviceFinest;
+    updateDeviceFinest();
+    dfStable = (deviceFinest === before) ? dfStable + 1 : 0;
+  }
+
   function deviceMinLevel(idx) {
     // Pin adjacent scenes down to the finest level the device actually renders
     // (observed via deviceFinest), CLAMPED to this scene's own coarsest level --
@@ -1188,7 +1206,7 @@ const companionRuntime = `
       }
     }
     if (!pinBatches[idx]) { pinBatches[idx] = []; }
-    pinBatches[idx].push({ files: batch, markReady: !!markReady, done: false });
+    pinBatches[idx].push({ remaining: batch, markReady: !!markReady, done: false });
     pumpPins(idx);
   }
 
@@ -1200,7 +1218,13 @@ const companionRuntime = `
   // batch flagged markReady marks the scene ready (drops a pending overlay).
   // While a crossing is loading (pendingIndex), pumps of the OTHER scenes yield
   // so the destination scene gets the bandwidth. A reclaim bumps pinGen and the
-  // pump exits (pinBatches was cleared).
+  // pump exits (pinBatches was cleared). Each batch's remaining set tracks
+  // only its not-yet-resident files, swap-removed as they arrive, so per-frame
+  // work shrinks to zero as loading completes. Re-polling a not-yet-resident
+  // file is load-bearing: ensureFileResource is what migrates an arrived
+  // resource into the octree's resident map (getFileResource reads that map);
+  // a resident pinned file never regresses while our incRefCount pin is held,
+  // so it never needs re-polling once removed from the remaining set.
   function pumpPins(idx) {
     if (pinPumping[idx]) { return; }
     pinPumping[idx] = true;
@@ -1220,14 +1244,17 @@ const companionRuntime = `
       for (var b = 0; b < batches.length; b++) {
         var bt = batches[b];
         if (bt.done) { continue; }
-        var missing = 0;
-        for (var j = 0; j < bt.files.length; j++) {
-          if (!octree.getFileResource(bt.files[j])) {
-            missing++;
-            if (inflight < PIN_WAVE) { octree.ensureFileResource(bt.files[j]); inflight++; }
+        var j = 0;
+        while (j < bt.remaining.length) {
+          if (octree.getFileResource(bt.remaining[j])) {
+            bt.remaining[j] = bt.remaining[bt.remaining.length - 1];   // swap-remove; order within a level is irrelevant
+            bt.remaining.pop();
+          } else {
+            if (inflight < PIN_WAVE) { octree.ensureFileResource(bt.remaining[j]); inflight++; }
+            j++;
           }
         }
-        if (missing === 0) {
+        if (bt.remaining.length === 0) {
           bt.done = true;
           if (bt.markReady) { readyScenes[idx] = true; }
           continue;

@@ -67,6 +67,23 @@ describe('segmentCrossesRect', () => {
         const all = rect({ infinite: { top: true, right: true, bottom: true, left: true } });
         expect(segmentCrossesRect([100, -100, -1], [100, -100, 1], all)).toEqual({ side: 'front', t: 0.5 });
     });
+
+    it('a segment starting exactly on the plane crosses at t = 0', () => {
+        const c = segmentCrossesRect([0, 0, 0], [0, 0, 1], rect());
+        expect(c?.side).toBe('front');
+        expect(c?.t).toBeCloseTo(0);   // az = 0 -> t is -0; toBeCloseTo treats -0 as 0
+    });
+
+    it('returns null when both endpoints lie on the plane', () => {
+        expect(segmentCrossesRect([0, 0, 0], [1, 1, 0], rect())).toBeNull();
+    });
+
+    it('an off-center rotated portal detects the crossing (position + rotation combined)', () => {
+        const r = rect({ position: [5, 0, 0], rotation: [0, 0.7071067811865476, 0, 0.7071067811865476] });
+        const c = segmentCrossesRect([4, 0, 0], [6, 0, 0], r);
+        expect(c?.side).toBe('front');
+        expect(c?.t).toBeCloseTo(0.5);
+    });
 });
 
 describe('resolveActiveSplat', () => {
@@ -83,5 +100,19 @@ describe('resolveActiveSplat', () => {
         const b = rect({ position: [0, 0, 5], frontUid: 30, backUid: 40 });
         // segment from z=-1 to z=6 crosses A (t~0.14) then B (t~0.86)
         expect(resolveActiveSplat([0, 0, -1], [0, 0, 6], [a, b], 20)).toBe(30);
+    });
+
+    it('a crossing into a null-bound side leaves the active scene unchanged', () => {
+        expect(resolveActiveSplat([0, 0, -1], [0, 0, 1], [rect({ frontUid: null })], 20)).toBe(20);
+    });
+
+    it('returns the current uid for an empty portal list', () => {
+        expect(resolveActiveSplat([0, 0, -1], [0, 0, 1], [], 20)).toBe(20);
+    });
+
+    it('a null-bound crossing between two real crossings does not erase the earlier one', () => {
+        const a = rect({ position: [0, 0, 0], frontUid: 10, backUid: 20 });
+        const b = rect({ position: [0, 0, 3], frontUid: null, backUid: null });
+        expect(resolveActiveSplat([0, 0, -1], [0, 0, 4], [a, b], 20)).toBe(10);
     });
 });
