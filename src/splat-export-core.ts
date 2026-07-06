@@ -508,8 +508,29 @@ const writePortalScene = async (
     const base = `scenes/${index}`;
     const sub = new MemoryFileSystem();
     let levelCounts: number[] = [];
+    // Voxelize first, on the pristine full-resolution table, before the streaming
+    // LOD build consumes it (buildStreamingLodTable tags rows with a synthetic
+    // `lod` column). This mirrors the primary scene's collision→LOD order so
+    // every scene's progress reads consistently, and lets the LOD build reuse the
+    // original table instead of a full clone. writeCollisionVoxel does not mutate
+    // its input, so the subsequent LOD/SOG build still sees clean data.
+    if (scene.collisionUrl) {
+        onPhase?.(PHASES.generatingCollision(), false);
+        // Synthesise a minimal settings object that places the seed at cameras[0].initial.position
+        // so collisionSeedFromSettings picks it up for the per-scene voxel.
+        const fakeSettings = { cameras: [{ initial: { position: scene.seed } }] };
+        await writeCollisionVoxel(sub, scene.dataTable, fakeSettings, createDevice, { environment: scene.environment, radius, voxelSize });
+        // writeCollisionVoxel emits index.voxel.json / index.voxel.bin — rename to scene.voxel.*
+        for (const name of ['index.voxel.json', 'index.voxel.bin']) {
+            const data = sub.results.get(name);
+            if (data) {
+                sub.results.set(name.replace('index.', 'scene.'), data);
+                sub.results.delete(name);
+            }
+        }
+    }
     if (scene.streaming) {
-        const { table: lodTable, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable.clone(), createDevice, (info) => {
+        const { table: lodTable, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable, createDevice, (info) => {
             onPhase?.(info, false);   // decimation passes carry their level in the label
         });
         levelCounts = counts;
@@ -525,21 +546,6 @@ const writePortalScene = async (
         }, sub);
     } else {
         await writeSog({ filename: 'scene.sog', dataTable: scene.dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' }, sub);
-    }
-    if (scene.collisionUrl) {
-        onPhase?.(PHASES.generatingCollision(), false);
-        // Synthesise a minimal settings object that places the seed at cameras[0].initial.position
-        // so collisionSeedFromSettings picks it up for the per-scene voxel.
-        const fakeSettings = { cameras: [{ initial: { position: scene.seed } }] };
-        await writeCollisionVoxel(sub, scene.dataTable, fakeSettings, createDevice, { environment: scene.environment, radius, voxelSize });
-        // writeCollisionVoxel emits index.voxel.json / index.voxel.bin — rename to scene.voxel.*
-        for (const name of ['index.voxel.json', 'index.voxel.bin']) {
-            const data = sub.results.get(name);
-            if (data) {
-                sub.results.set(name.replace('index.', 'scene.'), data);
-                sub.results.delete(name);
-            }
-        }
     }
     // Namespace every emitted key under scenes/<index>/
     for (const [name, data] of sub.results.entries()) {
