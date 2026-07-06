@@ -8,6 +8,7 @@ import { runServerExport } from './export-server-client';
 import { BrowserFileSystem, MappedReadFileSystem } from './io';
 import { collisionSeedTuple, resolvePortalExtras } from './portal-export';
 import { buildPortalUpload } from './portal-upload';
+import { firstWalkthroughPose } from './poster-pose';
 import { Scene } from './scene';
 import { Splat } from './splat';
 import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeViewer, serializeViewerSettings, SogSettings, ViewerExportSettings } from './splat-serialize';
@@ -561,13 +562,17 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             return;
         }
 
-        // Viewer exports carry a load-time poster: a screenshot of the current
-        // view (== the export's start pose) rendered against the export
-        // background. Rendered once here so the local, server and package
-        // paths all ship it. null (render failure) => solid-color cover.
+        // Viewer exports carry a load-time poster rendered against the export
+        // background: the walkthrough's first frame when an animation is
+        // included (startMode 'animTrack' — matches what the viewer opens on),
+        // else the current view (== the export's start pose). Rendered once
+        // here so the local, server and package paths all ship it. null
+        // (render failure) => solid-color cover.
         if (exportType === 'viewer' && options.viewerExportSettings) {
-            const bg = (options.viewerExportSettings.experienceSettings?.background?.color ?? [0, 0, 0]) as [number, number, number];
-            const poster = await events.invoke('render.poster', 1920, 1080, bg) as Uint8Array | null;
+            const es = options.viewerExportSettings.experienceSettings;
+            const bg = (es?.background?.color ?? [0, 0, 0]) as [number, number, number];
+            const pose = firstWalkthroughPose(es);
+            const poster = await events.invoke('render.poster', 1920, 1080, bg, pose) as Uint8Array | null;
             if (poster) {
                 options.viewerExportSettings.poster = poster;
             }

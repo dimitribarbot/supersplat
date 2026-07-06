@@ -4,6 +4,7 @@ import { Color, path, Vec3 } from 'playcanvas';
 import { ElementType } from './element';
 import { Events } from './events';
 import { PngCompressor } from './png-compressor';
+import type { PosterPose } from './poster-pose';
 import { Scene } from './scene';
 import { Splat } from './splat';
 import { i18n } from './ui/localization';
@@ -116,13 +117,59 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
         }
     });
 
-    // Render a poster JPEG of the current view for the exported viewer's
-    // load-time cover (stock poster path: blurred while streaming, canvas
-    // revealed at `loaded`). bgColor is the EXPORT's background ([r,g,b]
-    // floats), not the editor background. Returns null on any failure so the
-    // export falls back to the solid-color cover rather than aborting.
-    events.function('render.poster', async (width: number, height: number, bgColor: [number, number, number]): Promise<Uint8Array | null> => {
+    // Render a poster JPEG for the exported viewer's load-time cover (stock
+    // poster path: blurred while streaming, canvas revealed at `loaded`).
+    // Renders the given `pose` (the walkthrough's first frame) when provided,
+    // else the current view; the live camera is snapshotted and restored either
+    // way. bgColor is the EXPORT's background ([r,g,b] floats), not the editor
+    // background. Returns null on any failure so the export falls back to the
+    // solid-color cover rather than aborting.
+    events.function('render.poster', async (width: number, height: number, bgColor: [number, number, number], pose?: PosterPose | null): Promise<Uint8Array | null> => {
+        // Snapshot the live editor camera so we can restore it after rendering
+        // from the walkthrough's first frame. null => render the current view
+        // (no walkthrough: unchanged behavior).
+        const saved = pose ? events.invoke('camera.getPose') : null;
+
+        // Sort every visible splat for the current camera and wait for the async
+        // sorter to finish. The gsplat depth sort is camera-relative; after a
+        // camera move the previous sort is stale and a single render composites
+        // splats in the wrong front-to-back order (smeared reflections, soft
+        // edges). Mirrors the per-frame sort in render.video.
+        const sortVisibleSplats = () => {
+            const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
+            return Promise.all(splats.map(splat => new Promise<void>((resolve) => {
+                // Guard: a splat without a live sorter can't be sorted, and this
+                // runs inside the finally teardown where a throw would skip the
+                // lockedRenderMode reset (below) and freeze the editor.
+                const instance = splat.entity?.gsplat?.instance;
+                if (!instance?.sorter) {
+                    resolve();
+                    return;
+                }
+                instance.sorter.once('updated', () => resolve());
+                instance.sort(scene.camera.mainCamera);
+                setTimeout(resolve, 1000);
+            })));
+        };
+
         try {
+            // Move to the walkthrough first-frame pose. Set directly on the
+            // camera (NOT via the camera.setPose event) so the editor's fov
+            // slider / camera UI don't flash to the walkthrough pose during the
+            // multi-second export — the event fires camera.fov, which the view
+            // panel binds to. This mirrors how the video export moves the camera
+            // without touching the editor UI. fov before setPose so the distance
+            // uses the new fovFactor; startOffscreenMode's onUpdate(0) snaps the
+            // 0-damping tween before the render.
+            if (pose) {
+                scene.camera.fov = pose.fov;
+                scene.camera.setPose(
+                    new Vec3(pose.position[0], pose.position[1], pose.position[2]),
+                    new Vec3(pose.target[0], pose.target[1], pose.target[2]),
+                    0
+                );
+            }
+
             // offscreen render of the current camera view, editor aids hidden
             scene.camera.startOffscreenMode(width, height);
             scene.camera.renderOverlays = false;
@@ -130,7 +177,23 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             scene.gizmoLayer.enabled = false;
             scene.camera.clearPass.setClearColor(new Color(bgColor[0], bgColor[1], bgColor[2], 1));
 
-            scene.forceRender = true;
+            // Suppress the normal render loop's auto-present. Moving the camera
+            // changes the serialized scene state, which in normal mode sets
+            // app.renderNextFrame (scene.ts) and presents ONE on-screen frame at
+            // the walkthrough pose — a visible blink of the editor view. Locked
+            // mode presents only on an explicit lockedRender, so the camera move
+            // never reaches the screen. Same pattern the video export uses.
+            scene.lockedRenderMode = true;
+
+            // Re-sort for the walkthrough camera before capturing. Only when the
+            // camera moved (a pose was given); the current-view path already has
+            // a valid sort.
+            if (pose) {
+                await sortVisibleSplats();
+            }
+
+            // Request exactly one (offscreen) render for the capture.
+            scene.lockedRender = true;
             await postRender();
 
             const data = new Uint8Array(width * height * 4);
@@ -161,6 +224,39 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             scene.offLimitsLayer.enabled = true;
             scene.gizmoLayer.enabled = true;
             scene.camera.clearPass.setClearColor(nullClr);
+
+            // Restore the editor camera to where the user left it — directly
+            // (not via the event) for the same no-UI-flash reason, and snap the
+            // tween now with onUpdate(0) so the resumed on-screen render never
+            // shows the walkthrough pose. Wrapped so a failure here can never
+            // skip the lockedRenderMode reset below (which would freeze the
+            // editor's on-screen rendering).
+            try {
+                if (saved) {
+                    scene.camera.fov = saved.fov;
+                    scene.camera.setPose(
+                        new Vec3(saved.position.x, saved.position.y, saved.position.z),
+                        new Vec3(saved.target.x, saved.target.y, saved.target.z),
+                        0
+                    );
+                    scene.camera.onUpdate(0);
+
+                    // The capture sorted the splats for the walkthrough camera.
+                    // Re-sort for the restored editor camera BEFORE releasing the
+                    // render loop, so the single frame we present isn't the editor
+                    // view carrying the walkthrough's splat order (a one-frame
+                    // blobby blink). Still under lockedRenderMode here, so nothing
+                    // presents while we wait.
+                    await sortVisibleSplats();
+                }
+            } catch (restoreError) {
+                console.warn('poster camera restore failed:', restoreError);
+            }
+
+            // Hand back to the normal render loop and present one clean frame at
+            // the restored pose. Unconditional: never leave lockedRenderMode set.
+            scene.lockedRenderMode = false;
+            scene.forceRender = true;
         }
     });
 
