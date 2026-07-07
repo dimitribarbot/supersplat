@@ -1,7 +1,7 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, parseBudgetParam } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -79,6 +79,7 @@ const companionRuntime = `
   var startSceneLodFloor = ${startSceneLodFloor.toString()};
   var pinBatchAllowed = ${pinBatchAllowed.toString()};
   var parseBudgetParam = ${parseBudgetParam.toString()};
+  var computeRevealLevel = ${computeRevealLevel.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
@@ -297,28 +298,25 @@ const companionRuntime = `
   function hideLoading() { lBackdrop.classList.remove('active'); }
 
   // The LOD level a crossing's loading overlay waits for -- the "coarsest
-  // acceptable" quality: the assigned pin depth when that is genuinely
-  // coarser (budget-degraded devices), otherwise REVEAL_MARGIN levels above
-  // the scene's coarsest. On desktop the pin depth is the FULL pyramid
-  // (deviceFinest=0), which takes minutes on a slow network; the overlay
-  // instead reveals at the same near-coarse quality the viewer's own initial
-  // loading bar accepts for the start scene, and the engine refines in view
-  // afterwards (the final pin depth is unchanged; only the overlay gate and
-  // the temporary streaming floor below read this).
+  // acceptable" quality: normally the finest level THIS device loads
+  // (deviceFinest, clamped to the scene coarsest), or REVEAL_MARGIN levels
+  // above the scene's coarsest before deviceFinest is known. On desktop the
+  // pin depth is the FULL pyramid (deviceFinest=0), which takes minutes on a
+  // slow network; the overlay instead reveals at the same near-coarse
+  // quality the viewer's own initial loading bar accepts for the start
+  // scene, and the engine refines in view afterwards (the final pin depth
+  // is unchanged; only the overlay gate and the temporary streaming floor
+  // below read this).
   var REVEAL_MARGIN = 2;   // reveal at most this many levels finer than coarsest
   function revealLevel(idx) {
     var oc = octrees[idx];
     var coarse = (oc && oc.lodLevels) ? oc.lodLevels - 1 : 0;
-    var acceptable = Math.max(coarse - REVEAL_MARGIN, 0);
-    // Only the ASSIGNED pin depth may RAISE the gate above the margin: a
-    // budget-degraded pin never loads finer blocks, so waiting for them
-    // would stick the overlay. The early-session fallbacks must NOT raise
-    // it -- sceneMinLevel is initialised at COARSEST by loadScene while
-    // deviceFinest is still unknown, and gating there passes on a handful
-    // of tiny coarse files (field case: Fast 4G crossing right after the
-    // start scene's bar revealed a scene of blobs with no overlay at all).
-    var pin = pinDepth[idx];
-    return (pin != null && pin > acceptable) ? pin : acceptable;
+    // Target the finest level this DEVICE loads for the scene, not a stale coarse
+    // NEIGHBOUR pin: a scene crossed into is re-pinned to the active (fine) depth,
+    // so its pre-crossing coarse pin must not raise the gate and reveal it at the
+    // coarsest with no overlay. computeRevealLevel keeps the original stuck-overlay
+    // guard for a genuinely-active, legitimately budget-degraded scene.
+    return computeRevealLevel(coarse, REVEAL_MARGIN, deviceFinest, idx === activeIndex, pinReady, pinDepth[idx]);
   }
   // True when EVERY octree file of scene idx at levels [revealLevel ..
   // coarsest] has a resident (decoded) resource -- the scene is showable at

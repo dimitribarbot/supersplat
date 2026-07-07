@@ -622,6 +622,37 @@ const shouldSampleDeviceFinest = (frame: number, finest: number | null, stableFr
     return frame % 30 === 0;             // steady state: back off
 };
 
+// Reveal gate: the coarsest LOD level a crossing/reveal accepts as "showable".
+//   acceptable = near-coarse floor (coarsest - revealMargin)
+//   target     = finest level THIS device loads for the scene (deviceFinest clamped
+//                to the scene coarsest); the near-coarse acceptable until deviceFinest
+//                is known. Deliberately NOT the current pinDepth -- for a scene being
+//                crossed into, pinDepth is the stale coarse NEIGHBOUR depth and would
+//                reveal it at the coarsest with no overlay.
+//   guard      : only a genuinely-active, legitimately-degraded scene (hard-budget
+//                last resort, pin coarser than the device target) may raise the gate to
+//                its fresh pin, so the overlay does not stick waiting for levels it will
+//                never load.
+// Pure and self-contained (only args + Math) so it stringifies verbatim into the
+// exported viewer runtime via Function.toString().
+const computeRevealLevel = (
+    coarse: number,
+    revealMargin: number,
+    deviceFinest: number | null,
+    isActive: boolean,
+    pinReady: boolean,
+    pinDepth: number | null
+): number => {
+    const acceptable = Math.max(coarse - revealMargin, 0);
+    let target = (deviceFinest !== null && deviceFinest !== undefined) ?
+        Math.min(deviceFinest, coarse) :
+        acceptable;
+    if (isActive && pinReady && pinDepth !== null && pinDepth !== undefined && pinDepth > target) {
+        target = pinDepth;
+    }
+    return Math.max(acceptable, target);
+};
+
 // Parse the stock viewer's ?budget=<n> URL override into a splat count, matching
 // the viewer's own semantics (splatBudget = Number(param) * 1_000_000, used only
 // when > 0). Returns 0 when the param is absent or invalid so callers fall back
@@ -654,4 +685,4 @@ const parseBudgetParam = (search: string): number => {
     }
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, parseBudgetParam, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

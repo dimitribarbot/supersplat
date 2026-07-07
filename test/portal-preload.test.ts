@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, parseBudgetParam } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -593,6 +593,36 @@ describe('pinBatchAllowed', () => {
     it('treats undefined thresholds like null', () => {
         expect(pinBatchAllowed(3, 1, 0, undefined, undefined, 3, true, false)).toBe(true);
         expect(pinBatchAllowed(2, 1, 0, undefined, undefined, 3, true, false)).toBe(false);
+    });
+});
+
+describe('computeRevealLevel', () => {
+    // coarse=3, revealMargin=2 -> acceptable = max(3-2, 0) = 1
+    it('capable device (deviceFinest 0): near-coarse acceptable, ignoring a stale coarse neighbour pin', () => {
+        expect(computeRevealLevel(3, 2, 0, false, true, 3)).toBe(1);   // stale neighbour pin=3 must NOT raise
+    });
+    it('low-end device: clamps the target up to the finest the device loads', () => {
+        expect(computeRevealLevel(3, 2, 2, false, true, 3)).toBe(2);   // max(acceptable 1, min(deviceFinest 2, coarse 3))
+    });
+    it('active + legitimately degraded: the fresh pin may raise the gate (no stuck overlay)', () => {
+        expect(computeRevealLevel(3, 2, 0, true, true, 3)).toBe(3);    // isActive && pinReady && pin 3 > target 0
+    });
+    it('active but pin not coarser than the device target: pin does not lower the gate', () => {
+        expect(computeRevealLevel(3, 2, 0, true, true, 0)).toBe(1);    // pin 0 !> target 0 -> acceptable 1
+    });
+    it('active but pinReady false: pin is not yet trustworthy, use the device target', () => {
+        expect(computeRevealLevel(3, 2, 0, true, false, 3)).toBe(1);
+    });
+    it('deviceFinest unknown: falls back to the acceptable level, not the coarsest', () => {
+        expect(computeRevealLevel(3, 2, null, false, true, 3)).toBe(1);
+        expect(computeRevealLevel(3, 2, undefined as any, false, true, 3)).toBe(1);
+    });
+    it('scene with fewer levels than deviceFinest: target clamps to the scene coarsest', () => {
+        // coarse=1 -> acceptable = max(1-2, 0) = 0; deviceFinest 2 clamps to 1
+        expect(computeRevealLevel(1, 2, 2, false, true, null)).toBe(1);
+    });
+    it('null pin on a non-active scene: just the device target', () => {
+        expect(computeRevealLevel(3, 2, 0, false, true, null)).toBe(1);
     });
 });
 

@@ -200,11 +200,10 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('sceneRevealResident');
         // the old coarsest-level-only gate is gone (it revealed mixed quality)
         expect(out).not.toContain('sceneCoarseResident');
-        // gate depth: only an ASSIGNED pin depth (budget-degraded devices,
-        // which never load finer blocks) may raise the gate; the early-session
-        // sceneMinLevel placeholder (coarsest until deviceFinest is observed)
-        // must not
-        expect(out).toContain('pin != null && pin > acceptable');
+        // gate depth resolution (device-finest target, active+ready pin as last
+        // resort) is delegated to the pure, separately unit-tested computeRevealLevel
+        expect(out).toContain('computeRevealLevel');
+        expect(out).toContain('computeRevealLevel(coarse, REVEAL_MARGIN, deviceFinest, idx === activeIndex, pinReady, pinDepth[idx])');
         // the anti-stick caps survive as the overlay's only other exits
         expect(out).toContain('LOADING_MAX_FRAMES');
     });
@@ -336,14 +335,15 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('applySceneFloor');
     });
 
-    it('an unassigned pin depth gates at the acceptable margin, not the coarsest placeholder', () => {
+    it('revealLevel passes the per-scene pin depth (not a stale placeholder) to computeRevealLevel', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
             portalScenes: ['', 'scenes/1/lod-meta.json'],
             portalStart: 0
         });
-        // only a genuinely ASSIGNED pin depth may raise the gate above the margin
-        expect(out).toContain('pin != null && pin > acceptable');
+        // whether an unassigned pin may raise the gate above the margin is now
+        // computeRevealLevel's own, separately unit-tested contract
+        expect(out).toContain('computeRevealLevel(coarse, REVEAL_MARGIN, deviceFinest, idx === activeIndex, pinReady, pinDepth[idx])');
     });
 
     it('a crossed-into scene renders at the finest FULLY resident level, opening as levels complete', () => {
