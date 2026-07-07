@@ -248,6 +248,7 @@
     "popup.export.exporting-on-server": "Exporting on server",
     "export.progress.exporting-streaming": "ストリーミングビューアーをエクスポート中",
     "export.progress.exporting-sog": "SOG をエクスポート中",
+    "export.progress.exporting-spz": "SPZ をエクスポート中",
     "export.progress.exporting-html": "HTML をエクスポート中",
     "export.progress.estimated-entrypoint": "シーン {{scene}}: 推定された衝突エントリーポイントを使用しています — 衝突が正しくない場合はポータルパネルで設定してください。",
     "export.progress.scene": "シーン {{index}}/{{total}}",

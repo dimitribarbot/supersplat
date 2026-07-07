@@ -248,6 +248,7 @@
     "popup.export.exporting-on-server": "Exporting on server",
     "export.progress.exporting-streaming": "正在导出流式查看器",
     "export.progress.exporting-sog": "正在导出 SOG",
+    "export.progress.exporting-spz": "正在导出 SPZ",
     "export.progress.exporting-html": "正在导出 HTML",
     "export.progress.estimated-entrypoint": "场景 {{scene}}：正在使用估算的碰撞入口点——如果碰撞看起来不正确，请在传送门面板中设置。",
     "export.progress.scene": "场景 {{index}}/{{total}}",

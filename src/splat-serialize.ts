@@ -1289,7 +1289,7 @@ type SpzSettings = SerializeSettings & {
 const serializeSpz = async (splats: Splat[], settings: SpzSettings, fs: FileSystem): Promise<void> => {
     const { version = 4, events } = settings;
 
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SPZ', events));
+    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SPZ', events, undefined, undefined, undefined, undefined, 'export.progress.exporting-spz'));
 
     // Extract splat data to DataTable
     const dataTable = extractDataTable(splats, settings);

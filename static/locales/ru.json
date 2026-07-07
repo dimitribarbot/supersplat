@@ -248,6 +248,7 @@
     "popup.export.exporting-on-server": "Exporting on server",
     "export.progress.exporting-streaming": "Экспорт потокового просмотрщика",
     "export.progress.exporting-sog": "Экспорт SOG",
+    "export.progress.exporting-spz": "Экспорт SPZ",
     "export.progress.exporting-html": "Экспорт HTML",
     "export.progress.estimated-entrypoint": "Сцена {{scene}}: используется приблизительная точка входа коллизии — задайте её на панели порталов, если коллизия выглядит неправильно.",
     "export.progress.scene": "Сцена {{index}}/{{total}}",

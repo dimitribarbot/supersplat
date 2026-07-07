@@ -248,6 +248,7 @@
     "popup.export.exporting-on-server": "Exporting on server",
     "export.progress.exporting-streaming": "Exportando visualizador de streaming",
     "export.progress.exporting-sog": "Exportando SOG",
+    "export.progress.exporting-spz": "Exportando SPZ",
     "export.progress.exporting-html": "Exportando HTML",
     "export.progress.estimated-entrypoint": "Cena {{scene}}: usando um ponto de entrada de colisão estimado — defina um no painel de portais se a colisão parecer errada.",
     "export.progress.scene": "Cena {{index}}/{{total}}",

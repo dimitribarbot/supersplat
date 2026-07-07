@@ -248,6 +248,7 @@
     "popup.export.exporting-on-server": "Exporting on server",
     "export.progress.exporting-streaming": "Streaming-Viewer wird exportiert",
     "export.progress.exporting-sog": "SOG wird exportiert",
+    "export.progress.exporting-spz": "SPZ wird exportiert",
     "export.progress.exporting-html": "HTML wird exportiert",
     "export.progress.estimated-entrypoint": "Szene {{scene}}: geschätzter Kollisions-Einstiegspunkt wird verwendet — im Portale-Bereich einen festlegen, falls die Kollision falsch wirkt.",
     "export.progress.scene": "Szene {{index}}/{{total}}",
