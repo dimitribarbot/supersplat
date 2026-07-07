@@ -160,6 +160,7 @@ const companionRuntime = `
   var lastSafeBuf = [0, 0, 0];              // persistent storage behind lastSafe (no per-frame allocation)
   var curPos = [0, 0, 0];                   // per-frame scratch for the camera position
   var timeline = data.portalAnimTimeline || null;   // [{t, scene}] sorted ascending; null/absent when no animation
+  var spawnScene = null;                    // scene active when walk/fly was last ENTERED (== the scene its reset-spawn pose lives in); null until first walk/fly entry
   function getState() {
     var v = window.__supersplatViewer;
     return (v && v.global && v.global.state) || (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.state) || null;
@@ -676,20 +677,41 @@ const companionRuntime = `
       ev.on('firstFrame', function () { viewerReady = true; reconcileFrontier(); });
       ev.on('collisionOverlayEnabled:changed', function (on) { if (on) refreshOverlay(); });
       // The R shortcut and the viewer's reset menu both fire inputEvent 'reset',
-      // returning the camera to its spawn pose. The spawn lives in the start
-      // scene, but free-nav crossing detection can't see the move (it need not
-      // pass through a doorway), so force the start scene here via the reducer
-      // -- which also drops any blocked/loading overlay WITHOUT falsely marking
-      // its abandoned target ready. lastSafe is cleared so the spawn
-      // discontinuity isn't read as a spurious crossing on the next frame. In
-      // anim mode the timeline-driven dispatch immediately re-asserts the
-      // cursor's scene, so this is a harmless no-op there.
+      // returning the camera to its spawn pose. free-nav crossing detection
+      // can't see the move (it need not pass through a doorway), so force the
+      // matching scene here via the reducer -- which also drops any
+      // blocked/loading overlay WITHOUT falsely marking its abandoned target
+      // ready. lastSafe is cleared so the spawn discontinuity isn't read as a
+      // spurious crossing on the next frame.
+      //
+      // Which scene the reset restores depends on the viewer's cameraMode: in
+      // orbit/anim it goes to the initial camera (start scene), but in walk/fly
+      // it calls resetToSpawn, whose spawn is the pose captured when walk/fly
+      // was ENTERED -- e.g. the walkthrough pose where autoplay was exited,
+      // which may live in a non-start scene. spawnScene records the scene
+      // active at that entry instant (the scene the spawn pose belongs to), so
+      // a walk/fly reset restores the matching scene; anim/orbit reset falls
+      // back to the start scene. (The animation cursor time is NOT usable here:
+      // it freezes when anim mode is left, so after an intervening orbit reset
+      // it points at a scene the spawn pose no longer lives in.) In anim mode
+      // the timeline-driven per-frame dispatch immediately re-asserts the
+      // cursor's scene, so the start-scene dispatch is a harmless no-op there.
       ev.on('inputEvent', function (name) {
         if (name === 'reset') {
           var sIdx = data.portalStart || 0;
+          var s = getState();
+          if (spawnScene !== null && s && (s.cameraMode === 'walk' || s.cameraMode === 'fly')) {
+            sIdx = spawnScene;
+          }
           dispatch({ type: 'crossing', target: sIdx, loaded: !!(entities[sIdx] || sceneLoading[sIdx]), ready: sceneReady(sIdx) });
           lastSafe = null;
         }
+      });
+      // walk/fly resetToSpawn restores the pose captured on mode ENTRY, so the
+      // scene active at entry is the scene that spawn pose lives in. Record it
+      // for the reset handler above. (value, prev) fires on every mode change.
+      ev.on('cameraMode:changed', function (mode) {
+        if (mode === 'walk' || mode === 'fly') { spawnScene = activeIndex; }
       });
       // The viewer's applyPerfSettings re-runs on this event: it reopens the
       // start component's lodRangeMin to 0 (wiping the budget clamp) AND

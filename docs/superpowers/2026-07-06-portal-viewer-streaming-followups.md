@@ -181,3 +181,23 @@ event restores), not in the companion. The "sometimes another orbit position" va
 restored pose depends on which controller (anim/orbit/fly) was active when the pose snapshot was
 taken. Decide desired behavior with the user first: R always returns to the scene's initial spawn
 pose, regardless of how the walkthrough was exited, is the stated expectation.
+
+RESOLVED (2026-07-07, branch `hotfix/wrong-reset-in-exported-viewer`, user-verified E2E). The
+POSE behavior is by design and was KEPT: the stock viewer's reset branches on cameraMode — orbit/anim
+do `controllers.orbit.goto(resetCamera)` (initial camera, start scene), while walk/fly do
+`controllers.{walk,fly}.resetToSpawn()`, whose spawn is the pose captured when that mode was ENTERED
+(i.e. the walkthrough pose where autoplay was exited by starting to walk). The ONLY bug was the
+SCENE: the companion forced `portalStart` on every reset, so a walk/fly reset restored a pose that
+may live in a non-start scene while showing scene 0.
+
+Fix (companion only, `src/viewer-companion/portals.ts`): record `spawnScene = activeIndex` on each
+walk/fly `cameraMode:changed` entry (that IS the scene the spawn pose belongs to, since both are
+captured at the same instant), and on reset dispatch to `spawnScene` when cameraMode is walk/fly,
+else `portalStart`. NOTE: the animation cursor time (`sceneAtTime(animationTime)`) was tried first
+and is NOT usable — animationTime freezes when anim mode is left, so after an intervening orbit reset
+(R during the walkthrough, then switch to walk) it points at a scene the spawn pose no longer lives
+in (the exact 4-scene repro that killed the timeline approach). Gotcha: the companion body is a
+TEMPLATE LITERAL (`${...}` interpolation) — no backticks allowed even inside `//` comments. R during
+the walkthrough (cameraMode anim/orbit) is unchanged: still returns to the start scene's initial pose.
+
+This closes the last open item in this memo (all five #1–#5 now resolved or NO-ACTION).
