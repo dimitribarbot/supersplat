@@ -44,4 +44,12 @@ describe('buildOffLimitsZonesInjection', () => {
         expect(out).not.toContain('</script><b>x');
         expect(out).toContain('\\u003c');
     });
+
+    it('prefers the spawn-preserving reseat() over snap() when clamping', () => {
+        const out = buildOffLimitsZonesInjection([zone], '');
+        // uses reseat() (added by the engine patch) with a snap() fallback
+        expect(out).toContain("typeof cm.reseat === 'function'");
+        expect(out).toContain('cm.reseat()');
+        expect(out).toContain("typeof cm.snap === 'function'");
+    });
 });

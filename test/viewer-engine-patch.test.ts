@@ -76,13 +76,34 @@ const WORLD_SNIPPET =
     '\t}\n' +
     '}\n';
 
-const BUNDLE = OCTREE_SNIPPET + WORLD_SNIPPET + LOADER_SNIPPET;
+// CameraManager.snap (fork patch: add a spawn-preserving reseat() sibling).
+// This part of the viewer bundle (the app, not the engine) is 4-space indented.
+const CAMERA_MANAGER_SNIPPET =
+    '        this.snap = () => {\n' +
+    '            getController(state.cameraMode).onEnter(this.camera);\n' +
+    '            target.copy(this.camera);\n' +
+    '            transitionTimer = 1;\n' +
+    '            global.app.renderNextFrame = true;\n' +
+    '        };\n' +
+    '        // application update\n';
+
+const BUNDLE = OCTREE_SNIPPET + WORLD_SNIPPET + LOADER_SNIPPET + CAMERA_MANAGER_SNIPPET;
 
 describe('patchViewerEngine', () => {
     it('applies all engine fixes (#8998 incl. _failed parity, #9011) to the baked bundle', () => {
         const { source, patched } = patchViewerEngine(BUNDLE);
         expect(patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
-        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(9);
+        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(10);
+
+        // fork patch: spawn-preserving reseat() inserted next to snap(), using
+        // goto() (re-seat only) instead of onEnter() (grounds + stores spawn)
+        expect(source).toContain(
+            '        this.reseat = () => {\n' +
+            '            const controller = getController(state.cameraMode);\n' +
+            '            (controller.goto || controller.onEnter).call(controller, this.camera);\n'
+        );
+        // the original snap() is preserved ahead of it
+        expect(source).toContain('        this.snap = () => {\n            getController(state.cameraMode).onEnter(this.camera);');
 
         // #8998: cancelled-load unstick, gated on the _failed set like upstream
         expect(source).toContain('if (asset && asset.loaded && !asset.resource && !this._currentlyLoading.has(url) && !this._failed.has(url)) {');

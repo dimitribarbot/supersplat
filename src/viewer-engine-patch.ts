@@ -35,6 +35,19 @@
 // Patches whose search text survives the replacement carry an `applied`
 // marker so a second pass is a no-op. Pure and environment-agnostic (also
 // compiled for the export server via dist-shared).
+//
+// One additional, fork-specific patch (NOT an upstream backport) adds a
+// spawn-preserving `reseat()` method to the viewer's CameraManager. The
+// off-limits-zones companion clamps the walk camera by setting a safe pose and
+// re-seating the active controller. It previously used `snap()`, but snap()
+// re-runs the controller's `onEnter()`, which re-captures the walk/fly reset
+// spawn at the current (wall-clamped) position -- so being blocked overwrote
+// the reset spawn to the wall and pressing R (resetToSpawn) returned there.
+// `reseat()` is snap() with `onEnter()` swapped for `goto()`, which re-seats
+// position/angles WITHOUT grounding or storing the spawn, so native reset is
+// left intact. The companion prefers `reseat()` and falls back to `snap()`
+// when this patch did not apply (older/newer bundle). This part of the viewer
+// (the app, not the engine) is 4-space indented, hence the spaces below.
 
 type EnginePatchResult = { source: string; patched: number };
 
@@ -168,6 +181,36 @@ const PATCHES: EnginePatch[] = [
             '\t\t\t}\n' +
             '\t\t}\n',
         applied: 'inst.octree.destroyed'
+    },
+    // --- fork: spawn-preserving reseat() for the off-limits camera clamp ---
+    // Insert a `reseat()` next to `snap()`. Identical to snap() except it calls
+    // the active controller's `goto()` (re-seats pose only) instead of
+    // `onEnter()` (which also grounds and re-stores the reset spawn). Falls back
+    // to `onEnter()` for any controller without `goto()`, matching snap()'s
+    // prior behaviour in those modes. 4-space indented (viewer app code).
+    {
+        search:
+            'this.snap = () => {\n' +
+            '            getController(state.cameraMode).onEnter(this.camera);\n' +
+            '            target.copy(this.camera);\n' +
+            '            transitionTimer = 1;\n' +
+            '            global.app.renderNextFrame = true;\n' +
+            '        };\n',
+        replace:
+            'this.snap = () => {\n' +
+            '            getController(state.cameraMode).onEnter(this.camera);\n' +
+            '            target.copy(this.camera);\n' +
+            '            transitionTimer = 1;\n' +
+            '            global.app.renderNextFrame = true;\n' +
+            '        };\n' +
+            '        this.reseat = () => {\n' +
+            '            const controller = getController(state.cameraMode);\n' +
+            '            (controller.goto || controller.onEnter).call(controller, this.camera);\n' +
+            '            target.copy(this.camera);\n' +
+            '            transitionTimer = 1;\n' +
+            '            global.app.renderNextFrame = true;\n' +
+            '        };\n',
+        applied: 'this.reseat = () => {\n'
     }
 ];
 

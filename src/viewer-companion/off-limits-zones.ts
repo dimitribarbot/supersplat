@@ -95,11 +95,20 @@ const companionRuntime = `
   // --- per-frame camera clamp ---
   // The exported viewer keeps its camera pose in viewer.cameraManager.camera.
   // Setting the camera entity's position would be overwritten each frame by the
-  // controller, so we set the manager's pose and call snap() to re-seed the
-  // active controller (this is how the viewer's own debug panel repositions the
-  // camera). window.__supersplatViewer is published from the viewer bootstrap;
-  // poll for it via rAF until it is ready.
+  // controller, so we set the manager's pose and re-seed the active controller.
+  // Prefer reseat() -- a spawn-preserving reposition added by the export-time
+  // engine patch (see viewer-engine-patch.ts): it re-seats the controller pose
+  // WITHOUT re-storing the walk/fly reset spawn, so being blocked no longer
+  // corrupts where R (resetToSpawn) returns to. Fall back to snap() when the
+  // patch did not apply (older/newer bundle); snap() re-seeds too but re-stores
+  // the spawn at the clamp position (the pre-patch behaviour).
+  // window.__supersplatViewer is published from the viewer bootstrap; poll for
+  // it via rAF until it is ready.
   var lastSafe = null;
+  function reseat(cm) {
+    if (typeof cm.reseat === 'function') cm.reseat();
+    else if (typeof cm.snap === 'function') cm.snap();
+  }
   function tick() {
     var viewer = window.__supersplatViewer;
     var cm = viewer && viewer.cameraManager;
@@ -111,7 +120,7 @@ const companionRuntime = `
           var safe = segmentBlockedByWall(lastSafe, cur, zones[i]);
           if (safe) {
             cam.position.set(safe[0], safe[1], safe[2]);
-            if (typeof cm.snap === 'function') cm.snap();
+            reseat(cm);
             cur = safe;
             flashFeedback();
             break;
