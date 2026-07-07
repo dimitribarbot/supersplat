@@ -408,6 +408,29 @@ class ExportPopup extends Container {
         serverRow.append(serverLabel);
         serverRow.append(serverToggle);
 
+        // spz version
+
+        const spzVersionRow = new Container({
+            class: 'row'
+        });
+
+        const spzVersionLabel = new Label({
+            class: 'label'
+        });
+        i18n.bindText(spzVersionLabel, 'popup.export.spz-version');
+
+        const spzVersionSelect = new SelectInput({
+            class: 'select',
+            defaultValue: '4'
+        });
+        i18n.bindOptions(spzVersionSelect, () => [
+            { v: '4', t: i18n.t('popup.export.spz-version.4') },
+            { v: '3', t: i18n.t('popup.export.spz-version.3') }
+        ]);
+
+        spzVersionRow.append(spzVersionLabel);
+        spzVersionRow.append(spzVersionSelect);
+
         // filename
 
         const filenameRow = new Container({
@@ -443,6 +466,7 @@ class ExportPopup extends Container {
         content.append(radiusRow);
         content.append(voxelSizeRow);
         content.append(serverRow);
+        content.append(spzVersionRow);
         content.append(filenameRow);
 
         // footer
@@ -565,13 +589,14 @@ class ExportPopup extends Container {
             currentExportType = exportType;
 
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, collisionRow, environmentRow, perSceneEnvRow, radiusRow, voxelSizeRow, serverRow, filenameRow
+                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, collisionRow, environmentRow, perSceneEnvRow, radiusRow, voxelSizeRow, serverRow, spzVersionRow, filenameRow
             ];
 
             const activeRows = {
                 ply: [compressRow, bandsRow, serverRow, filenameRow],
                 splat: [filenameRow],
                 sog: [bandsRow, iterationsRow, serverRow, filenameRow],
+                spz: [bandsRow, spzVersionRow, filenameRow],
                 viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, collisionRow, environmentRow, perSceneEnvRow, radiusRow, voxelSizeRow, serverRow, filenameRow],
                 viewerSettings: [animationRow, loopRow, colorRow, fovRow, filenameRow]
             }[exportType];
@@ -603,6 +628,9 @@ class ExportPopup extends Container {
             // server-export row: only when the server actually supports the selected type
             updateServerVisibility();
 
+            // spz
+            spzVersionSelect.value = '4';
+
             // filename
             filenameEntry.value = splatNames[0];
             switch (exportType) {
@@ -614,6 +642,9 @@ class ExportPopup extends Container {
                     break;
                 case 'sog':
                     updateExtension('.sog');
+                    break;
+                case 'spz':
+                    updateExtension('.spz');
                     break;
                 case 'viewer':
                     updateExtension(viewerTypeSelect.value === 'html' ? '.html' : '.zip');
@@ -684,6 +715,17 @@ class ExportPopup extends Container {
                     },
                     sogIterations: iterationsSlider.value,
                     useServer: !serverRow.hidden && serverToggle.value
+                };
+            };
+
+            const assembleSpzOptions = () : SceneExportOptions => {
+                return {
+                    filename: filenameEntry.value,
+                    splatIdx: 'all',
+                    serializeSettings: {
+                        maxSHBands: bandsSlider.value
+                    },
+                    spzVersion: spzVersionSelect.value === '3' ? 3 : 4
                 };
             };
 
@@ -811,6 +853,9 @@ class ExportPopup extends Container {
                             break;
                         case 'sog':
                             resolve(assembleSogOptions());
+                            break;
+                        case 'spz':
+                            resolve(assembleSpzOptions());
                             break;
                         case 'viewer':
                             resolve(assembleViewerOptions());

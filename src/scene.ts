@@ -378,7 +378,7 @@ class Scene {
 
         this.forEachElement(e => e.onPreRender());
 
-        this.events.fire('prerender', this.camera.worldTransform);
+        this.events.fire('prerender', this.camera.displayTransform);
 
         // debug - display scene bound
         if (this.config.debug.showBound) {

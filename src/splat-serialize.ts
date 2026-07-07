@@ -1,7 +1,9 @@
 import {
     Column,
     DataTable,
+    logger as splatTransformLogger,
     Transform,
+    writeSpz,
     type FileSystem,
     type Writer
 } from '@playcanvas/splat-transform';
@@ -22,7 +24,7 @@ import { Events } from './events';
 import { ProgressWriter } from './io';
 import { SHRotation } from './sh-utils';
 import { Splat } from './splat';
-import { writeSogCore, writeViewerCore } from './splat-export-core';
+import { createProgressRenderer, writeSogCore, writeViewerCore } from './splat-export-core';
 import { State } from './splat-state';
 
 type SerializeSettings = {
@@ -1279,12 +1281,39 @@ const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSyst
     await writeSogCore(dataTable, iterations, createGpuDevice, fs, events);
 };
 
+type SpzSettings = SerializeSettings & {
+    version?: 3 | 4;
+    events?: Events;
+};
+
+const serializeSpz = async (splats: Splat[], settings: SpzSettings, fs: FileSystem): Promise<void> => {
+    const { version = 4, events } = settings;
+
+    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SPZ', events));
+
+    // Extract splat data to DataTable
+    const dataTable = extractDataTable(splats, settings);
+
+    // unwind the logger's top-level scope on error (see serializeSog)
+    try {
+        await writeSpz({
+            filename: 'output.spz',
+            dataTable,
+            version
+        }, fs);
+    } catch (err) {
+        splatTransformLogger.unwindAll(true);
+        throw err;
+    }
+};
+
 export {
     Writer,
     serializePly,
     serializePlyCompressed,
     serializeSplat,
     serializeSog,
+    serializeSpz,
     serializeViewer,
     serializeViewerSettings,
     AnimTrack,
@@ -1296,5 +1325,6 @@ export {
     ExperienceSettings,
     SerializeSettings,
     SogSettings,
+    SpzSettings,
     ViewerExportSettings
 };
