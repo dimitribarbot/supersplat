@@ -110,6 +110,22 @@ mode-switch event (find the inputController / cameraMode event the viewer expose
 input (cheapest, but the user is interacting blind under a dark backdrop); (c) both. Decide with
 the user which interaction model they want before building.
 
+CLOSED — NO ACTION (2026-07-07). Already handled; the user's actual need (release the mouse while the
+overlay is up, e.g. to click into another app on a second screen) works in both walk and fly. Two
+things cover it, both already in place:
+- The backdrop is `pointer-events: none` (`portals.ts` `.ss-portal-loading-backdrop`, added with the
+  loading overlay / crossing-robustness work), so the dark backdrop never intercepts the cursor —
+  pointer events pass through to the canvas. The "backdrop covers the canvas / mouse control lost"
+  symptom above was stale (pre-dated that CSS).
+- Mouse release itself is the BROWSER's native pointer-lock exit: walk/fly engage pointer lock, and
+  Escape makes the browser release it and show the cursor, independent of our overlay. The stock
+  viewer's own `window` keydown also maps Escape→`inputEvent 'exitWalk'` (walk→pre-walk mode); the
+  first Escape under pointer lock is swallowed (`recentlyExitedCapture`) and just frees the cursor,
+  which is exactly the desired behavior here.
+- Only genuine gap found, deliberately NOT fixed (irrelevant to the goal, and stock viewer omits it
+  by design): in FLY mode Escape frees the cursor but does not switch `cameraMode` back to orbit
+  (stock only does that for walk; you leave fly with the `1` key).
+
 ## 4. Active-scene budget-coarsening can transiently violate the floor invariant
 
 When assignPinDepths degrades the ACTIVE scene as a last resort (hard budget cap /
@@ -121,6 +137,29 @@ finestFullLevel, hold, pumpFloor). Also worth a comment there: that path clears 
 while the scene is on screen, which is deliberate (residency just degraded; the next crossing
 should re-probe). While there, consider a single-pass finestFullLevel (per-level counts like
 residencySummary) — the current form is O(files x levels) per rAF during a descent.
+
+RESOLVED (2026-07-07, branch `fix/active-scene-coarsen-partial-unpin`). Confirmed REAL but narrow
+(mobile-only, tight budget) and self-healing. Root cause is more specific than the note above: the
+transient blob does NOT come from floor timing — it comes from `unpinScene` FREEING blocks. On an
+active-scene coarsen, the full `unpinScene(idx)` does `decRefCount(_, 0)` on every pinned block; the
+coarse `[min..coarsest]` blocks that cover NEAR regions are held only by our pin (the render
+instance holds refs only to the finer level it is drawing there, per the `unpinScene` comment), so
+they free immediately, and the raised floor (min) then selects them — missing — as a coarse blob
+until the async re-pin refetches them. The memo's suggested fix (scheduleRefine-style hold) does NOT
+address this: `pumpFloor` only descends (opens straight to min on a coarsen) and never stops the
+free.
+
+Fix: a new `unpinSceneFinerThan(idx, min)` sheds ONLY the levels finer than the new floor
+(`lodLevel < min`) and keeps the coarse pins ref-held throughout; `pinDesired` routes the
+`idx === active` coarsen through it (hidden scenes still take the full `unpinScene` + re-pin — nothing
+on screen to blob). Same memory saving (the finer levels are exactly what the coarsen drops), coarse
+blocks never lose a ref → no blob. Because coherence is preserved, `readyScenes`/`shown` are left
+untouched (a crossing back needs no overlay) — so the memo's "clearing shown[active] is deliberate"
+concern evaporates rather than needing a comment. The single-pass-finestFullLevel micro-opt was NOT
+done (out of scope for the blob fix; unchanged hot path).
+Verified: lint clean, release build bakes the helper in, full suite 340/340. Runtime blob-elimination
+under the edge condition is release-build-E2E-pending (the trigger needs a specific mobile
+budget/scene combo; not cheaply reproducible).
 
 ## 5. R-reset after exiting walkthrough autoplay returns to the walkthrough pose (from plan-#6 E2E)
 

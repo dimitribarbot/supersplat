@@ -1403,6 +1403,44 @@ const companionRuntime = `
     floorGen[idx] = (floorGen[idx] || 0) + 1;   // invalidate an in-flight floor pump
   }
 
+  // Partial unpin: drop refs on ONLY the levels FINER than min (lodLevel < min)
+  // and keep the coarse [min..coarsest] blocks ref-held. Used for the ACTIVE
+  // (on-screen) scene's budget coarsen: a full unpinScene would decRefCount(_, 0)
+  // every pinned block, immediately FREEING the coarse blocks that cover NEAR
+  // regions -- those are held only by our pin (the render instance holds refs only
+  // to the FINER level it is currently drawing there), and the raised floor (min)
+  // would then select them, missing, as a transient coarse blob until the async
+  // re-pin refetches them. Shedding only the finer levels frees exactly what the
+  // coarsen is meant to drop while the coarse pins never lose a ref -> no blob.
+  // readyScenes/shown are left untouched: the scene stays coherently on screen at
+  // coarser detail, so a later crossing back needs no overlay. pinBatches is
+  // cleared and pinGen bumped so the caller's re-pin rebuilds the coarse batches
+  // (the kept coarse files dedup in pinSceneToLevel and their batch completes at
+  // once, already resident). The floor pump (floorGen/heldFloor) is deliberately
+  // NOT invalidated: applySceneFloor below reasserts the new coarser canonical
+  // floor, and any in-flight descent self-terminates against it.
+  function unpinSceneFinerThan(idx, min) {
+    var octree = octrees[idx];
+    var files = pinnedFiles[idx];
+    if (!octree || !octree.decRefCount || !files) { return; }
+    var kept = [];
+    for (var i = 0; i < files.length; i++) {
+      var fi = files[i];
+      var f = octree.files ? octree.files[fi] : null;
+      // Unclassifiable file (malformed octree): keep it pinned rather than risk
+      // freeing a block that is still on screen.
+      if (f && f.lodLevel < min) {
+        try { octree.decRefCount(fi, 0); }
+        catch (e) { console.warn('portal partial-unpin block ' + fi + ' (scene ' + idx + ') failed:', e); }
+      } else {
+        kept.push(fi);
+      }
+    }
+    pinnedFiles[idx] = kept;
+    pinBatches[idx] = [];
+    pinGen[idx] = (pinGen[idx] || 0) + 1;   // stop the in-flight pin pump; re-pin rebuilds coarse batches
+  }
+
   function getAsset(idx) { return assets[idx] || null; }
 
   // Defer the FIRST frontier reconcile until the device splat budget is applied AND
@@ -1498,12 +1536,20 @@ const companionRuntime = `
       var min = (depths[idx] != null) ? Math.min(Math.max(depths[idx], 0), coarse) : deviceMinLevel(idx);
       if (pinnedScenes[idx] && min === pinDepth[idx]) { continue; }
       if (pinnedScenes[idx] && min > pinDepth[idx]) {
-        // Role changed toward neighbour on a tight budget -> coarsen. Full
-        // unpin + re-pin: pinSceneToLevel is additive so it cannot shed levels.
-        // An ACTIVE scene's own instance holds refs, so unpin never frees what
-        // is being rendered; a hidden scene reloads its coarse levels from the
-        // HTTP cache (cheap: coarse levels are small).
-        unpinScene(idx);
+        // Role changed toward neighbour on a tight budget -> coarsen.
+        // pinSceneToLevel is additive so it cannot shed levels; we drop them
+        // explicitly, then the level-major loop below re-pins [min..coarsest].
+        if (idx === active) {
+          // The ACTIVE (on-screen) scene: shed ONLY the excess finer levels and
+          // keep the coarse pins ref-held, so the raised floor never selects a
+          // just-freed coarse block as a transient blob (see unpinSceneFinerThan).
+          unpinSceneFinerThan(idx, min);
+        } else {
+          // A hidden scene has no render instance, so a full unpin + re-pin just
+          // reloads its coarse levels from the HTTP cache (cheap: coarse levels
+          // are small) with nothing on screen to blob.
+          unpinScene(idx);
+        }
       }
       if (idx !== 0) {
         // Extra scenes: the component floor IS the pin depth.
