@@ -1,7 +1,7 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, parseBudgetParam } from '../portal-preload';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -78,6 +78,7 @@ const companionRuntime = `
   var sceneResidentToDepth = ${sceneResidentToDepth.toString()};
   var startSceneLodFloor = ${startSceneLodFloor.toString()};
   var pinBatchAllowed = ${pinBatchAllowed.toString()};
+  var parseBudgetParam = ${parseBudgetParam.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
@@ -135,6 +136,12 @@ const companionRuntime = `
       return (isFinite(v) && v > 0) ? v : 0;
     } catch (e) { return 0; }
   })();
+  // ?budget=<n> (the stock viewer's engine-splat-budget override, in millions).
+  // The viewer applies it only inside applyPerfSettings (ready/firstFrame-gated),
+  // so the ready-gate watchdog reads it directly to honor the override when
+  // firstFrame never fires (else it would clobber an explicit ?budget= with the
+  // hardcoded default). 0 when absent/invalid -> watchdog uses its 2M/4M default.
+  var budgetOverride = parseBudgetParam(location.search || '');
   var pinReady = false;                     // set once the budget + deviceFinest have first settled; later reconciles run immediately
   var viewerReady = false;                  // set when the viewer fires 'firstFrame' (initial load done); preload waits for it
   var lastDiag = '';                        // last logged residency diagnostic (dedupe)
@@ -865,15 +872,18 @@ const companionRuntime = `
         if (fixed > 0) { console.info('[portals] ready-gate watchdog repaired ' + fixed + ' stuck entr' + (fixed === 1 ? 'y' : 'ies')); }
         // Priority-1 backstop: if the ready gate still has not fired, the
         // viewer never applied a splat budget and the engine streams
-        // UNBOUNDED. Apply the viewer's own high-quality default so a phone
-        // can never OOM from an un-ready start (applyPerfSettings simply
-        // overwrites this with the same value once ready fires), and
-        // reconcile so pins pick up the now-real ceiling.
+        // UNBOUNDED. Apply the user's ?budget= override if present (the viewer
+        // only applies it via the ready-gated applyPerfSettings, so a stuck gate
+        // would otherwise silently drop it), else the viewer's own high-quality
+        // default so a phone can never OOM from an un-ready start
+        // (applyPerfSettings overwrites this with the same value once ready
+        // fires), and reconcile so pins pick up the now-real ceiling.
         var bApp = getApp(window.__supersplatViewer);
         var gs = bApp && bApp.scene && bApp.scene.gsplat;
         if (gs && !gs.splatBudget) {
-          gs.splatBudget = (IS_MOBILE ? 2 : 4) * 1000000;
-          console.info('[portals] ready-gate watchdog applied fallback splatBudget=' + gs.splatBudget);
+          gs.splatBudget = budgetOverride || (IS_MOBILE ? 2 : 4) * 1000000;
+          console.info('[portals] ready-gate watchdog applied fallback splatBudget=' + gs.splatBudget +
+            (budgetOverride ? ' (from ?budget)' : ''));
           reconcileFrontier();
         }
         // The gate is stuck (firstFrame never fired) but a budget is in place:

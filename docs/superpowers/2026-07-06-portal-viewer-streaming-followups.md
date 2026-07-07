@@ -62,6 +62,41 @@ Fixed on the crossing-robustness branch (watchdog now latches viewerReady once a
 place). Residual churn to measure after that fix: engine cooldown eviction + unpin/re-pin role
 changes only.
 
+CLOSED — NO ACTION (2026-07-07, measured on desktop Fast-4G, 2 scenes, cross A→B before A's LODs
+finish). Diagnosis fully root-caused; branch `feat/avoid-lod-duplicate-downloads` deleted (it was
+empty). Findings:
+- The duplicates are the ENGINE's own unified-GSplat LOD (initiator stack = `loadTextures` /
+  `_processQueue` / `_onAssetLoadSuccess` / `_loadImageBitmap`), NOT the portal pin machinery. The
+  `[portals]` diag proved scene 0's pin depth never changes across the crossing (`depths={"0":2,...}`
+  before AND after) — no unpin/re-pin coarsen. The duplicated blocks are levels 0/1, which are
+  BELOW the pin floor, i.e. engine-owned render LOD, not our pins.
+- Mechanism: the engine render budget (`app.scene.gsplat.splatBudget`) is smaller than scene 0's
+  finest working set, so during the initial-load window the engine LOD load→evict→reloads blocks
+  as the camera moves. Self-terminating once pinning holds the finest level resident; after full
+  load, crossings are instant (all levels `n/n`, `ready=true`).
+- The alarming "start scene stays low quality forever" symptom was a CACHE-OFF artifact only. With
+  DevTools "Disable cache" UNCHECKED (and a caching server), `deviceFinest` ratchets 1→0, scene 0
+  reaches full quality, and the duplicates return as cheap 304/disk hits. Do NOT measure the
+  EXPORTED viewer with cache off — it turns every benign reload into a full ~9s Fast-4G refetch and
+  prevents residency from ever converging.
+- `firstFrame never fires` under throttling is a SEPARATE, already-understood issue (engine bug
+  #8998, patched at export time by `src/viewer-engine-patch.ts`; runtime watchdog is the backstop).
+  Investigating it gives NO benefit for duplicates/quality because the watchdog's fallback
+  splatBudget (desktop 4M / mobile 2M) already EQUALS the viewer's default budget — firstFrame
+  firing would not raise it. Confirmed: viewer applies `?budget=<n>` as `splatBudget = budget()*1e6`
+  only inside `applyPerfSettings` (ready/firstFrame-gated).
+
+SPIN-OFF (IMPLEMENTED on branch `fix/watchdog-honor-budget-param`, 2026-07-07): the watchdog
+fallback at `portals.ts:874` hardcoded the default budget and thus IGNORED an explicit `?budget=<n>`
+when firstFrame never fires — exactly the slow-network case where a user might raise it. Fix: new
+pure `parseBudgetParam(search)` in `portal-preload.ts` (Number*1e6, viewer-matched semantics,
+string-only/no-regex, unit-tested), stringified into the companion, read once into `budgetOverride`,
+and used ahead of the hardcoded 2M/4M default in the watchdog (`budgetOverride || (IS_MOBILE?2:4)*1e6`;
+log tags `(from ?budget)`). No-param default unchanged (mobile-OOM guard preserved). Spec:
+`docs/superpowers/specs/2026-07-07-watchdog-honor-budget-param-design.md`. Narrow trigger (`?budget=`
+AND firstFrame-never-fires) and transient if firstFrame later fires, but correct. Remaining: manual
+release-build E2E of the stuck-firstFrame slow-network path (watchdog log shows the override value).
+
 ## 3. Escape key while the loading overlay is up
 
 Observed: while the crossing overlay backdrop is displayed, mouse control is lost (the backdrop

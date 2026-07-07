@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, parseBudgetParam } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -593,5 +593,34 @@ describe('pinBatchAllowed', () => {
     it('treats undefined thresholds like null', () => {
         expect(pinBatchAllowed(3, 1, 0, undefined, undefined, 3, true, false)).toBe(true);
         expect(pinBatchAllowed(2, 1, 0, undefined, undefined, 3, true, false)).toBe(false);
+    });
+});
+
+describe('parseBudgetParam', () => {
+    it('returns the ?budget value in splats (value * 1e6)', () => {
+        expect(parseBudgetParam('?budget=16')).toBe(16000000);
+    });
+
+    it('accepts fractional values like the viewer (Number, not parseInt)', () => {
+        expect(parseBudgetParam('?budget=8.5')).toBe(8500000);
+    });
+
+    it('returns 0 when the param is absent (caller uses its own default)', () => {
+        expect(parseBudgetParam('')).toBe(0);
+        expect(parseBudgetParam('?webgl')).toBe(0);
+    });
+
+    it('returns 0 for zero, negative, or non-numeric values', () => {
+        expect(parseBudgetParam('?budget=0')).toBe(0);
+        expect(parseBudgetParam('?budget=-4')).toBe(0);
+        expect(parseBudgetParam('?budget=abc')).toBe(0);
+    });
+
+    it('finds budget when it is not the first query param', () => {
+        expect(parseBudgetParam('?webgl&budget=12')).toBe(12000000);
+    });
+
+    it('does not match a key that merely ends in budget', () => {
+        expect(parseBudgetParam('?maxbudget=5')).toBe(0);
     });
 });

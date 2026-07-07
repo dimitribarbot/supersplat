@@ -622,4 +622,36 @@ const shouldSampleDeviceFinest = (frame: number, finest: number | null, stableFr
     return frame % 30 === 0;             // steady state: back off
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+// Parse the stock viewer's ?budget=<n> URL override into a splat count, matching
+// the viewer's own semantics (splatBudget = Number(param) * 1_000_000, used only
+// when > 0). Returns 0 when the param is absent or invalid so callers fall back
+// to their own default. The exported viewer applies ?budget= only inside
+// applyPerfSettings (ready/firstFrame-gated), so the ready-gate watchdog reads it
+// directly to honor the override when firstFrame never fires. String ops only, no
+// regex: this is stringified into the companion template literal where regex
+// character-class escapes lose their backslash at build time (see the
+// ?residentBudget reader that once shipped dead). Pure and self-contained so it
+// can be stringified verbatim via Function.toString().
+const parseBudgetParam = (search: string): number => {
+    try {
+        const q = search || '';
+        const key = 'budget=';
+        let k = q.indexOf(key);
+        while (k > 0 && q.charAt(k - 1) !== '?' && q.charAt(k - 1) !== '&') {
+            k = q.indexOf(key, k + 1);
+        }
+        if (k <= 0) {
+            return 0;
+        }
+        let end = q.indexOf('&', k);
+        if (end < 0) {
+            end = q.length;
+        }
+        const v = Number(q.substring(k + key.length, end));
+        return (isFinite(v) && v > 0) ? v * 1000000 : 0;
+    } catch (e) {
+        return 0;
+    }
+};
+
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, parseBudgetParam, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

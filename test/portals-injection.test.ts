@@ -180,6 +180,13 @@ describe('buildPortalsInjection', () => {
         // The parser must use string ops only -- no cooked-escape remnants.
         expect(out).toContain("'residentBudget='");
         expect(out).not.toContain('(d+)');
+        // ?budget= override honored by the watchdog fallback (the viewer applies
+        // it only via ready-gated applyPerfSettings, so a stuck firstFrame would
+        // otherwise drop it). Pure parser stringified in, read once into
+        // budgetOverride, used ahead of the hardcoded 2M/4M default.
+        expect(out).toContain('parseBudgetParam');
+        expect(out).toContain('budgetOverride');
+        expect(out).toContain('(from ?budget)');
     });
 
     it('gates the crossing overlay on reveal-depth residency, not coarse-only', () => {
