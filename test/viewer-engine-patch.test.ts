@@ -76,7 +76,8 @@ const WORLD_SNIPPET =
     '\t}\n' +
     '}\n';
 
-// CameraManager.snap (fork patch: add a spawn-preserving reseat() sibling).
+// CameraManager.snap (fork patch: add a spawn-preserving reseat() sibling, then
+// a groundBelowCamera() sibling for the VR/AR floor fix).
 // This part of the viewer bundle (the app, not the engine) is 4-space indented.
 const CAMERA_MANAGER_SNIPPET =
     '        this.snap = () => {\n' +
@@ -87,13 +88,21 @@ const CAMERA_MANAGER_SNIPPET =
     '        };\n' +
     '        // application update\n';
 
-const BUNDLE = OCTREE_SNIPPET + WORLD_SNIPPET + LOADER_SNIPPET + CAMERA_MANAGER_SNIPPET;
+// initXr XR-start handler (fork patch: ground the camera rig to the floor
+// beneath the camera instead of pinning it to world Y=0). 8-space indented.
+const INITXR_SNIPPET =
+    '        cameraPosition.copy(camera.getPosition());\n' +
+    '        // copy transform to parent to XR/VR mode starts in the right place\n' +
+    '        parent.setPosition(cameraPosition.x, 0, cameraPosition.z);\n' +
+    '        parent.setEulerAngles(0, angles.y, 0);\n';
+
+const BUNDLE = OCTREE_SNIPPET + WORLD_SNIPPET + LOADER_SNIPPET + CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET;
 
 describe('patchViewerEngine', () => {
     it('applies all engine fixes (#8998 incl. _failed parity, #9011) to the baked bundle', () => {
         const { source, patched } = patchViewerEngine(BUNDLE);
         expect(patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
-        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(10);
+        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(12);
 
         // fork patch: spawn-preserving reseat() inserted next to snap(), using
         // goto() (re-seat only) instead of onEnter() (grounds + stores spawn)
@@ -104,6 +113,26 @@ describe('patchViewerEngine', () => {
         );
         // the original snap() is preserved ahead of it
         expect(source).toContain('        this.snap = () => {\n            getController(state.cameraMode).onEnter(this.camera);');
+
+        // fork patch: groundBelowCamera() inserted next to reseat(), reusing the
+        // walk controller's findCylinderSpawn to find the floor beneath the camera
+        expect(source).toContain(
+            '        this.groundBelowCamera = (x, y, z) => {\n' +
+            '            const walk = controllers.walk;\n' +
+            '            if (!walk || !walk.collision) return null;\n' +
+            '            const out = new Vec3();\n' +
+            '            return findCylinderSpawn(walk.collision, x, y, z, (walk.capsuleHeight + walk.hoverHeight) * 0.5, walk.capsuleRadius, out) ? out.y : null;\n' +
+            '        };\n'
+        );
+
+        // fork patch: XR start grounds the rig to the floor beneath the camera
+        // (falling back to 0 when no collision / no ground within range)
+        expect(source).toContain(
+            '        const ssFloorY = (window.__supersplatViewer && window.__supersplatViewer.cameraManager && window.__supersplatViewer.cameraManager.groundBelowCamera) ? window.__supersplatViewer.cameraManager.groundBelowCamera(cameraPosition.x, cameraPosition.y, cameraPosition.z) : null;\n' +
+            '        parent.setPosition(cameraPosition.x, (typeof ssFloorY === \'number\') ? ssFloorY : 0, cameraPosition.z);\n'
+        );
+        // the original world-Y=0 rig pin is gone
+        expect(source).not.toContain('parent.setPosition(cameraPosition.x, 0, cameraPosition.z);');
 
         // #8998: cancelled-load unstick, gated on the _failed set like upstream
         expect(source).toContain('if (asset && asset.loaded && !asset.resource && !this._currentlyLoading.has(url) && !this._failed.has(url)) {');

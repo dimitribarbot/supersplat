@@ -36,8 +36,10 @@
 // marker so a second pass is a no-op. Pure and environment-agnostic (also
 // compiled for the export server via dist-shared).
 //
-// One additional, fork-specific patch (NOT an upstream backport) adds a
-// spawn-preserving `reseat()` method to the viewer's CameraManager. The
+// Additional fork-specific patches (NOT upstream backports) live at the end of
+// the list. One adds a spawn-preserving `reseat()` method to the viewer's
+// CameraManager; two more (see their own comment block below) ground VR/AR
+// entry to the floor beneath the camera instead of world Y=0. The
 // off-limits-zones companion clamps the walk camera by setting a safe pose and
 // re-seating the active controller. It previously used `snap()`, but snap()
 // re-runs the controller's `onEnter()`, which re-captures the walk/fly reset
@@ -211,6 +213,60 @@ const PATCHES: EnginePatch[] = [
             '            global.app.renderNextFrame = true;\n' +
             '        };\n',
         applied: 'this.reseat = () => {\n'
+    },
+    // --- fork: VR/AR enters at the floor beneath the camera, not world Y=0 ---
+    // The bundled viewer's XR start handler pins the camera rig to world Y=0 and
+    // uses a 'local-floor' reference space, so VR/AR only lands at eye level when
+    // the scene's floor happens to sit at Y=0. Walk mode instead grounds to the
+    // real floor via findCylinderSpawn (a 3D shell search, radius 5m, around the
+    // camera). For an exported splat whose floor is off-zero (the common case)
+    // this floats the viewer above the scene by the floor's world-Y. Two patches:
+    //   1. Expose groundBelowCamera(x,y,z) on the CameraManager, running the SAME
+    //      findCylinderSpawn walk uses, at the current camera XZ -> the floor Y
+    //      beneath you (per-position, so slopes / multi-level stay correct).
+    //   2. Have the XR start handler set the rig Y to that floor (falling back to
+    //      0 when there is no collision, or no ground within range -- i.e. the
+    //      prior behaviour, so a floor-at-0 scene is unchanged).
+    // Runtime-only: reuses the loaded collision (single source of truth), so
+    // there is nothing to bake at export and nothing to keep in parity. The 5m
+    // reach is inherited from walk mode, so VR behaves exactly like entering walk.
+    // Anchored on the reseat() block above (same CameraManager closure, where
+    // `collision`, `controllers` and the module-level `findCylinderSpawn` and
+    // `Vec3` are all in scope); runs after the reseat patch that creates it.
+    {
+        search:
+            '        this.reseat = () => {\n' +
+            '            const controller = getController(state.cameraMode);\n' +
+            '            (controller.goto || controller.onEnter).call(controller, this.camera);\n' +
+            '            target.copy(this.camera);\n' +
+            '            transitionTimer = 1;\n' +
+            '            global.app.renderNextFrame = true;\n' +
+            '        };\n',
+        replace:
+            '        this.reseat = () => {\n' +
+            '            const controller = getController(state.cameraMode);\n' +
+            '            (controller.goto || controller.onEnter).call(controller, this.camera);\n' +
+            '            target.copy(this.camera);\n' +
+            '            transitionTimer = 1;\n' +
+            '            global.app.renderNextFrame = true;\n' +
+            '        };\n' +
+            '        this.groundBelowCamera = (x, y, z) => {\n' +
+            '            const walk = controllers.walk;\n' +
+            '            if (!walk || !walk.collision) return null;\n' +
+            '            const out = new Vec3();\n' +
+            '            return findCylinderSpawn(walk.collision, x, y, z, (walk.capsuleHeight + walk.hoverHeight) * 0.5, walk.capsuleRadius, out) ? out.y : null;\n' +
+            '        };\n',
+        applied: '        this.groundBelowCamera = (x, y, z) => {\n'
+    },
+    {
+        // XR start: ground the rig to the floor beneath the camera instead of
+        // pinning it to world Y=0. Self-destructing search (the `0` becomes a
+        // ternary), so no `applied` marker is needed. 8-space indented.
+        search:
+            '        parent.setPosition(cameraPosition.x, 0, cameraPosition.z);\n',
+        replace:
+            '        const ssFloorY = (window.__supersplatViewer && window.__supersplatViewer.cameraManager && window.__supersplatViewer.cameraManager.groundBelowCamera) ? window.__supersplatViewer.cameraManager.groundBelowCamera(cameraPosition.x, cameraPosition.y, cameraPosition.z) : null;\n' +
+            '        parent.setPosition(cameraPosition.x, (typeof ssFloorY === \'number\') ? ssFloorY : 0, cameraPosition.z);\n'
     }
 ];
 
