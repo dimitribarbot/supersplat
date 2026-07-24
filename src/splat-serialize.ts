@@ -4,7 +4,19 @@ import {
     logger as splatTransformLogger,
     Transform,
     writeSpz,
+    createChunkDataPool,
+    writeSource,
     type FileSystem,
+    type ChunkData,
+    type ChunkDataPool,
+    type ChunkLayer,
+    type ChunkSource,
+    type ChunkSourceMetadata,
+    type LayerLayout,
+    type Options,
+    type OutputFormat,
+    type ReadRequest,
+    type SHBands,
     type Writer
 } from '@playcanvas/splat-transform';
 import {
@@ -1127,6 +1139,15 @@ const serializeSplat = async (splats: Splat[], options: SerializeSettings, fs: F
     await writer.close();
 };
 
+// Thrown when the WebGPU device needed for SOG compression can't be created.
+// Callers show a friendly message for this instead of the raw error text.
+class WebGPUUnavailableError extends Error {
+    constructor() {
+        super('WebGPU is not available');
+        this.name = 'WebGPUUnavailableError';
+    }
+}
+
 // Cached WebGPU device for SOG compression
 let cachedGpuDevice: WebgpuGraphicsDevice | null = null;
 let cachedBackbuffer: Texture | null = null;
@@ -1137,7 +1158,7 @@ const createGpuDevice = async (): Promise<WebgpuGraphicsDevice> => {
     }
 
     if (!navigator.gpu) {
-        throw new Error('WebGPU is not available in this browser');
+        throw new WebGPUUnavailableError();
     }
 
     // Create a minimal canvas for the graphics device
@@ -1151,7 +1172,21 @@ const createGpuDevice = async (): Promise<WebgpuGraphicsDevice> => {
         stencil: false
     });
 
-    await graphicsDevice.createDevice();
+    try {
+        await graphicsDevice.createDevice();
+    } catch (err) {
+        // createDevice fails with an obscure internal error when no adapter
+        // is available (e.g. blocklisted GPU or missing drivers)
+        console.error(err);
+        throw new WebGPUUnavailableError();
+    }
+
+    // createDevice can also resolve without creating a device (e.g.
+    // blocklisted adapters)
+    // @ts-ignore - wgpu is an internal property
+    if (!graphicsDevice.wgpu) {
+        throw new WebGPUUnavailableError();
+    }
 
     // Create external backbuffer (required by PlayCanvas)
     cachedBackbuffer = new Texture(graphicsDevice, {
@@ -1168,6 +1203,211 @@ const createGpuDevice = async (): Promise<WebgpuGraphicsDevice> => {
     cachedGpuDevice = graphicsDevice;
     return graphicsDevice;
 };
+
+// Number of f_rest_* SH coefficients per band level (mirrors splat-transform's
+// SH_REST_COUNTS; that constant isn't exported from the package root).
+const SH_REST_COUNTS: Record<number, number> = { 0: 0, 1: 9, 2: 24, 3: 45 };
+
+// Gaussians per chunk when streaming a scene to splat-transform. Chosen to
+// bound the transient working set (input layer buffers + writer output buffer)
+// rather than scale with the whole scene.
+const EXPORT_CHUNK_SIZE = 256 * 1024;
+
+// Build the canonical per-layer byte layout splat-transform expects. The
+// interleaved packing here must match splat-transform's readers/materialize:
+// position = xyz (stride 12); geometric = rot0-3, scale0-2, opacity (stride 32);
+// color = dc0-2 then f_rest_* (stride (3 + numRest) * 4).
+const buildLayouts = (numRest: number): Partial<Record<ChunkLayer, LayerLayout>> => ({
+    position: {
+        stride: 12,
+        fields: { position: { byteOffset: 0, components: 3, type: 'float32' } }
+    },
+    geometric: {
+        stride: 32,
+        fields: {
+            rotation: { byteOffset: 0, components: 4, type: 'float32' },
+            scale: { byteOffset: 16, components: 3, type: 'float32' },
+            opacity: { byteOffset: 28, components: 1, type: 'float32' }
+        }
+    },
+    color: {
+        stride: (3 + numRest) * 4,
+        fields: numRest > 0 ? {
+            dc: { byteOffset: 0, components: 3, type: 'float32' },
+            shRest: { byteOffset: 12, components: numRest, type: 'float32' }
+        } : {
+            dc: { byteOffset: 0, components: 3, type: 'float32' }
+        }
+    }
+});
+
+/**
+ * A lazy, chunked ChunkSource over a set of Splats, for feeding splat-transform's
+ * streaming writers (writeSource) without materializing a whole-scene copy.
+ *
+ * It is the streaming analog of the old extractDataTable/DataTable path:
+ * gaussians are filtered
+ * (deleted/selection/opacity/invalid) and transformed (world + palette + SH
+ * rotation + colour tint + PLY-space flip) on demand via SingleSplat, one chunk
+ * at a time. The output is in PLY space, so the source is tagged Transform.PLY
+ * (identity) and the writers' bakeTransform is a no-op.
+ */
+class SuperSplatChunkSource implements ChunkSource {
+    meta: ChunkSourceMetadata;
+
+    private splats: Splat[];
+    private splatOf: Uint32Array;   // output row -> index into splats
+    private localOf: Uint32Array;   // output row -> gaussian index within that splat
+    private singleSplat: SingleSplat;
+    private numRest: number;
+
+    constructor(splats: Splat[], settings: SerializeSettings) {
+        this.splats = splats;
+
+        // Determine the SH band count to export: the highest band present in any
+        // splat, capped by maxSHBands. SingleSplat zero-fills missing bands.
+        const splatBands = splats.map(s => calcSHBands(getVertexProperties(s.splatData)));
+        const outputBands = Math.min(settings.maxSHBands ?? 3, splatBands.length ? Math.max(...splatBands) : 0);
+        const numRest = SH_REST_COUNTS[outputBands];
+        this.numRest = numRest;
+
+        // Build the filtered output->source index map (in splat order).
+        const filter = new GaussianFilter(settings);
+        const total = countGaussians(splats, filter);
+        const splatOf = new Uint32Array(total);
+        const localOf = new Uint32Array(total);
+        let idx = 0;
+        for (let s = 0; s < splats.length; ++s) {
+            filter.set(splats[s]);
+            const n = splats[s].splatData.numSplats;
+            for (let i = 0; i < n; ++i) {
+                if (filter.test(i)) {
+                    splatOf[idx] = s;
+                    localOf[idx] = i;
+                    idx++;
+                }
+            }
+        }
+        this.splatOf = splatOf;
+        this.localOf = localOf;
+
+        const members = [
+            'x', 'y', 'z',
+            'scale_0', 'scale_1', 'scale_2',
+            'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity',
+            'rot_0', 'rot_1', 'rot_2', 'rot_3',
+            ...shNames.slice(0, numRest)
+        ];
+        this.singleSplat = new SingleSplat(members, settings);
+
+        const numChunks = Math.ceil(total / EXPORT_CHUNK_SIZE);
+        this.meta = {
+            numGaussians: total,
+            numLods: 1,
+            lodCounts: [total],
+            chunkSize: EXPORT_CHUNK_SIZE,
+            numChunks: [numChunks],
+            shBands: outputBands as SHBands,
+            extraColumns: [],
+            transform: Transform.PLY,
+            availableLayers: new Set<ChunkLayer>(['position', 'geometric', 'color']),
+            layouts: buildLayouts(numRest)
+        };
+    }
+
+    read(request: ReadRequest): Promise<void> {
+        const isGather = 'indices' in request;
+        const anyBuf = (request.position ?? request.geometric ?? request.color) as ChunkData;
+        const count = isGather ? request.count : anyBuf.count;
+        const chunkBase = isGather ? 0 : request.chunkIndex * EXPORT_CHUNK_SIZE;
+
+        const posF = request.position ? new Float32Array(request.position.data) : null;
+        const geoF = request.geometric ? new Float32Array(request.geometric.data) : null;
+        const colF = request.color ? new Float32Array(request.color.data) : null;
+        const cstride = 3 + this.numRest;
+
+        const { data } = this.singleSplat;
+
+        for (let i = 0; i < count; ++i) {
+            const outputRow = isGather ? request.indices[request.indexOffset + i] : chunkBase + i;
+            const splat = this.splats[this.splatOf[outputRow]];
+            this.singleSplat.read(splat, this.localOf[outputRow]);
+
+            if (posF) {
+                const o = i * 3;
+                posF[o + 0] = data.x;
+                posF[o + 1] = data.y;
+                posF[o + 2] = data.z;
+            }
+            if (geoF) {
+                const o = i * 8;
+                geoF[o + 0] = data.rot_0;
+                geoF[o + 1] = data.rot_1;
+                geoF[o + 2] = data.rot_2;
+                geoF[o + 3] = data.rot_3;
+                geoF[o + 4] = data.scale_0;
+                geoF[o + 5] = data.scale_1;
+                geoF[o + 6] = data.scale_2;
+                geoF[o + 7] = data.opacity;
+            }
+            if (colF) {
+                const o = i * cstride;
+                colF[o + 0] = data.f_dc_0;
+                colF[o + 1] = data.f_dc_1;
+                colF[o + 2] = data.f_dc_2;
+                for (let r = 0; r < this.numRest; ++r) {
+                    colF[o + 3 + r] = data[shNames[r]];
+                }
+            }
+        }
+
+        return Promise.resolve();
+    }
+
+    async close(): Promise<void> {
+        // nothing to release; the scene data is owned by the editor
+    }
+}
+
+/**
+ * Build a ChunkSource + matching pool over the given splats, or null if nothing
+ * passes the export filter.
+ */
+const createExportSource = (splats: Splat[], settings: SerializeSettings): { source: ChunkSource, pool: ChunkDataPool } | null => {
+    const source = new SuperSplatChunkSource(splats, settings);
+    if (source.meta.numGaussians === 0) {
+        return null;
+    }
+    const pool = createChunkDataPool({ chunkSize: source.meta.chunkSize });
+    return { source, pool };
+};
+
+/**
+ * Stream the given splats to a file via splat-transform's writeSource. Streaming
+ * formats (ply/sog/splat) never build a whole-scene copy; the rest materialize a
+ * single transient copy inside the library.
+ */
+const writeSplatFile = async (
+    splats: Splat[],
+    settings: SerializeSettings,
+    outputFormat: OutputFormat,
+    filename: string,
+    options: Options,
+    fs: FileSystem
+): Promise<void> => {
+    const built = createExportSource(splats, settings);
+    if (!built) {
+        return;
+    }
+    const { source, pool } = built;
+    try {
+        await writeSource({ filename, outputFormat, source, pool, options, createDevice: createGpuDevice }, fs);
+    } finally {
+        await source.close();
+        pool.destroy();
+    }
+};
+
 
 /**
  * Extract Splat data into a DataTable for use with splat-transform writers.
@@ -1309,6 +1549,8 @@ const serializeSpz = async (splats: Splat[], settings: SpzSettings, fs: FileSyst
 
 export {
     Writer,
+    writeSplatFile,
+    WebGPUUnavailableError,
     serializePly,
     serializePlyCompressed,
     serializeSplat,

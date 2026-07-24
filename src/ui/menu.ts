@@ -8,6 +8,8 @@ import { MenuPanel, MenuItem } from './menu-panel';
 import arrowSvg from './svg/arrow.svg';
 import collapseSvg from './svg/collapse.svg';
 import selectDelete from './svg/delete.svg';
+import editRedo from './svg/edit-redo.svg';
+import editUndo from './svg/edit-undo.svg';
 import sceneExport from './svg/export.svg';
 import sceneImport from './svg/import.svg';
 import sceneNew from './svg/new.svg';
@@ -72,6 +74,11 @@ class Menu extends Container {
         });
         i18n.bindText(scene, 'menu.file');
 
+        const edit = new Label({
+            class: 'menu-option'
+        });
+        i18n.bindText(edit, 'menu.edit');
+
         const render = new Label({
             class: 'menu-option'
         });
@@ -110,6 +117,7 @@ class Menu extends Container {
             id: 'menu-bar-options'
         });
         buttonsContainer.append(scene);
+        buttonsContainer.append(edit);
         buttonsContainer.append(selection);
         buttonsContainer.append(render);
         buttonsContainer.append(help);
@@ -122,25 +130,25 @@ class Menu extends Container {
         const shortcutManager: ShortcutManager = events.invoke('shortcutManager');
 
         const exportMenuPanel = new MenuPanel([{
-            text: () => i18n.t('menu.file.export.ply'),
+            text: 'PLY (.ply)',
             icon: createSvg(sceneExport),
             isEnabled: () => !events.invoke('scene.empty'),
             onSelect: () => events.invoke('scene.export', 'ply')
         }, {
-            text: () => i18n.t('menu.file.export.splat'),
-            icon: createSvg(sceneExport),
-            isEnabled: () => !events.invoke('scene.empty'),
-            onSelect: () => events.invoke('scene.export', 'splat')
-        }, {
-            text: () => i18n.t('menu.file.export.sog'),
+            text: 'SOG (.sog)',
             icon: createSvg(sceneExport),
             isEnabled: () => !events.invoke('scene.empty'),
             onSelect: () => events.invoke('scene.export', 'sog')
         }, {
-            text: () => i18n.t('menu.file.export.spz'),
+            text: 'SPZ (.spz)',
             icon: createSvg(sceneExport),
             isEnabled: () => !events.invoke('scene.empty'),
             onSelect: () => events.invoke('scene.export', 'spz')
+        }, {
+            text: 'Splat (.splat)',
+            icon: createSvg(sceneExport),
+            isEnabled: () => !events.invoke('scene.empty'),
+            onSelect: () => events.invoke('scene.export', 'splat')
         }, {
             // separator
         }, {
@@ -220,6 +228,42 @@ class Menu extends Container {
             onSelect: async () => await events.invoke('show.publishSettingsDialog')
         }]);
 
+        // track undo/redo availability for menu item enablement
+        let canUndo = false;
+        let canRedo = false;
+        events.on('edit.canUndo', (value: boolean) => {
+            canUndo = value;
+        });
+        events.on('edit.canRedo', (value: boolean) => {
+            canRedo = value;
+        });
+
+        const editMenuPanel = new MenuPanel([{
+            text: () => i18n.t('menu.edit.undo'),
+            icon: createSvg(editUndo),
+            extra: shortcutManager.formatShortcut('edit.undo'),
+            isEnabled: () => canUndo,
+            onSelect: () => events.fire('edit.undo')
+        }, {
+            text: () => i18n.t('menu.edit.redo'),
+            icon: createSvg(editRedo),
+            extra: shortcutManager.formatShortcut('edit.redo'),
+            isEnabled: () => canRedo,
+            onSelect: () => events.fire('edit.redo')
+        }, {
+            // separator
+        }, {
+            text: () => i18n.t('menu.edit.duplicate'),
+            icon: createSvg(selectDuplicate),
+            isEnabled: () => events.invoke('selection.splats'),
+            onSelect: () => events.fire('edit.duplicate')
+        }, {
+            text: () => i18n.t('menu.edit.separate'),
+            icon: createSvg(selectSeparate),
+            isEnabled: () => events.invoke('selection.splats'),
+            onSelect: () => events.fire('edit.separate')
+        }]);
+
         const selectionMenuPanel = new MenuPanel([{
             text: () => i18n.t('menu.select.all'),
             icon: createSvg(selectAll),
@@ -257,18 +301,6 @@ class Menu extends Container {
         }, {
             text: () => i18n.t('menu.select.reset'),
             onSelect: () => events.fire('scene.reset')
-        }, {
-            // separator
-        }, {
-            text: () => i18n.t('menu.select.duplicate'),
-            icon: createSvg(selectDuplicate),
-            isEnabled: () => events.invoke('selection.splats'),
-            onSelect: () => events.fire('select.duplicate')
-        }, {
-            text: () => i18n.t('menu.select.separate'),
-            icon: createSvg(selectSeparate),
-            isEnabled: () => events.invoke('selection.splats'),
-            onSelect: () => events.fire('select.separate')
         }]);
 
         const renderMenuPanel = new MenuPanel([{
@@ -343,6 +375,7 @@ class Menu extends Container {
         this.append(fileMenuPanel);
         this.append(openRecentMenuPanel);
         this.append(exportMenuPanel);
+        this.append(editMenuPanel);
         this.append(selectionMenuPanel);
         this.append(renderMenuPanel);
         this.append(videoTutorialsMenuPanel);
@@ -351,6 +384,9 @@ class Menu extends Container {
         const options: { dom: HTMLElement, menuPanel: MenuPanel }[] = [{
             dom: scene.dom,
             menuPanel: fileMenuPanel
+        }, {
+            dom: edit.dom,
+            menuPanel: editMenuPanel
         }, {
             dom: selection.dom,
             menuPanel: selectionMenuPanel

@@ -15,6 +15,7 @@ import { registerIframeApi } from './iframe-api';
 import { registerOffLimitsZonesEvents } from './off-limits-zones';
 import { registerPortalsEvents } from './portals';
 import { registerPortalsRuntime } from './portals-runtime';
+import { registerPreferences } from './preferences';
 import { registerPublishEvents } from './publish';
 import { registerRenderEvents } from './render';
 import { registerS3PublishEvents } from './s3-publish';
@@ -34,6 +35,7 @@ import { LassoSelection } from './tools/lasso-selection';
 import { MeasureTool } from './tools/measure-tool';
 import { MoveTool } from './tools/move-tool';
 import { OffLimitsZoneTool } from './tools/off-limits-zone-tool';
+import { OrientTool } from './tools/orient-tool';
 import { PolygonSelection } from './tools/polygon-selection';
 import { PortalTool } from './tools/portal-tool';
 import { RectSelection } from './tools/rect-selection';
@@ -47,6 +49,7 @@ import { AlignmentPanel } from './ui/alignment-panel';
 import { BoundDimensionsOverlay } from './ui/bound-dimensions-overlay';
 import { EditorUI } from './ui/editor';
 import { i18n } from './ui/localization';
+import { registerSelectCursor } from './ui/select-cursor';
 
 declare global {
     interface LaunchParams {
@@ -146,8 +149,10 @@ const main = async () => {
         powerPreference: 'high-performance'
     });
 
+    const urlArgs = getURLArgs();
+
     const overrides = [
-        getURLArgs()
+        urlArgs
     ];
 
     // resolve scene config
@@ -255,13 +260,14 @@ const main = async () => {
     toolManager.register('floodSelection', new FloodSelection(events, editorUI.toolsContainer.dom, mask, editorUI.canvasContainer));
     toolManager.register('polygonSelection', new PolygonSelection(events, editorUI.toolsContainer.dom, mask));
     toolManager.register('lassoSelection', new LassoSelection(events, editorUI.toolsContainer.dom, mask));
-    toolManager.register('sphereSelection', new SphereSelection(events, scene, editorUI.canvasContainer));
-    toolManager.register('boxSelection', new BoxSelection(events, scene, editorUI.canvasContainer));
+    toolManager.register('sphereSelection', new SphereSelection(events, scene, editorUI.canvasContainer, editorUI.tooltips));
+    toolManager.register('boxSelection', new BoxSelection(events, scene, editorUI.canvasContainer, editorUI.tooltips));
     toolManager.register('eyedropperSelection', new EyedropperSelection(events, editorUI.toolsContainer.dom, editorUI.canvasContainer));
     toolManager.register('move', new MoveTool(events, scene));
     toolManager.register('rotate', new RotateTool(events, scene));
     toolManager.register('scale', new ScaleTool(events, scene));
-    toolManager.register('measure', new MeasureTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
+    toolManager.register('measure', new MeasureTool(events, scene, editorUI.canvasContainer));
+    toolManager.register('orient', new OrientTool(events, scene, editorUI.toolsContainer.dom, editorUI.canvasContainer));
     toolManager.register('annotation', new AnnotationTool(events, scene, editorUI.canvasContainer));
     toolManager.register('offLimitsZones', new OffLimitsZoneTool(events, scene, editorUI.canvasContainer));
     toolManager.register('portals', new PortalTool(events, scene, editorUI.canvasContainer));
@@ -280,6 +286,9 @@ const main = async () => {
 
     editorUI.toolsContainer.dom.appendChild(maskCanvas);
 
+    // show the active selection op (add/remove/intersect) at the cursor
+    registerSelectCursor(events, editorUI.toolsContainer.dom);
+
     window.scene = scene;
 
     // register events that need scene or other dependencies
@@ -290,6 +299,11 @@ const main = async () => {
     registerDocEvents(scene, events);
     registerRenderEvents(scene, events);
     initFileHandler(scene, events, editorUI.appContainer.dom);
+
+    // apply stored user preferences and start capturing changes to them.
+    // registered after the boot-time initialization events above so they are
+    // never captured as user changes.
+    registerPreferences(events, sceneConfig, urlArgs);
 
     // load async models
     scene.start();

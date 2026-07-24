@@ -1,14 +1,15 @@
 import { MemoryFileSystem } from '@playcanvas/splat-transform';
-import { Color, Mat4, path, Texture, Vec3, Vec4 } from 'playcanvas';
+import { Color, Mat4, path, Quat, Texture, Vec3, Vec4 } from 'playcanvas';
 
 import { EditHistory } from './edit-history';
-import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp } from './edit-ops';
+import { SelectAllOp, SelectNoneOp, SelectInvertOp, SelectOp, HideSelectionOp, UnhideAllOp, DeleteSelectionOp, ResetOp, MultiOp, AddSplatOp, SetLocalFrameOp } from './edit-ops';
 import { Element, ElementType } from './element';
 import { Events } from './events';
+import type { GridPlane } from './infinite-grid';
 import { MappedReadFileSystem } from './io';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializePly } from './splat-serialize';
+import { writeSplatFile } from './splat-serialize';
 
 const removeExtension = (filename: string) => {
     return filename.substring(0, filename.length - path.getExtension(filename).length);
@@ -106,12 +107,64 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     setGridVisible(scene.config.show.grid);
 
+    // grid.plane
+
+    const setGridPlane = (plane: GridPlane) => {
+        if (plane !== scene.grid.plane) {
+            scene.grid.plane = plane;
+            events.fire('grid.plane', plane);
+        }
+    };
+
+    events.function('grid.plane', () => {
+        return scene.grid.plane;
+    });
+
+    events.on('grid.setPlane', (plane: GridPlane) => {
+        setGridPlane(plane);
+    });
+
+    // camera.fovDolly
+
+    let fovDolly = false;
+
+    const setFovDolly = (value: boolean) => {
+        if (value !== fovDolly) {
+            fovDolly = value;
+            events.fire('camera.fovDolly', fovDolly);
+        }
+    };
+
+    events.function('camera.fovDolly', () => {
+        return fovDolly;
+    });
+
+    events.on('camera.setFovDolly', (value: boolean) => {
+        setFovDolly(value);
+    });
+
     // camera.fov
 
     const setCameraFov = (fov: number) => {
-        if (fov !== scene.camera.fov) {
-            scene.camera.fov = fov;
-            events.fire('camera.fov', scene.camera.fov);
+        const { camera } = scene;
+        if (fov !== camera.fov) {
+            const oldFovFactor = camera.fovFactor;
+            camera.fov = fov;
+
+            // by default a fov change acts like a lens zoom: scale distance so
+            // the camera's world-space offset from the focal point (distance *
+            // sceneRadius / fovFactor) is unchanged. with auto-dolly enabled
+            // the camera moves instead, preserving the subject's framing.
+            if (!fovDolly) {
+                const { controls } = scene.config;
+                const k = camera.fovFactor / oldFovFactor;
+                const t = camera.distanceTween;
+                for (const s of [t.value, t.source, t.target]) {
+                    s.distance = Math.max(controls.minZoom, Math.min(controls.maxZoom, s.distance * k));
+                }
+            }
+
+            events.fire('camera.fov', camera.fov);
         }
     };
 
@@ -228,6 +281,17 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     // camera.focus
 
     events.on('camera.focus', () => {
+        // the active tool's focus target (e.g. orient points) takes precedence
+        const toolFocus: { position: Vec3, radius: number } | null = events.invoke('tool.focus');
+        if (toolFocus) {
+            scene.camera.focus({
+                focalPoint: toolFocus.position,
+                radius: toolFocus.radius,
+                speed: 1
+            });
+            return;
+        }
+
         const splat = selectedSplats()[0];
         if (splat) {
             // use current bounds (caller should have awaited the operation that changed data)
@@ -246,6 +310,34 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 speed: 1
             });
         }
+    });
+
+    // pivot.reset
+
+    // reset the selection's local frame back to the model's own frame, or,
+    // with toCenter, to the bound center (the selection bound while gaussians
+    // are selected). resets orientation in both cases
+    events.on('pivot.reset', (toCenter: boolean) => {
+        const splat = selectedSplats()[0];
+        if (!splat) {
+            return;
+        }
+
+        const bound = splat.numSelected > 0 ? splat.selectionBound : splat.localBound;
+        const newOrigin = toCenter ? bound.center.clone() : new Vec3();
+        const newFrame = new Quat();
+
+        if (splat.localFrameOrigin.equals(newOrigin) && splat.localFrame.equals(newFrame)) {
+            return;
+        }
+
+        events.fire('edit.add', new SetLocalFrameOp({
+            splat,
+            oldOrigin: splat.localFrameOrigin.clone(),
+            oldFrame: splat.localFrame.clone(),
+            newOrigin,
+            newFrame
+        }));
     });
 
     events.on('camera.reset', () => {
@@ -309,16 +401,16 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         });
     });
 
-    events.on('select.mask', (op: 'add'|'remove'|'set', mask: Uint8Array | Uint32Array) => {
+    events.on('select.mask', (op: 'add'|'remove'|'set'|'intersect', mask: Uint8Array | Uint32Array) => {
         selectedSplats().forEach((splat) => {
             events.fire('edit.add', new SelectOp(splat, op, mask));
         });
     });
 
-    const intersectCenters = (splat: Splat, op: 'add'|'remove'|'set', options: any) => {
-        // run the GPU intersect + the resulting SelectOp inside one queued task so the
-        // gpu readback is ordered relative to other queued history ops (rapid drag +
-        // undo, drag-while-camera-settling, etc).
+    // run the GPU intersect + the resulting SelectOp inside one queued task so the
+    // gpu readback is ordered relative to other queued history ops (rapid drag +
+    // undo, drag-while-camera-settling, etc).
+    const runSelectIntersect = (splat: Splat, op: 'add'|'remove'|'set'|'intersect', options: any) => {
         return scene.commandQueue.enqueue(async () => {
             const data = await scene.dataProcessor.intersect(options, splat);
             // SelectOp consumes `data` synchronously in its constructor
@@ -329,28 +421,30 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         });
     };
 
-    events.on('select.bySphere', async (op: 'add'|'remove'|'set', sphere: number[]) => {
+    // transform maps the unit sphere (diameter 1) to world space
+    events.on('select.bySphere', async (op: 'add'|'remove'|'set'|'intersect', transform: Mat4) => {
         for (const splat of selectedSplats()) {
-            await intersectCenters(splat, op, {
-                sphere: { x: sphere[0], y: sphere[1], z: sphere[2], radius: sphere[3] }
+            await runSelectIntersect(splat, op, {
+                sphere: { transform }
             });
         }
     });
 
-    events.on('select.byBox', async (op: 'add'|'remove'|'set', box: number[]) => {
+    // transform maps the unit cube (side 1) to world space
+    events.on('select.byBox', async (op: 'add'|'remove'|'set'|'intersect', transform: Mat4) => {
         for (const splat of selectedSplats()) {
-            await intersectCenters(splat, op, {
-                box: { x: box[0], y: box[1], z: box[2], lenx: box[3], leny: box[4], lenz: box[5] }
+            await runSelectIntersect(splat, op, {
+                box: { transform }
             });
         }
     });
 
-    events.function('select.rect', async (op: 'add'|'remove'|'set', rect: any) => {
+    events.function('select.rect', async (op: 'add'|'remove'|'set'|'intersect', rect: any) => {
         const mode = events.invoke('camera.mode');
 
         for (const splat of selectedSplats()) {
             if (mode === 'centers') {
-                await intersectCenters(splat, op, {
+                await runSelectIntersect(splat, op, {
                     rect: { x1: rect.start.x, y1: rect.start.y, x2: rect.end.x, y2: rect.end.y }
                 });
             } else if (mode === 'rings') {
@@ -370,7 +464,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
     let maskTexture: Texture = null;
 
-    events.function('select.byMask', async (op: 'add'|'remove'|'set', canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
+    events.function('select.byMask', async (op: 'add'|'remove'|'set'|'intersect', canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
         const mode = events.invoke('camera.mode');
 
         for (const splat of selectedSplats()) {
@@ -384,7 +478,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
                 }
                 maskTexture.setSource(canvas);
 
-                await intersectCenters(splat, op, {
+                await runSelectIntersect(splat, op, {
                     mask: maskTexture
                 });
             } else if (mode === 'rings') {
@@ -443,7 +537,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         }
     });
 
-    events.function('select.point', async (op: 'add'|'remove'|'set', point: { x: number, y: number }) => {
+    events.function('select.point', async (op: 'add'|'remove'|'set'|'intersect', point: { x: number, y: number }) => {
         const { width, height } = scene.targetSize;
         const mode = events.invoke('camera.mode');
 
@@ -561,16 +655,20 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     });
 
     events.on('select.unhide', () => {
-        selectedSplats().forEach((splat) => {
-            events.fire('edit.add', new UnhideAllOp(splat));
-        });
+        const ops = (scene.getElementsByType(ElementType.splat) as Splat[])
+        .map(splat => new UnhideAllOp(splat))
+        .filter(op => !op.ranges.empty);
+
+        if (ops.length > 0) {
+            events.fire('edit.add', ops.length === 1 ? ops[0] : new MultiOp(ops));
+        }
     });
 
     events.on('select.delete', () => {
-        // Don't delete gaussians when the measure, annotation, portal or off-limits-zone
-        // tool is active (Delete/Backspace removes the tool's selected item instead)
+        // Don't delete gaussians when the measure, annotation, orient, portal or
+        // off-limits-zone tool is active (Delete/Backspace removes the tool's selected item instead)
         const activeTool = events.invoke('tool.active');
-        if (activeTool === 'measure' || activeTool === 'annotation' ||
+        if (activeTool === 'measure' || activeTool === 'annotation' || activeTool === 'orient' ||
             activeTool === 'portals' || activeTool === 'offLimitsZones') {
             return;
         }
@@ -588,18 +686,19 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
 
         const memFs = new MemoryFileSystem();
 
-        await serializePly(splats, {
+        await writeSplatFile(splats, {
             maxSHBands: 3,
             selected: true
-        }, memFs);
+        }, 'ply', 'output.ply', {}, memFs);
 
         const data = memFs.results.get('output.ply');
 
         if (data) {
             const splat = splats[0];
 
-            // wrap PLY in a blob and load it
-            const blob = new Blob([data.buffer as ArrayBuffer], { type: 'application/octet-stream' });
+            // wrap PLY in a blob and load it. pass the view rather than the
+            // underlying buffer, which is the writer's oversized scratch allocation
+            const blob = new Blob([data as BlobPart], { type: 'application/octet-stream' });
             const filename = `${removeExtension(splat.filename)}.ply`;
             const fileSystem = new MappedReadFileSystem();
             fileSystem.addFile(filename, blob);
@@ -617,11 +716,11 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     };
 
     // duplicate the current selection
-    events.on('select.duplicate', async () => {
+    events.on('edit.duplicate', async () => {
         await performSelectionFunc('duplicate');
     });
 
-    events.on('select.separate', async () => {
+    events.on('edit.separate', async () => {
         await performSelectionFunc('separate');
     });
 
@@ -797,8 +896,16 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
     events.on('camera.setPose', (pose: { position: Vec3, target: Vec3, fov?: number }, speed = 1) => {
         // assign fov before setPose so distance is computed using the new fovFactor
         if (pose.fov !== undefined) {
-            scene.camera.fov = pose.fov;
-            events.fire('camera.fov', pose.fov);
+            // pose-driven fov (timeline playback, fly-to-pose) is not a user
+            // preference - suspend capture around the notify and the
+            // synchronous ui echo it triggers
+            events.fire('preferences.suspend');
+            try {
+                scene.camera.fov = pose.fov;
+                events.fire('camera.fov', pose.fov);
+            } finally {
+                events.fire('preferences.resume');
+            }
         }
         scene.camera.setPose(pose.position, pose.target, speed);
     });
@@ -821,11 +928,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
             centersSize: events.invoke('camera.splatSize'),
             outlineSelection: events.invoke('view.outlineSelection'),
             showGrid: events.invoke('grid.visible'),
+            gridPlane: events.invoke('grid.plane'),
             showBound: events.invoke('camera.bound'),
             showBoundDimensions: events.invoke('camera.boundDimensions'),
             showCameraPoses: events.invoke('camera.showPoses'),
             showCameraInfo: events.invoke('camera.showInfo'),
-            flySpeed: events.invoke('camera.flySpeed')
+            flySpeed: events.invoke('camera.flySpeed'),
+            fovDolly: events.invoke('camera.fovDolly')
         };
     });
 
@@ -838,11 +947,13 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         events.fire('camera.setSplatSize', docView.centersSize);
         events.fire('view.setOutlineSelection', docView.outlineSelection);
         events.fire('grid.setVisible', docView.showGrid);
+        events.fire('grid.setPlane', docView.gridPlane ?? 'xz');
         events.fire('camera.setBound', docView.showBound);
         events.fire('camera.setBoundDimensions', docView.showBoundDimensions ?? false);
         events.fire('camera.setShowPoses', docView.showCameraPoses ?? false);
         events.fire('camera.setShowInfo', docView.showCameraInfo ?? false);
         events.fire('camera.setFlySpeed', docView.flySpeed);
+        events.fire('camera.setFovDolly', docView.fovDolly ?? false);
     });
 };
 

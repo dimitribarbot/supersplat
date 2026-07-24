@@ -33,6 +33,15 @@ class BrowserFileWriter implements Writer {
         await this.stream.truncate(this.cursor);
         await this.stream.close();
     }
+
+    async abort(): Promise<void> {
+        await this.ready;
+        try {
+            await this.stream.abort();
+        } catch {
+            // already failing — ignore
+        }
+    }
 }
 
 /**
@@ -95,6 +104,11 @@ class BrowserDownloadWriter implements Writer {
         const blob = new Blob(this.chunks as BlobPart[], { type: 'application/octet-stream' });
         this.chunks = [];
         triggerDownload(blob, this.filename);
+    }
+
+    abort(): void {
+        // discard buffered data without triggering a download
+        this.chunks = [];
     }
 }
 

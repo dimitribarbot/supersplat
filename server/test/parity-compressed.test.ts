@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { gzipSync } from 'node:zlib';
-import { Column, DataTable, Transform, writeFile, writeCompressedPly, readFile, MemoryFileSystem, MemoryReadFileSystem } from '@playcanvas/splat-transform';
+import { Column, DataTable, Transform, writeFile, writeCompressedPly, readFile, createChunkDataPool, materializeToDataTable, MemoryFileSystem, MemoryReadFileSystem } from '@playcanvas/splat-transform';
 import { runExport } from '../src/run-export.js';
 
 const NAMES = ['x', 'y', 'z', 'scale_0', 'scale_1', 'scale_2', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
@@ -25,10 +25,11 @@ describe('server compressed PLY parity', () => {
     // reference: replicate run-export.ts's readback + writeCompressedPly directly
     const rfs = new MemoryReadFileSystem();
     rfs.set('input.ply', new Uint8Array(ply));
-    const tables = await readFile({ filename: 'input.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: rfs });
-    (tables[0] as any).transform = Transform.PLY;
+    const sources = await readFile({ filename: 'input.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: rfs });
+    const dataTable = await materializeToDataTable(sources[0], createChunkDataPool());
+    (dataTable as any).transform = Transform.PLY;
     const ref = new MemoryFileSystem();
-    await writeCompressedPly({ filename: 'out.compressed.ply', dataTable: tables[0] }, ref);
+    await writeCompressedPly({ filename: 'out.compressed.ply', dataTable }, ref);
 
     expect(Buffer.from(res.files[0].data)).toEqual(Buffer.from(ref.results.get('out.compressed.ply')!));
   });

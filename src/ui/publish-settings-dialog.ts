@@ -24,7 +24,7 @@ class PublishSettingsDialog extends Container {
         args = {
             ...args,
             id: 'publish-settings-dialog',
-            class: 'settings-dialog',
+            class: ['settings-dialog', 'blocks-shortcuts'],
             hidden: true,
             tabIndex: -1
         };
@@ -47,7 +47,7 @@ class PublishSettingsDialog extends Container {
         // overwrite
 
         const overwriteLabel = new Label({ class: 'label' });
-        i18n.bindText(overwriteLabel, 'popup.publish.to');
+        i18n.bindText(overwriteLabel, 'popup.publish.destination');
         const overwriteSelect = new SelectInput({
             class: 'select'
         });
@@ -287,7 +287,7 @@ class PublishSettingsDialog extends Container {
             overrideModelToggle.value = true;
             overrideAnimationToggle.value = hasPoses;
             animationToggle.value = hasPoses;
-            loopSelect.value = 'repeat';
+            loopSelect.value = events.invoke('timeline.loop') ? 'repeat' : 'none';
             colorPicker.value = [bgClr.r, bgClr.g, bgClr.b];
             fovSlider.value = events.invoke('camera.fov');
             generateLodsToggle.value = totalSplats >= 1_000_000 && isLargeScene;

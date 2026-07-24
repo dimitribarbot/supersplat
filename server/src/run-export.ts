@@ -3,6 +3,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import {
     readFile,
+    createChunkDataPool,
+    materializeToDataTable,
     writeCompressedPly,
     MemoryFileSystem,
     MemoryReadFileSystem,
@@ -74,14 +76,17 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // All remaining formats need the parsed DataTable.
     const rfs = new MemoryReadFileSystem();
     rfs.set('input.ply', new Uint8Array(ply));
-    const tables = await readFile({
+    const sources = await readFile({
         filename: 'input.ply',
         inputFormat: 'ply',
         options: READ_OPTS,
         params: [],
         fileSystem: rfs
     });
-    const dataTable = tables[0];
+    // v3 readers are chunk-native: materialize the (single) ChunkSource into a
+    // DataTable at our boundary (the writers below consume DataTables).
+    const chunkPool = createChunkDataPool();
+    const dataTable = await materializeToDataTable(sources[0], chunkPool);
     // Re-tag: the readback table is not guaranteed to carry the PLY transform.
     (dataTable as any).transform = Transform.PLY;
 
@@ -179,7 +184,8 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
             const raw = Buffer.from(gunzipSync(plys[i]));
             const erfs = new MemoryReadFileSystem();
             erfs.set('extra.ply', new Uint8Array(raw));
-            const t = (await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs }))[0];
+            const esources = await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs });
+            const t = await materializeToDataTable(esources[0], chunkPool);
             (t as any).transform = Transform.PLY;
             scenes.push({
                 dataTable: t,

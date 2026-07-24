@@ -42,7 +42,7 @@ class ScenePanel extends Container {
         const sceneLabel = new Label({
             class: 'panel-header-label'
         });
-        i18n.bindText(sceneLabel, 'panel.scene-manager');
+        i18n.bindText(sceneLabel, 'panel.scene');
 
         let soloActive = false;
 
@@ -129,8 +129,8 @@ class ScenePanel extends Container {
 
         tooltips.register(soloToggle, () => i18n.t('tooltip.scene.solo'), 'top');
         tooltips.register(walkthroughToggle, () => i18n.t('tooltip.scene.walkthrough'), 'top');
-        tooltips.register(sceneImport, 'Import Scene', 'top');
-        tooltips.register(sceneNew, 'New Scene', 'top');
+        tooltips.register(sceneImport, () => i18n.t('tooltip.scene.import'), 'top');
+        tooltips.register(sceneNew, () => i18n.t('tooltip.scene.new'), 'top');
 
         const splatList = new SplatList(events);
 
@@ -151,7 +151,7 @@ class ScenePanel extends Container {
         const transformLabel = new Label({
             class: 'panel-header-label'
         });
-        i18n.bindText(transformLabel, 'panel.scene-manager.transform');
+        i18n.bindText(transformLabel, 'panel.scene.transform');
 
         transformHeader.append(transformIcon);
         transformHeader.append(transformLabel);

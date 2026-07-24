@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Column, DataTable, Transform, writeFile, readFile, MemoryFileSystem, MemoryReadFileSystem } from '@playcanvas/splat-transform';
+import { Column, DataTable, Transform, writeFile, readFile, MemoryFileSystem, MemoryReadFileSystem, createChunkDataPool, materializeToDataTable } from '@playcanvas/splat-transform';
 
 const READ_OPTS = { iterations: 10, lodSelect: [0], unbundled: false, lodChunkCount: 512, lodChunkExtent: 16 };
 
@@ -17,8 +17,8 @@ describe('extract -> PLY -> readback parity', () => {
 
     const rfs = new MemoryReadFileSystem();
     rfs.set('p.ply', bytes);
-    const tables = await readFile({ filename: 'p.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: rfs });
-    const back = tables[0];
+    const sources = await readFile({ filename: 'p.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: rfs });
+    const back = await materializeToDataTable(sources[0], createChunkDataPool());
 
     for (const n of names) {
       const a = src.columns.find(c => c.name === n).data;
@@ -35,7 +35,8 @@ describe('extract -> PLY -> readback parity', () => {
     await writeFile({ filename: 'p.ply', outputFormat: 'ply', dataTable: src, options: {} }, memFs);
     const rfs = new MemoryReadFileSystem();
     rfs.set('p.ply', memFs.results.get('p.ply'));
-    const tables = await readFile({ filename: 'p.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: rfs });
-    expect(tables[0].transform.equals(Transform.PLY)).toBe(true);
+    const sources = await readFile({ filename: 'p.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: rfs });
+    const back = await materializeToDataTable(sources[0], createChunkDataPool());
+    expect(back.transform.equals(Transform.PLY)).toBe(true);
   });
 });

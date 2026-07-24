@@ -11,7 +11,7 @@ import { buildPortalUpload } from './portal-upload';
 import { firstWalkthroughPose } from './poster-pose';
 import { Scene } from './scene';
 import { Splat } from './splat';
-import { serializePly, serializePlyCompressed, SerializeSettings, serializeSog, serializeSplat, serializeSpz, serializeViewer, serializeViewerSettings, SogSettings, SpzSettings, ViewerExportSettings } from './splat-serialize';
+import { serializePly, SerializeSettings, serializeSog, serializeSpz, serializeViewer, serializeViewerSettings, SogSettings, SpzSettings, ViewerExportSettings, WebGPUUnavailableError, writeSplatFile } from './splat-serialize';
 import { i18n } from './ui/localization';
 
 // ts compiler and vscode find this type, but eslint does not
@@ -65,7 +65,7 @@ const filePickerTypes: { [key: string]: FilePickerAcceptType } = {
     'lcc': {
         description: 'LCC Scene',
         accept: {
-            'application/x-lcc': ['.lcc', '.bin']
+            'application/x-lcc': ['.lcc', '.lcc2', '.bin']
         }
     },
     'splat': {
@@ -118,7 +118,7 @@ const allImportTypes = {
         'application/ply': ['.ply'],
         'application/x-gaussian-splat': ['.json', '.sog', '.splat', '.ksplat', '.spz'],
         'image/webp': ['.webp'],
-        'application/x-lcc': ['.lcc', '.bin'],
+        'application/x-lcc': ['.lcc', '.lcc2', '.bin'],
         'text/plain': ['.txt']
     }
 };
@@ -147,16 +147,17 @@ const isPlySequence = (filenames: string[]) => {
     return true;
 };
 
-// sog comprises a single meta.json file and zero or more .webp files
+// SOG has a meta.json file; streamed SOG has a lod-meta.json file.
 const isSog = (filenames: string[]) => {
     const count = (extension: string) => filenames.reduce((sum, f) => sum + (f.endsWith(extension) ? 1 : 0), 0);
-    return count('meta.json') === 1;
+    return count('lod-meta.json') === 1 || count('meta.json') === 1;
 };
 
-// The LCC file contains meta.lcc, index.bin, data.bin and shcoef.bin (optional)
+// The LCC file contains meta.lcc, index.bin, data.bin and shcoef.bin (optional).
+// LCC2 comprises a meta.lcc2 file and .sog/.spz chunk files.
 const isLcc = (filenames: string[]) => {
     const count = (extension: string) => filenames.reduce((sum, f) => sum + (f.endsWith(extension) ? 1 : 0), 0);
-    return count('.lcc') === 1;
+    return count('.lcc') === 1 || count('.lcc2') === 1;
 };
 
 type ImportFile = {
@@ -285,10 +286,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             // Determine the main file based on format
             let mainIndex: number;
-            if (filenames.some(f => f === 'meta.json')) {
-                mainIndex = filenames.findIndex(f => f === 'meta.json');
-            } else if (filenames.some(f => f.endsWith('.lcc'))) {
-                mainIndex = filenames.findIndex(f => f.endsWith('.lcc'));
+            if (filenames.some(f => f === 'meta.json' || f === 'lod-meta.json')) {
+                mainIndex = filenames.findIndex(f => f === 'meta.json' || f === 'lod-meta.json');
+            } else if (filenames.some(f => f.endsWith('.lcc') || f.endsWith('.lcc2'))) {
+                mainIndex = filenames.findIndex(f => f.endsWith('.lcc') || f.endsWith('.lcc2'));
             } else {
                 mainIndex = 0;  // Single file case
             }
@@ -302,12 +303,22 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (f.contents) fileSystem.addFile(f.filename, f.contents);
             });
 
+            // Multi-file container formats must load by their relative name so the
+            // library resolves sibling files against the file system's baseUrl
+            // (path-joining a full URL corrupts the 'http://' prefix)
+            const lowerMainFilename = mainFile.filename.toLowerCase();
+            const isContainer = lowerMainFilename === 'meta.json' || lowerMainFilename === 'lod-meta.json' || lowerMainFilename.endsWith('.lcc') || lowerMainFilename.endsWith('.lcc2');
+
             // For URL-only single file, use full URL as filename
-            const filename = (files.length === 1 && !mainFile.contents && mainFile.url) ?
+            const filename = (files.length === 1 && !mainFile.contents && mainFile.url && !isContainer) ?
                 mainFile.url :
                 mainFile.filename;
 
             const model = await scene.assetLoader.load(filename, fileSystem, animationFrame);
+            if (!model) {
+                // user cancelled the load
+                return null;
+            }
             await scene.add(model);
             return model;
         } catch (error) {
@@ -328,12 +339,16 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             events.fire('timeline.frame', 0);
         } else if (isSog(filenames) || isLcc(filenames)) {
             if (isLcc(filenames)) {
-                // an LCC needs its sibling data files (index.bin, data.bin, ...).
-                // A lone .lcc - e.g. picked through the file dialog - can't be
-                // loaded, so guide the user to the folder import (or drag & drop)
-                // instead of failing with a 404 on the missing data.
-                const hasData = filenames.some(f => f.endsWith('index.bin')) &&
-                    filenames.some(f => f.endsWith('data.bin'));
+                const isLccV1 = filenames.some(f => f.endsWith('.lcc'));
+                // LCC v1 (meta.lcc + index.bin/data.bin) and LCC2 (meta.lcc2 +
+                // .sog/.spz chunks) are both multi-file. A lone meta file picked
+                // through the file dialog can't be loaded - its relative data
+                // files 404 (notably in server mode) - so guide the user to the
+                // folder import (or drag & drop). v1 needs index.bin+data.bin;
+                // v2 needs its chunk siblings (any file beyond the lone meta).
+                const hasData = isLccV1 ?
+                    filenames.some(f => f.endsWith('index.bin')) && filenames.some(f => f.endsWith('data.bin')) :
+                    filenames.length > 1;
                 if (!hasData) {
                     await events.invoke('showPopup', {
                         type: 'info',
@@ -343,20 +358,22 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     return result;
                 }
 
-                // Only suggest the supersplat upload page when running on the
+                // Only suggest the supersplat upload page for LCC v1 on the
                 // superspl.at domain - the modal and its /upload link are
                 // irrelevant elsewhere (e.g. localhost or self-hosted instances).
-                const { hostname } = window.location;
-                const isSuperSplatDomain = hostname === 'superspl.at' || hostname.endsWith('.superspl.at');
-                if (isSuperSplatDomain) {
-                    const response = await events.invoke('showPopup', {
-                        type: 'okcancel',
-                        header: 'LCC',
-                        message: i18n.t('popup.lcc-upload-warning'),
-                        link: `${window.location.origin}/upload`
-                    });
-                    if (response.action === 'cancel') {
-                        return result;
+                if (isLccV1) {
+                    const { hostname } = window.location;
+                    const isSuperSplatDomain = hostname === 'superspl.at' || hostname.endsWith('.superspl.at');
+                    if (isSuperSplatDomain) {
+                        const response = await events.invoke('showPopup', {
+                            type: 'okcancel',
+                            header: 'LCC',
+                            message: i18n.t('popup.lcc-upload-warning'),
+                            link: `${window.location.origin}/upload`
+                        });
+                        if (response.action === 'cancel') {
+                            return result;
+                        }
                     }
                 }
             }
@@ -406,7 +423,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         fileSelector = document.createElement('input');
         fileSelector.setAttribute('id', 'file-selector');
         fileSelector.setAttribute('type', 'file');
-        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.ssproj,.sog,.lcc,.bin,.txt,.ksplat,.spz');
+        fileSelector.setAttribute('accept', '.ply,.splat,meta.json,.json,.webp,.ssproj,.sog,.lcc,.lcc2,.bin,.txt,.ksplat,.spz');
         fileSelector.setAttribute('multiple', 'true');
 
         fileSelector.onchange = () => {
@@ -744,15 +761,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
 
             switch (fileType) {
                 case 'ply':
-                    await serializePly(splats, serializeSettings, fs);
+                    await writeSplatFile(splats, serializeSettings, 'ply', 'output.ply', {}, fs);
                     break;
                 case 'compressedPly':
                     serializeSettings.minOpacity = 1 / 255;
                     serializeSettings.removeInvalid = true;
-                    await serializePlyCompressed(splats, serializeSettings, fs);
+                    await writeSplatFile(splats, serializeSettings, 'compressed-ply', 'output.compressed.ply', {}, fs);
                     break;
                 case 'splat':
-                    await serializeSplat(splats, serializeSettings, fs);
+                    await writeSplatFile(splats, serializeSettings, 'splat', 'output.splat', {}, fs);
                     break;
                 case 'sog': {
                     const sogSettings: SogSettings = {
@@ -829,11 +846,20 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             }
 
         } catch (error) {
-            await events.invoke('showPopup', {
-                type: 'error',
-                header: i18n.t('popup.error-loading'),
-                message: `${error.message ?? error} while saving file`
-            });
+            if (error instanceof WebGPUUnavailableError) {
+                await events.invoke('showPopup', {
+                    type: 'error',
+                    header: i18n.t('popup.error'),
+                    message: i18n.t('popup.webgpu-unavailable')
+                });
+            } else {
+                const message = error instanceof Error ? error.message : String(error);
+                await events.invoke('showPopup', {
+                    type: 'error',
+                    header: i18n.t('popup.error'),
+                    message: `${message} while saving file`
+                });
+            }
         } finally {
             if (useSpinner) {
                 events.fire('stopSpinner');

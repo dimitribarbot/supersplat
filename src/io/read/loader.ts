@@ -3,23 +3,48 @@
  */
 
 import {
-    combine,
     getInputFormat,
     readFile,
     sortMortonOrder,
+    createChunkDataPool,
+    materializeToDataTable,
+    selectLod,
+    combine,
     Column,
     ColumnType,
     DataTable,
     Options,
+    ChunkSource,
     ReadFileSystem,
     Transform,
     ZipReadFileSystem
 } from '@playcanvas/splat-transform';
 import { GSplatData } from 'playcanvas';
 
+import { readLccEnvironment } from './lcc-environment';
+
 type LoadResult = {
     gsplatData: GSplatData;
     transform: Transform;
+};
+
+// invoked when a file contains multiple LODs. returns the LOD index to load,
+// or null to cancel the load.
+type PickLod = (lodCounts: readonly number[]) => Promise<number | null>;
+
+// maximum splat count considered reasonable to load, used to select a default
+// LOD level for multi-LOD formats (e.g. LCC)
+const LOD_MAX_SPLATS = 20_000_000;
+
+// pick the most detailed LOD under the splat limit, or the least detailed
+// when all levels exceed it
+const defaultLodIndex = (lodCounts: readonly number[]) => {
+    const candidates = lodCounts.map((count, index) => ({ count, index }));
+    const under = candidates.filter(c => c.count < LOD_MAX_SPLATS);
+    if (under.length > 0) {
+        return under.reduce((a, b) => (b.count > a.count ? b : a)).index;
+    }
+    return candidates.reduce((a, b) => (b.count < a.count ? b : a)).index;
 };
 
 /**
@@ -27,7 +52,7 @@ type LoadResult = {
  */
 const defaultOptions: Options = {
     iterations: 10,
-    lodSelect: [0],
+    lodSelect: [],
     unbundled: false,
     lodChunkCount: 512,
     lodChunkExtent: 16
@@ -81,12 +106,43 @@ const dataTableToGSplatData = (dataTable: DataTable): GSplatData => {
 };
 
 /**
+ * Materialize the first source returned by readFile into a DataTable.
+ * readFile returns lazy ChunkSource[]; multi-LOD sources (e.g. LCC) are
+ * reduced to a single LOD before materializing - chosen by the pickLod
+ * callback when supplied, otherwise the most detailed level with a
+ * reasonable splat count. Returns null if pickLod cancels the load.
+ */
+const materializeFirst = async (sources: ChunkSource[], pickLod?: PickLod): Promise<DataTable | null> => {
+    const source = sources[0];
+    const pool = createChunkDataPool({ chunkSize: source.meta.chunkSize });
+    try {
+        let single = source;
+        if (source.meta.numLods > 1) {
+            const { lodCounts } = source.meta;
+            const lod = pickLod ? await pickLod(lodCounts) : defaultLodIndex(lodCounts);
+            if (lod === null) {
+                return null;
+            }
+            single = selectLod(source, lod);
+        }
+        return await materializeToDataTable(single, pool);
+    } finally {
+        for (const s of sources) {
+            await s.close();
+        }
+        pool.destroy();
+    }
+};
+
+/**
  * Load a file using splat-transform and convert to GSplatData.
+ * Returns null if the user cancels LOD selection.
  * @param filename - The filename to load
  * @param fileSystem - The file system to read from
  * @param skipReorder - Skip morton reordering (for files already in morton order or animation playback)
+ * @param pickLod - Invoked when the file contains multiple LODs to choose which to load
  */
-const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skipReorder?: boolean): Promise<LoadResult> => {
+const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skipReorder?: boolean, pickLod?: PickLod): Promise<LoadResult | null> => {
     const inputFormat = getInputFormat(filename);
     const lowerFilename = filename.toLowerCase();
 
@@ -95,21 +151,25 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
         const source = await fileSystem.createSource(filename);
         const zipFs = new ZipReadFileSystem(source);
         try {
-            const tables = await readFile({
+            const sources = await readFile({
                 filename: 'meta.json',
                 inputFormat: 'sog',
                 options: defaultOptions,
                 params: [],
                 fileSystem: zipFs
             });
-            return { gsplatData: dataTableToGSplatData(tables[0]), transform: tables[0].transform };
+            const dataTable = await materializeFirst(sources, pickLod);
+            if (!dataTable) {
+                return null;
+            }
+            return { gsplatData: dataTableToGSplatData(dataTable), transform: dataTable.transform };
         } finally {
             zipFs.close();
         }
     }
 
     // Read the file using splat-transform
-    const tables = await readFile({
+    const sources = await readFile({
         filename,
         inputFormat,
         options: defaultOptions,
@@ -117,13 +177,24 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
         fileSystem
     });
 
-    // Some formats return multiple tables. LCC returns the main scene geometry in
-    // tables[0] and, when present, the environment (skybox) splats from
-    // environment.bin in a subsequent table. Merge them into a single table so the
-    // environment is included. combine() unions columns by name/type, zero-filling
-    // any column absent from a table (e.g. normals, which the environment lacks),
-    // and preserves the shared source transform.
-    const table = tables.length > 1 ? combine(tables) : tables[0];
+    const dataTable = await materializeFirst(sources, pickLod);
+    if (!dataTable) {
+        return null;
+    }
+
+    // Restore the LCC/LCC2 environment (skybox) splats. v3's readFile drops the
+    // environment chunk (its streaming LCC readers exclude it), so we read it
+    // separately and merge it in, mirroring the pre-v3 loader. combine() unions
+    // columns by name/type, zero-filling any column absent from a table (e.g.
+    // normals, which the environment lacks). Best-effort: readLccEnvironment
+    // returns null when there is no skybox or it can't be decoded.
+    let table = dataTable;
+    if (lowerFilename.endsWith('.lcc') || lowerFilename.endsWith('.lcc2')) {
+        const envTable = await readLccEnvironment(fileSystem, filename);
+        if (envTable) {
+            table = combine([dataTable, envTable]);
+        }
+    }
 
     // Reorder data into morton order for better render performance.
     // Skip reordering for:
@@ -162,6 +233,7 @@ const validateGSplatData = (gsplatData: GSplatData): void => {
 };
 
 export {
+    defaultLodIndex,
     loadGSplatData,
     validateGSplatData
 };

@@ -1,15 +1,18 @@
 import {
-    Column,
-    combine,
+    bakeTransform,
     DataTable,
+    dataTableToChunkSource,
     logger as splatTransformLogger,
     MemoryFileSystem,
-    simplifyGaussians,
+    processDataTable,
+    stackLods,
+    Transform,
     writeHtml,
-    writeLod,
+    writeLodSource,
     writeSog,
     writeVoxel,
     ZipFileSystem,
+    type ChunkSource,
     type DeviceCreator,
     type FileSystem,
     type LogEvent,
@@ -214,22 +217,39 @@ const LIBRARY_STEP_KEYS: Record<string, string> = {
     'Building per-splat cache': 'export.step.building-per-splat-cache',
     'Building tree': 'export.step.building-tree',
     'Carve': 'export.step.carve',
+    'chunking': 'export.step.chunking',
+    'Collision mesh': 'export.step.collision-mesh',
     'Column walk': 'export.step.column-walk',
     'Combining': 'export.step.combining',
     'Computing edge costs': 'export.step.computing-edge-costs',
     'Computing edge costs (GPU)': 'export.step.computing-edge-costs',
+    'computing merge priorities': 'export.step.computing-merge-priorities',
     'Copying kept splats': 'export.step.copying-kept-splats',
     'Cropping': 'export.step.cropping',
     'Cropping grid': 'export.step.cropping-grid',
+    'Cull': 'export.step.cull',
+    'Decimate generation': 'export.step.decimate-generation',
+    'decoding': 'export.step.decoding',
     'Dilating': 'export.step.dilating',
+    'Encoding': 'export.step.encoding',
+    'Extracting': 'export.step.extracting',
+    'Extracting voxel faces': 'export.step.extracting-voxel-faces',
     'Fill exterior': 'export.step.fill-exterior',
     'Fill floor': 'export.step.fill-floor',
     'Filtering': 'export.step.filtering',
     'Finding nearest neighbors': 'export.step.finding-nearest-neighbors',
     'Finding nearest neighbors (GPU)': 'export.step.finding-nearest-neighbors',
+    'k-means': 'export.step.k-means',
     'Loading grid': 'export.step.loading-grid',
+    'merging': 'export.step.merging',
+    'Merging coplanar faces': 'export.step.merging-coplanar-faces',
     'Merging splats': 'export.step.merging-splats',
+    'Partitioning': 'export.step.partitioning',
+    'rasterizing': 'export.step.rasterizing',
+    'reading positions': 'export.step.reading-positions',
+    'Render': 'export.step.render',
     'Scanning bounds': 'export.step.scanning-bounds',
+    'Selecting merges': 'export.step.selecting-merges',
     'Selecting pairs': 'export.step.selecting-pairs',
     'Voxelizing': 'export.step.voxelizing',
     'Writing': 'export.step.writing'
@@ -366,18 +386,16 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
 const LOD_DECIMATION_FACTOR = 2;
 const MIN_LOD_SPLATS = 1024 * 1024;
 
-// Build a single DataTable carrying a per-gaussian `lod` column (0 = finest),
-// suitable for writeLod. Decimation chains off the untagged previous level, so
-// the synthetic `lod` column is only added after all decimation completes (the
-// merge/simplify math must never see it). Consumes lod0: a `lod` column is
-// added to it in place (cloning the full-resolution table here would needlessly
-// duplicate the largest dataset), so callers must not reuse the passed table
-// after this call.
+// Build a structural multi-LOD ChunkSource (LOD i = detail level i, 0 = finest),
+// suitable for writeLodSource. Decimation chains off the previous level; each
+// level becomes one single-LOD ChunkSource and they are stacked. lod0 is read
+// (not mutated) into its own single-LOD source, so the passed table is left
+// intact.
 const buildStreamingLodTable = async (
     lod0: DataTable,
     createDevice: DeviceCreator,
     onPhase?: (info: PhaseInfo) => void
-): Promise<{ table: DataTable; levelCounts: number[] }> => {
+): Promise<{ mainSource: ChunkSource; levelCounts: number[] }> => {
     // Count the coarser levels we'll generate up front so the phase label can
     // show an accurate "level N of M" (M = number of decimated levels). Mirror
     // the build loop's stop condition: keep halving and count each level until
@@ -404,7 +422,7 @@ const buildStreamingLodTable = async (
             break;
         }
         onPhase?.(PHASES.buildingLod(level, levelCount));
-        const simplified = await simplifyGaussians(prev, target, createDevice);
+        const simplified = await processDataTable(prev, [{ kind: 'decimate', count: target, percent: null }], { createDevice });
         levels.push(simplified);
         prev = simplified;
         if (target < MIN_LOD_SPLATS) {
@@ -413,17 +431,17 @@ const buildStreamingLodTable = async (
         level++;
     }
 
-    // Tag every level with its `lod` index (0 = lod0) only now that all
-    // decimation is done, so simplifyGaussians never chains off a table
-    // carrying the synthetic `lod` column.
-    for (let i = 0; i < levels.length; ++i) {
-        levels[i].addColumn(new Column('lod', new Float32Array(levels[i].numRows).fill(i)));
-    }
-
     const levelCounts = levels.map(l => l.numRows);
-    // All levels descend from lod0's Transform.PLY (clone preserves it), so
-    // combine concatenates rows without any coordinate-space conversion.
-    return { table: combine(levels), levelCounts };
+    // v3 writeLodSource wants a STRUCTURAL multi-LOD source (LOD i = detail level i),
+    // not a `lod`-tagged flat table. Each decimated level is one single-LOD source;
+    // stack them. lod0 is tagged Transform.PLY, but v3's decimate bakes each
+    // decimated level back to Transform.IDENTITY (its convertToSpace(...,IDENTITY)),
+    // so the levels no longer share a space. Bake every level to Transform.PLY
+    // before stacking: a no-op for lod0, and the IDENTITY->PLY delta for the
+    // decimated levels, so all levels share Transform.PLY and stackLods' match
+    // assertion holds. writeLodSource then bakes PLY (fast-path no-op).
+    const mainSource = stackLods(levels.map(l => bakeTransform(dataTableToChunkSource(l), Transform.PLY)));
+    return { mainSource, levelCounts };
 };
 
 // Coarsest voxel size the auto-fit ladder will try before giving up.
@@ -509,10 +527,8 @@ const writePortalScene = async (
     const sub = new MemoryFileSystem();
     let levelCounts: number[] = [];
     // Voxelize first, on the pristine full-resolution table, before the streaming
-    // LOD build consumes it (buildStreamingLodTable tags rows with a synthetic
-    // `lod` column). This mirrors the primary scene's collision→LOD order so
-    // every scene's progress reads consistently, and lets the LOD build reuse the
-    // original table instead of a full clone. writeCollisionVoxel does not mutate
+    // LOD build reads it. This mirrors the primary scene's collision→LOD order so
+    // every scene's progress reads consistently. writeCollisionVoxel does not mutate
     // its input, so the subsequent LOD/SOG build still sees clean data.
     if (scene.collisionUrl) {
         onPhase?.(PHASES.generatingCollision(), false);
@@ -530,15 +546,15 @@ const writePortalScene = async (
         }
     }
     if (scene.streaming) {
-        const { table: lodTable, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable, createDevice, (info) => {
+        const { mainSource, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable, createDevice, (info) => {
             onPhase?.(info, false);   // decimation passes carry their level in the label
         });
         levelCounts = counts;
         onPhase?.(PHASES.packagingChunks(), true);
-        await writeLod({
+        await writeLodSource({
             filename: '/lod-meta.json',
-            dataTable: lodTable,
-            envDataTable: null,
+            mainSource,
+            envSource: null,
             iterations: 10,
             createDevice,
             chunkCount: 512,
@@ -573,7 +589,7 @@ const repointCollisionUrl = (memFs: MemoryFileSystem): void => {
 };
 
 // Produce a streaming viewer ZIP: a viewer shell (from unbundled writeHtml)
-// repointed at lod-meta.json, plus the writeLod streaming bundle.
+// repointed at lod-meta.json, plus the writeLodSource streaming bundle.
 // Module-private: only called by writeViewerCore.
 //
 // viewerSettingsJson is typed `any` here to avoid a circular import with
@@ -629,14 +645,14 @@ const writeStreamingViewerCore = async (
     // Streaming bundle: lod-meta.json + per-LOD SOG chunk folders. Decimation's
     // per-pass count is an estimate, so the level number lives in the label and
     // the per-step counter stays off here.
-    const { table: lodTable, levelCounts: primaryLodCounts } = await buildStreamingLodTable(dataTable, createDevice, (info) => {
+    const { mainSource, levelCounts: primaryLodCounts } = await buildStreamingLodTable(dataTable, createDevice, (info) => {
         phase = withScene(info, primaryScene);
     });
 
     // Chunk packaging emits one accurate {index,total} per chunk - surface it.
     phase = withScene(PHASES.packagingChunks(), primaryScene);
     counted = true;
-    await writeLod({
+    await writeLodSource({
         // Absolute root so splat-transform's pathe `resolve(outputDir, ...)` for
         // each per-LOD chunk short-circuits on the absolute base instead of
         // prepending the process CWD. On Node a relative 'lod-meta.json' would
@@ -645,8 +661,8 @@ const writeStreamingViewerCore = async (
         // leading '/' yields the same '/'-rooted keys the browser already
         // produces, which are normalised to relative entries below.
         filename: '/lod-meta.json',
-        dataTable: lodTable,
-        envDataTable: null,
+        mainSource,
+        envSource: null,
         iterations: 10,
         createDevice,
         chunkCount: 512,   // ~gaussians per chunk, in thousands (splat-transform default)
@@ -711,7 +727,7 @@ const writeStreamingViewerCore = async (
 
     // ZIP every emitted file. Keys are normalised to relative paths so the
     // viewer's relative chunk references resolve from the archive root
-    // regardless of how writeLod composed its output paths.
+    // regardless of how writeLodSource composed its output paths.
     const zipWriter = await fs.createWriter('output.zip');
     const zipFs = new ZipFileSystem(zipWriter);
     try {

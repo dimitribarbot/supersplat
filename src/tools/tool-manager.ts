@@ -1,8 +1,17 @@
+import type { Vec3 } from 'playcanvas';
+
 import { Events } from '../events';
 
 interface Tool {
     activate: () => void;
     deactivate: () => void;
+    // optional: handle a transform-mode request (1/2/3 shortcuts) while this
+    // tool is active. return true if consumed, otherwise the corresponding
+    // transform tool is activated instead.
+    setTransformMode?: (mode: 'translate' | 'rotate' | 'scale') => boolean;
+    // optional: world-space focus target for the frame ('f') shortcut. return
+    // null to fall back to framing the selection.
+    getFocus?: () => { position: Vec3, radius: number } | null;
 }
 
 class ToolManager {
@@ -21,7 +30,14 @@ class ToolManager {
             return this.active;
         });
 
-        let coordSpace: 'local' | 'world' = 'world';
+        // the active tool's focus target (if any), framed by camera.focus in
+        // place of the selection
+        this.events.function('tool.focus', () => {
+            const tool = this.active ? this.tools.get(this.active) : null;
+            return tool?.getFocus?.() ?? null;
+        });
+
+        let coordSpace: 'local' | 'world' = 'local';
 
         const setCoordSpace = (space: 'local' | 'world') => {
             if (space !== coordSpace) {
@@ -41,6 +57,25 @@ class ToolManager {
         events.on('tool.toggleCoordSpace', () => {
             setCoordSpace(coordSpace === 'local' ? 'world' : 'local');
         });
+
+        // announce the initial space so ui constructed before this (e.g. the
+        // bottom toolbar toggle) reflects the default; tools constructed
+        // after read it via tool.coordSpace
+        events.fire('tool.coordSpace', coordSpace);
+
+        // the 1/2/3 shortcuts switch the active tool's gizmo mode if it
+        // supports one (box/sphere selection), otherwise activate the
+        // corresponding transform tool
+        const transformShortcut = (mode: 'translate' | 'rotate' | 'scale', toolName: string) => {
+            const tool = this.active ? this.tools.get(this.active) : null;
+            if (!tool?.setTransformMode?.(mode)) {
+                this.activate(toolName);
+            }
+        };
+
+        events.on('tool.moveShortcut', () => transformShortcut('translate', 'move'));
+        events.on('tool.rotateShortcut', () => transformShortcut('rotate', 'rotate'));
+        events.on('tool.scaleShortcut', () => transformShortcut('scale', 'scale'));
     }
 
     register(name: string, tool: Tool) {

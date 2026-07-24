@@ -5,7 +5,9 @@ import { ShortcutManager } from '../shortcut-manager';
 import { i18n } from './localization';
 import alignSvg from './svg/align.svg';
 import annotationsSvg from './svg/annotations.svg';
+import measureSvg from './svg/measure.svg';
 import offLimitsSvg from './svg/off-limits.svg';
+import orientSvg from './svg/orient.svg';
 import portalSvg from './svg/portal.svg';
 import redoSvg from './svg/redo.svg';
 import brushSvg from './svg/select-brush.svg';
@@ -95,8 +97,8 @@ class BottomToolbar extends Container {
         //     class: ['bottom-toolbar-tool', 'disabled']
         // });
 
-        const translate = new Button({
-            id: 'bottom-toolbar-translate',
+        const move = new Button({
+            id: 'bottom-toolbar-move',
             class: 'bottom-toolbar-tool',
             icon: 'E111'
         });
@@ -115,8 +117,12 @@ class BottomToolbar extends Container {
 
         const measure = new Button({
             id: 'bottom-toolbar-measure',
-            class: 'bottom-toolbar-tool',
-            icon: 'E358'
+            class: 'bottom-toolbar-tool'
+        });
+
+        const orient = new Button({
+            id: 'bottom-toolbar-orient',
+            class: 'bottom-toolbar-tool'
         });
 
         const align = new Button({
@@ -161,6 +167,8 @@ class BottomToolbar extends Container {
         box.dom.appendChild(createSvg(boxSvg));
         lasso.dom.appendChild(createSvg(lassoSvg));
         eyedropper.dom.appendChild(createSvg(eyedropperSvg));
+        measure.dom.appendChild(createSvg(measureSvg));
+        orient.dom.appendChild(createSvg(orientSvg));
         align.dom.appendChild(createSvg(alignSvg));
         annotation.dom.appendChild(createSvg(annotationsSvg));
         offLimits.dom.appendChild(createSvg(offLimitsSvg));
@@ -181,11 +189,12 @@ class BottomToolbar extends Container {
         this.append(box);
         // this.append(crop);
         this.append(new Element({ class: 'bottom-toolbar-separator' }));
-        this.append(translate);
+        this.append(move);
         this.append(rotate);
         this.append(scale);
         this.append(new Element({ class: 'bottom-toolbar-separator' }));
         this.append(measure);
+        this.append(orient);
         this.append(align);
         this.append(annotation);
         this.append(offLimits);
@@ -203,16 +212,23 @@ class BottomToolbar extends Container {
         eyedropper.dom.addEventListener('click', () => events.fire('tool.eyedropperSelection'));
         sphere.dom.addEventListener('click', () => events.fire('tool.sphereSelection'));
         box.dom.addEventListener('click', () => events.fire('tool.boxSelection'));
-        translate.dom.addEventListener('click', () => events.fire('tool.move'));
+        move.dom.addEventListener('click', () => events.fire('tool.move'));
         rotate.dom.addEventListener('click', () => events.fire('tool.rotate'));
         scale.dom.addEventListener('click', () => events.fire('tool.scale'));
         measure.dom.addEventListener('click', () => events.fire('tool.measure'));
+        orient.dom.addEventListener('click', () => events.fire('tool.orient'));
         align.dom.addEventListener('click', () => events.fire('tool.align'));
         annotation.dom.addEventListener('click', () => events.fire('tool.annotation'));
         offLimits.dom.addEventListener('click', () => events.fire('tool.offLimitsZones'));
         portals.dom.addEventListener('click', () => events.fire('tool.portals'));
         coordSpace.dom.addEventListener('click', () => events.fire('tool.toggleCoordSpace'));
-        origin.dom.addEventListener('click', () => events.fire('pivot.toggleOrigin'));
+        origin.dom.addEventListener('click', (e: MouseEvent) => {
+            if (events.invoke('tool.active') === 'orient') {
+                events.fire('orient.setPivot');
+            } else {
+                events.fire('pivot.reset', e.shiftKey);
+            }
+        });
 
         events.on('edit.canUndo', (value: boolean) => {
             undo.enabled = value;
@@ -229,10 +245,11 @@ class BottomToolbar extends Container {
             lasso.class[toolName === 'lassoSelection' ? 'add' : 'remove']('active');
             sphere.class[toolName === 'sphereSelection' ? 'add' : 'remove']('active');
             box.class[toolName === 'boxSelection' ? 'add' : 'remove']('active');
-            translate.class[toolName === 'move' ? 'add' : 'remove']('active');
+            move.class[toolName === 'move' ? 'add' : 'remove']('active');
             rotate.class[toolName === 'rotate' ? 'add' : 'remove']('active');
             scale.class[toolName === 'scale' ? 'add' : 'remove']('active');
             measure.class[toolName === 'measure' ? 'add' : 'remove']('active');
+            orient.class[toolName === 'orient' ? 'add' : 'remove']('active');
             align.class[toolName === 'align' ? 'add' : 'remove']('active');
             annotation.class[toolName === 'annotation' ? 'add' : 'remove']('active');
             offLimits.class[toolName === 'offLimitsZones' ? 'add' : 'remove']('active');
@@ -244,9 +261,6 @@ class BottomToolbar extends Container {
             coordSpace.dom.classList[space === 'local' ? 'add' : 'remove']('active');
         });
 
-        events.on('pivot.origin', (o: 'center' | 'boundCenter') => {
-            origin.dom.classList[o === 'boundCenter' ? 'add' : 'remove']('active');
-        });
 
         // Helper to compose localized tooltip text with shortcut
         const shortcutManager: ShortcutManager = events.invoke('shortcutManager');
@@ -264,24 +278,27 @@ class BottomToolbar extends Container {
         // register tooltips
         tooltips.register(undo, tooltip('tooltip.bottom-toolbar.undo', 'edit.undo'));
         tooltips.register(redo, tooltip('tooltip.bottom-toolbar.redo', 'edit.redo'));
-        tooltips.register(picker, tooltip('tooltip.bottom-toolbar.rect', 'tool.rectSelection'));
-        tooltips.register(lasso, tooltip('tooltip.bottom-toolbar.lasso', 'tool.lassoSelection'));
-        tooltips.register(polygon, tooltip('tooltip.bottom-toolbar.polygon', 'tool.polygonSelection'));
-        tooltips.register(brush, tooltip('tooltip.bottom-toolbar.brush', 'tool.brushSelection'));
-        tooltips.register(flood, tooltip('tooltip.bottom-toolbar.flood', 'tool.floodSelection'));
-        tooltips.register(sphere, tooltip('tooltip.bottom-toolbar.sphere'));
-        tooltips.register(box, tooltip('tooltip.bottom-toolbar.box'));
-        tooltips.register(translate, tooltip('tooltip.bottom-toolbar.translate', 'tool.move'));
-        tooltips.register(rotate, tooltip('tooltip.bottom-toolbar.rotate', 'tool.rotate'));
-        tooltips.register(scale, tooltip('tooltip.bottom-toolbar.scale', 'tool.scale'));
+        tooltips.register(picker, tooltip('tooltip.bottom-toolbar.rectangle-selection', 'tool.rectSelection'));
+        tooltips.register(lasso, tooltip('tooltip.bottom-toolbar.lasso-selection', 'tool.lassoSelection'));
+        tooltips.register(polygon, tooltip('tooltip.bottom-toolbar.polygon-selection', 'tool.polygonSelection'));
+        tooltips.register(brush, tooltip('tooltip.bottom-toolbar.brush-selection', 'tool.brushSelection'));
+        tooltips.register(flood, tooltip('tooltip.bottom-toolbar.flood-selection', 'tool.floodSelection'));
+        tooltips.register(sphere, tooltip('tooltip.bottom-toolbar.sphere-selection'));
+        tooltips.register(box, tooltip('tooltip.bottom-toolbar.box-selection'));
+        tooltips.register(move, tooltip('tooltip.bottom-toolbar.move', 'tool.moveShortcut'));
+        tooltips.register(rotate, tooltip('tooltip.bottom-toolbar.rotate', 'tool.rotateShortcut'));
+        tooltips.register(scale, tooltip('tooltip.bottom-toolbar.scale', 'tool.scaleShortcut'));
         tooltips.register(measure, tooltip('tooltip.bottom-toolbar.measure'));
+        tooltips.register(orient, tooltip('tooltip.bottom-toolbar.orient'));
         tooltips.register(align, tooltip('tooltip.bottom-toolbar.align'));
         tooltips.register(annotation, tooltip('tooltip.bottom-toolbar.annotations'));
         tooltips.register(offLimits, tooltip('tooltip.bottom-toolbar.off-limits'));
         tooltips.register(portals, tooltip('tooltip.bottom-toolbar.portals'));
         tooltips.register(coordSpace, tooltip('tooltip.bottom-toolbar.local-space', 'tool.toggleCoordSpace'));
-        tooltips.register(origin, tooltip('tooltip.bottom-toolbar.bound-center'));
-        tooltips.register(eyedropper, tooltip('tooltip.bottom-toolbar.eyedropper', 'tool.eyedropperSelection'));
+        tooltips.register(origin, () => i18n.t(
+            events.invoke('tool.active') === 'orient' ? 'orient.set-pivot' : 'tooltip.bottom-toolbar.reset-pivot'
+        ));
+        tooltips.register(eyedropper, tooltip('tooltip.bottom-toolbar.eyedropper-selection', 'tool.eyedropperSelection'));
     }
 }
 

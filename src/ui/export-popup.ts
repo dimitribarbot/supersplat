@@ -24,6 +24,7 @@ const removeKnownExtension = (filename: string) => {
         '.ksplat',
         '.splat',
         '.html',
+        '.lcc2',
         '.ply',
         '.sog',
         '.spz',
@@ -49,6 +50,7 @@ class ExportPopup extends Container {
     constructor(events: Events, args = {}) {
         args = {
             id: 'export-popup',
+            class: 'blocks-shortcuts',
             hidden: true,
             tabIndex: -1,
             ...args
