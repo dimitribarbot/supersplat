@@ -331,7 +331,7 @@
     "export.step.fill-floor": "Rellenando suelo",
     "export.step.filtering": "Filtrando",
     "export.step.finding-nearest-neighbors": "Buscando vecinos más cercanos",
-    "export.step.k-means": "k-medias",
+    "export.step.k-means": "k-means",
     "export.step.loading-grid": "Cargando cuadrícula",
     "export.step.merging": "Fusionando",
     "export.step.merging-coplanar-faces": "Fusionando caras coplanares",

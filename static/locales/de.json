@@ -331,7 +331,7 @@
     "export.step.fill-floor": "Boden füllen",
     "export.step.filtering": "Filtern",
     "export.step.finding-nearest-neighbors": "Nächste Nachbarn werden gesucht",
-    "export.step.k-means": "k-Means",
+    "export.step.k-means": "k-means",
     "export.step.loading-grid": "Gitter wird geladen",
     "export.step.merging": "Zusammenführen",
     "export.step.merging-coplanar-faces": "Koplanare Flächen werden zusammengeführt",

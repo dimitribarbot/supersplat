@@ -331,7 +331,7 @@
     "export.step.fill-floor": "床を塗りつぶし中",
     "export.step.filtering": "フィルタリング中",
     "export.step.finding-nearest-neighbors": "最近傍を探索中",
-    "export.step.k-means": "k平均法",
+    "export.step.k-means": "k-means",
     "export.step.loading-grid": "グリッドを読み込み中",
     "export.step.merging": "結合中",
     "export.step.merging-coplanar-faces": "同一平面上の面を結合中",

@@ -331,7 +331,7 @@
     "export.step.fill-floor": "바닥 채우는 중",
     "export.step.filtering": "필터링 중",
     "export.step.finding-nearest-neighbors": "최근접 이웃 찾는 중",
-    "export.step.k-means": "k-평균",
+    "export.step.k-means": "k-means",
     "export.step.loading-grid": "그리드 불러오는 중",
     "export.step.merging": "병합 중",
     "export.step.merging-coplanar-faces": "동일 평면 면 병합 중",
