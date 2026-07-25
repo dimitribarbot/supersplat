@@ -295,6 +295,14 @@ class SplatList extends Container {
                 return;
             }
 
+            // Don't remove a scene while an export is running: viewer exports extract
+            // each portal scene lazily, one at a time, so destroying a not-yet-extracted
+            // scene would fail the export outright. Checked before the confirm prompt so
+            // the user is never asked a question we would then ignore.
+            if (events.invoke('scene.exporting')) {
+                return;
+            }
+
             const result = await events.invoke('showPopup', {
                 type: 'yesno',
                 header: 'Remove Splat',

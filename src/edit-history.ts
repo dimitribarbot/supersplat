@@ -49,7 +49,19 @@ class EditHistory {
         return this.cursor < this.history.length;
     }
 
+    // Viewer exports extract each portal scene's gaussians lazily, one scene at a
+    // time, so moving the history cursor mid-export would make a not-yet-extracted
+    // scene disagree with the ones already written. Refusing is silent and safe:
+    // unlike rejecting an incoming op, it cannot strand a half-applied edit or
+    // orphan a loaded splat. The export progress dialog already explains the wait.
+    private exporting() {
+        return !!this.events.invoke('scene.exporting');
+    }
+
     undo() {
+        if (this.exporting()) {
+            return Promise.resolve();
+        }
         return this.queue(async () => {
             if (this.canUndo()) {
                 await this._undo();
@@ -58,6 +70,9 @@ class EditHistory {
     }
 
     redo(suppressOp = false) {
+        if (this.exporting()) {
+            return Promise.resolve();
+        }
         return this.queue(async () => {
             if (this.canRedo()) {
                 await this._redo(suppressOp);

@@ -250,13 +250,17 @@ const materializeChunk = async (fileSystem: ReadFileSystem, chunkPath: string): 
             const zipFs = new ZipReadFileSystem(source);
             try {
                 const sources = await readFile({ filename: 'meta.json', inputFormat: 'sog', options: defaultOptions, params: [], fileSystem: zipFs });
-                return await materializeToDataTable(sources[0], pool);
+                const table = await materializeToDataTable(sources[0], pool);
+                await sources[0].close();
+                return table;
             } finally {
                 zipFs.close();
             }
         }
         const sources = await readFile({ filename: chunkPath, inputFormat, options: defaultOptions, params: [], fileSystem });
-        return await materializeToDataTable(sources[0], pool);
+        const table = await materializeToDataTable(sources[0], pool);
+        await sources[0].close();
+        return table;
     } finally {
         pool.destroy();
     }

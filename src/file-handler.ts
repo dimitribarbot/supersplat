@@ -271,6 +271,9 @@ const loadImagesTxt = async (file: ImportFile, events: Events) => {
 // initialize file handler events
 const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) => {
 
+    // True while an export is running; queried via the 'scene.exporting' function.
+    let exporting = false;
+
     const showLoadError = async (message: string, filename: string) => {
         await events.invoke('showPopup', {
             type: 'error',
@@ -732,7 +735,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
         }
     };
 
-    events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream) => {
+    const writeScene = async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream) => {
         if (options.useServer) {
             const handled = await writeViaServer(fileType, options, stream);
             if (handled) return;
@@ -864,6 +867,24 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             if (useSpinner) {
                 events.fire('stopSpinner');
             }
+        }
+    };
+
+    // Viewer exports extract each portal scene's gaussian data lazily, one scene at
+    // a time, so an edit landing mid-export would make a not-yet-extracted scene
+    // disagree with the ones already written (or delete it outright). Publish the
+    // in-flight state so the destructive actions can refuse for the duration -- see
+    // the 'scene.exporting' consumers: edit-history's undo/redo, editor's
+    // 'select.delete', and the splat-list remove action. The flag is cleared in a
+    // finally so a thrown export cannot strand the editor read-only.
+    events.function('scene.exporting', () => exporting);
+
+    events.function('scene.write', async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream) => {
+        exporting = true;
+        try {
+            return await writeScene(fileType, options, stream);
+        } finally {
+            exporting = false;
         }
     });
 };

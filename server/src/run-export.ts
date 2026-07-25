@@ -87,6 +87,9 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // DataTable at our boundary (the writers below consume DataTables).
     const chunkPool = createChunkDataPool();
     const dataTable = await materializeToDataTable(sources[0], chunkPool);
+    // Release the reader's decode state / the pinned input PLY bytes: the table
+    // owns a full copy now. Mirrors src/io/read/loader.ts.
+    await sources[0].close();
     // Re-tag: the readback table is not guaranteed to carry the PLY transform.
     (dataTable as any).transform = Transform.PLY;
 
@@ -173,29 +176,30 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
         return { files: [{ name: options.filename, data }] };
     }
 
-    // Parse one DataTable per uploaded extra portal scene, in upload order
-    // (== bundle index 1..N), and pair each with its client-resolved metadata.
-    const buildExtraScenes = async () => {
+    // One descriptor per uploaded extra portal scene, in upload order (== bundle
+    // index 1..N), paired with its client-resolved metadata. The table is built
+    // on demand by the shared core, one scene at a time — parsing all of them up
+    // front held every scene's float32 columns for the whole export.
+    const buildExtraScenes = () => {
         const metas = options.portalExtras ?? [];
         const plys = extraPlyGz ?? [];
         if (metas.length === 0 || plys.length === 0) return undefined;
-        const scenes = [];
-        for (let i = 0; i < metas.length; i++) {
-            const raw = Buffer.from(gunzipSync(plys[i]));
-            const erfs = new MemoryReadFileSystem();
-            erfs.set('extra.ply', new Uint8Array(raw));
-            const esources = await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs });
-            const t = await materializeToDataTable(esources[0], chunkPool);
-            (t as any).transform = Transform.PLY;
-            scenes.push({
-                dataTable: t,
-                streaming: metas[i].streaming,
-                collisionUrl: metas[i].collisionUrl,
-                environment: metas[i].environment,
-                seed: metas[i].seed
-            });
-        }
-        return scenes;
+        return metas.map((meta, i) => ({
+            loadDataTable: async () => {
+                const raw = Buffer.from(gunzipSync(plys[i]));
+                const erfs = new MemoryReadFileSystem();
+                erfs.set('extra.ply', new Uint8Array(raw));
+                const esources = await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs });
+                const t = await materializeToDataTable(esources[0], chunkPool);
+                await esources[0].close();
+                (t as any).transform = Transform.PLY;
+                return t;
+            },
+            streaming: meta.streaming,
+            collisionUrl: meta.collisionUrl,
+            environment: meta.environment,
+            seed: meta.seed
+        }));
     };
 
     // Poster bytes may arrive as a plain object after JSON/structured-clone
@@ -204,7 +208,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     const posterBytes = posterRaw && (posterRaw as any).byteLength ? new Uint8Array(posterRaw as any) : undefined;
 
     if (options.fileType === 'htmlViewer') {
-        const extraScenes = await buildExtraScenes();
+        const extraScenes = buildExtraScenes();
         await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes);
         const data = memFs.results.get('output.html')!;
         console.log(`Created ${options.filename} (${fmtSize(data.length)})`);
@@ -213,7 +217,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
 
     // packageViewer
     const viewerType = options.viewerExportSettings!.streaming ? 'streaming' : 'package';
-    const extraScenes = await buildExtraScenes();
+    const extraScenes = buildExtraScenes();
     await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes);
     flushChunk();
     return { files: [{ name: options.filename, data: memFs.results.get('output.zip')! }] };

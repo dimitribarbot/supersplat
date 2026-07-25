@@ -676,6 +676,12 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         if (events.invoke('polygonSelection.removeLastPoint')) {
             return;
         }
+        // Don't delete gaussians while an export is running: viewer exports extract
+        // each portal scene lazily, one at a time, so a delete landing mid-export
+        // would make a not-yet-extracted scene disagree with the ones already written.
+        if (events.invoke('scene.exporting')) {
+            return;
+        }
         selectedSplats().forEach((splat) => {
             editHistory.add(new DeleteSelectionOp(splat));
         });

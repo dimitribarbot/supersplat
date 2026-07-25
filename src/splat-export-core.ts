@@ -202,6 +202,32 @@ const withScene = (info: PhaseInfo, scene?: { index: number; total: number }): P
     scene
 });
 
+// Report a scene's DataTable extraction directly on the event bus. Extraction is
+// our own JS loop and emits no splat-transform logger events, so the PHASES
+// prefix mechanism (which only decorates library events) cannot surface it.
+// `text` stays English for the server/SSE/log path; `loc.segments` lets the
+// browser localize. No step name: the handler appends none when absent.
+//
+// The progress dialog is only visible between progressStart/progressEnd, which
+// createProgressRenderer fires on the library's depth-0 scopes. Extraction runs
+// BETWEEN writers, when the dialog is hidden and the next writer's progressStart
+// would wipe our text -- so re-open it ourselves first. Re-firing progressStart is
+// what the library's own depth-0 scopes do on every writer, so this is not a new
+// pattern; the server path (file-handler.ts) keeps one dialog open regardless.
+const fireExtracting = (events: Events | undefined, index: number, total: number, header: string, headerKey: string): void => {
+    events?.fire('progressStart', header, undefined, headerKey);
+    events?.fire('progressUpdate', {
+        text: `Scene ${index}/${total}: Extracting scene data`,
+        progress: 0,
+        loc: {
+            segments: [
+                { key: 'export.progress.scene', params: { index, total } },
+                { key: 'export.progress.extracting-scene' }
+            ]
+        }
+    });
+};
+
 // Maps @playcanvas/splat-transform's own English step names (the library's
 // logger group / progress-bar labels, appended after our phase prefix) to i18n
 // keys so the browser can localize them. Best-effort: an unmapped name (a library
@@ -391,7 +417,7 @@ const MIN_LOD_SPLATS = 1024 * 1024;
 // level becomes one single-LOD ChunkSource and they are stacked. lod0 is read
 // (not mutated) into its own single-LOD source, so the passed table is left
 // intact.
-const buildStreamingLodTable = async (
+const buildStreamingLodSource = async (
     lod0: DataTable,
     createDevice: DeviceCreator,
     onPhase?: (info: PhaseInfo) => void
@@ -517,15 +543,27 @@ const writeCollisionVoxel = async (
 const writePortalScene = async (
     memFs: MemoryFileSystem,
     index: number,
-    scene: { dataTable: DataTable; streaming: boolean; collisionUrl: string | null; environment: 'indoor' | 'outdoor'; seed: [number, number, number] },
+    scene: ExtraPortalScene,
     createDevice: DeviceCreator,
     radius: number,
     voxelSize: number,
-    onPhase?: (info: PhaseInfo, counted: boolean) => void
+    onPhase?: (info: PhaseInfo, counted: boolean) => void,
+    onExtract?: () => void
 ): Promise<number[]> => {
     const base = `scenes/${index}`;
     const sub = new MemoryFileSystem();
-    let levelCounts: number[] = [];
+    // Materialize this scene's table now and let it die with this call, so scene
+    // i is collectable before scene i+1 loads. Peak = 1 table, not N.
+    onExtract?.();
+    // Yield a macrotask so the browser can actually paint the label above before
+    // the loader's synchronous extraction (a tight per-gaussian loop) blocks the
+    // main thread. Without this the label only appears once the freeze it
+    // describes has already ended. Harmless on the server (Node) path.
+    await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+    });
+    const dataTable = await scene.loadDataTable();
+    let counts: number[] = [dataTable.numRows];
     // Voxelize first, on the pristine full-resolution table, before the streaming
     // LOD build reads it. This mirrors the primary scene's collision→LOD order so
     // every scene's progress reads consistently. writeCollisionVoxel does not mutate
@@ -535,7 +573,7 @@ const writePortalScene = async (
         // Synthesise a minimal settings object that places the seed at cameras[0].initial.position
         // so collisionSeedFromSettings picks it up for the per-scene voxel.
         const fakeSettings = { cameras: [{ initial: { position: scene.seed } }] };
-        await writeCollisionVoxel(sub, scene.dataTable, fakeSettings, createDevice, { environment: scene.environment, radius, voxelSize });
+        await writeCollisionVoxel(sub, dataTable, fakeSettings, createDevice, { environment: scene.environment, radius, voxelSize });
         // writeCollisionVoxel emits index.voxel.json / index.voxel.bin — rename to scene.voxel.*
         for (const name of ['index.voxel.json', 'index.voxel.bin']) {
             const data = sub.results.get(name);
@@ -546,10 +584,10 @@ const writePortalScene = async (
         }
     }
     if (scene.streaming) {
-        const { mainSource, levelCounts: counts } = await buildStreamingLodTable(scene.dataTable, createDevice, (info) => {
+        const { mainSource, levelCounts } = await buildStreamingLodSource(dataTable, createDevice, (info) => {
             onPhase?.(info, false);   // decimation passes carry their level in the label
         });
-        levelCounts = counts;
+        counts = levelCounts;
         onPhase?.(PHASES.packagingChunks(), true);
         await writeLodSource({
             filename: '/lod-meta.json',
@@ -560,14 +598,17 @@ const writePortalScene = async (
             chunkCount: 512,
             chunkExtent: 16
         }, sub);
+        // Release the stacked per-level sources so the decimated LOD chain is
+        // collectable before the namespacing pass (the CLI closes here too).
+        await mainSource.close();
     } else {
-        await writeSog({ filename: 'scene.sog', dataTable: scene.dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' }, sub);
+        await writeSog({ filename: 'scene.sog', dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' }, sub);
     }
     // Namespace every emitted key under scenes/<index>/
     for (const [name, data] of sub.results.entries()) {
         memFs.results.set(`${base}/${name.replace(/^\/+/, '')}`, data);
     }
-    return levelCounts;
+    return counts;
 };
 
 // Repoint the viewer's default collisionUrl at the bundled voxel file so the
@@ -635,7 +676,7 @@ const writeStreamingViewerCore = async (
         createDevice
     }, memFs);
 
-    // Voxelize the full-resolution table now, before buildStreamingLodTable
+    // Voxelize the full-resolution table now, before buildStreamingLodSource
     // consumes/mutates it.
     if (collision) {
         phase = withScene(PHASES.generatingCollision(), primaryScene);
@@ -645,7 +686,7 @@ const writeStreamingViewerCore = async (
     // Streaming bundle: lod-meta.json + per-LOD SOG chunk folders. Decimation's
     // per-pass count is an estimate, so the level number lives in the label and
     // the per-step counter stays off here.
-    const { mainSource, levelCounts: primaryLodCounts } = await buildStreamingLodTable(dataTable, createDevice, (info) => {
+    const { mainSource, levelCounts: primaryLodCounts } = await buildStreamingLodSource(dataTable, createDevice, (info) => {
         phase = withScene(info, primaryScene);
     });
 
@@ -668,6 +709,7 @@ const writeStreamingViewerCore = async (
         chunkCount: 512,   // ~gaussians per chunk, in thousands (splat-transform default)
         chunkExtent: 16    // ~chunk size in world units / metres (splat-transform default)
     }, memFs);
+    await mainSource.close();
 
     // Write each extra portal scene's streaming bundle (lod-meta.json + chunk
     // folders) + per-scene voxel into the SAME memFs under scenes/N/, before the
@@ -688,7 +730,7 @@ const writeStreamingViewerCore = async (
         };
         for (let i = 0; i < extraScenes.length; i++) {
             sceneRef = { index: i + 2, total: extraScenes.length + 1 };
-            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, onSceneProgress));
+            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, onSceneProgress, () => fireExtracting(events, i + 2, total, 'Exporting streaming viewer', 'export.progress.exporting-streaming')));
         }
     }
 
@@ -753,8 +795,11 @@ const writeSogCore = async (dataTable: DataTable, iterations: number, createDevi
     }
 };
 
+// The scene's table is a thunk, not a value: portal exports hold one scene
+// resident at a time. At SH degree 3 a table is ~236 B/gaussian, so eagerly
+// materializing every scene cost ~N x the whole scene before a byte was written.
 type ExtraPortalScene = {
-    dataTable: DataTable;
+    loadDataTable: () => Promise<DataTable>;
     streaming: boolean;
     collisionUrl: string | null;
     environment: 'indoor' | 'outdoor';
@@ -835,8 +880,25 @@ const writeViewerCore = async (
             if (!rawIndex) {
                 throw new Error('Package export failed: writeHtml did not produce index.html');
             }
+            // Write extra portal scenes under scenes/N/ FIRST: their gaussian
+            // counts are only known once each scene's table has been loaded, and
+            // those counts are baked into index.html below. Scene writes touch
+            // only scenes/<N>/ keys, so they cannot collide with index.html.
+            const extraCounts: number[][] = [];
+            if (hasPortalScenes) {
+                const collRadius = collision?.radius ?? 50;
+                const collVoxelSize = collision?.voxelSize ?? 0.05;
+                for (let i = 0; i < extraScenes!.length; i++) {
+                    const index = i + 1;
+                    scenePrefix = { en: `Scene ${index + 1}/${total}`, scene: { index: index + 1, total } };
+                    extraCounts.push(await writePortalScene(
+                        memFs, index, extraScenes![i], createDevice, collRadius, collVoxelSize,
+                        undefined, () => fireExtracting(events, index + 1, total, 'Exporting HTML', 'export.progress.exporting-html')
+                    ));
+                }
+            }
             const sogSettings = hasPortalScenes ?
-                { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...(extraScenes!.map(s => [s.dataTable.numRows]))] } :
+                { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
             const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings));
@@ -844,16 +906,6 @@ const writeViewerCore = async (
             patchEngineLoaderInMemFs(memFs);
             if (collision) {
                 repointCollisionUrl(memFs);
-            }
-            // Write extra portal scenes under scenes/N/
-            if (hasPortalScenes) {
-                const collRadius = collision?.radius ?? 50;
-                const collVoxelSize = collision?.voxelSize ?? 0.05;
-                for (let i = 0; i < extraScenes!.length; i++) {
-                    const index = i + 1;
-                    scenePrefix = { en: `Scene ${index + 1}/${total}`, scene: { index: index + 1, total } };
-                    await writePortalScene(memFs, index, extraScenes![i], createDevice, collRadius, collVoxelSize);
-                }
             }
             const zipWriter = await fs.createWriter('output.zip');
             const zipFs = new ZipFileSystem(zipWriter);
@@ -875,4 +927,4 @@ const writeViewerCore = async (
     }
 };
 
-export { createProgressRenderer, buildStreamingLodTable, writeSogCore, writeViewerCore };
+export { createProgressRenderer, writeSogCore, writeViewerCore };

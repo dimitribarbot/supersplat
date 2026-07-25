@@ -1479,16 +1479,23 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
     const dataTable = extractDataTable(splats, serializeSettings);
     const viewerType = options.type === 'html' ? 'html' : (options.streaming ? 'streaming' : 'package');
 
-    // Build per-scene extra tables for a portal walkthrough. The primary scene
-    // is index 0 (the passed `splats` / `dataTable`); extra scenes are looked up
-    // by uid against the full scene list so hidden scenes still export.
+    // Build per-scene extra descriptors for a portal walkthrough. The primary
+    // scene is index 0 (the passed `splats` / `dataTable`); extra scenes are
+    // looked up by uid against the full scene list so hidden scenes still
+    // export. Descriptors only: each scene's table is extracted lazily inside
+    // writeViewerCore, one at a time, so a multi-scene walkthrough no longer
+    // holds every scene's float32 columns at once. The Splat elements are
+    // already resident in the editor, so the descriptor itself costs nothing.
     const extraScenes = (experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1) ?
         options.portalScenes?.map(entry => ({
             collisionUrl: entry.collisionUrl,
             environment: entry.environment,
             seed: entry.seed,
             streaming: options.streaming ?? false,
-            dataTable: extractDataTable([entry.splat], serializeSettings)
+            // extractDataTable is synchronous; wrap rather than `async` so the
+            // thunk still matches loadDataTable's Promise contract without
+            // tripping require-await. Still lazy: nothing runs until it is called.
+            loadDataTable: () => Promise.resolve(extractDataTable([entry.splat], serializeSettings))
         })) ?? [] :
         [];
 

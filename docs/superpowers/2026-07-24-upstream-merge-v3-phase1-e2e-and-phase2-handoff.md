@@ -78,33 +78,59 @@ the one un-provable-without-real-files risk is the `combine()` coordinate transf
 
 ---
 
-## 3. Phase 2 — full source-API migration (deferred; mostly NOT worth it)
+## 3. Phase 2 — COMPLETE (do not re-open)
 
-**Key finding (decisive):** splat-transform 3.1.6 ships a source/streaming writer
-for **only** PLY, SOG, and LOD (`writeSource`, `writeSogSource`, `writeLodSource`).
-**`writeHtml`, `writeVoxel`, and `writeSpz` are DataTable-ONLY** — no source variant
-exists. So the fork's HTML-viewer, collision-voxel, and SPZ export paths **must keep
-DataTable permanently**. A "full Phase 2" is therefore largely infeasible; the
-DataTable path is the supported end-state, not scaffolding (upstream's own loader
-also materializes to DataTable).
+**Verdict (2026-07-25): there is nothing left to migrate.** Verified against the
+3.1.6 `.d.ts` files, call site by call site:
 
-**What Phase 2 could still do (optional perf, not correctness):** convert the
-**SOG / LOD / PLY** producers in `splat-export-core.ts` from DataTable to streaming
-`ChunkSource`s, so peak resident memory is one layer instead of the whole scene —
-helps only very large exports. **The risk is the byte-parity guarantee** (server +
-browser must stay byte-identical), so it must be gated on the server parity + GPU
-tests and E2E. Do this **only if big-scene export memory actually bites.** It's a
-small, self-contained follow-up, not a blocking task.
+| Fork call site | Status in 3.1.6 | Migration value |
+| --- | --- | --- |
+| `writeSog({dataTable})` | **already a thin adapter over `writeSogSource`** — "Wraps the table as a resident ChunkSource via the migration shim and encodes it through the same path"; `writeSogSource` itself is not re-exported from the package root (`dist/lib/index.d.ts` exports `writeSog`/`writeLodSource` but not it) | **zero** — migrating would inline the adapter, and the adapter's own target isn't even public |
+| `writeHtml`, `writeVoxel`, `writeSpz` | DataTable-only: `writeSource` accepts these `outputFormat`s but has no *streaming* writer for them, so it materializes to a `DataTable` right at the writer and delegates to `writeFile` anyway (`writeImage` is also DataTable-only but unused by the fork) | **no benefit** — routing through `writeSource` buys nothing |
+| `writeCompressedPly` | its `writeCompressedPlySource` sibling is an adapter that *materializes* — compressed PLY is inherently whole-scene | **impossible** |
+| `writeLodSource({mainSource})` | modern source API | already migrated |
+| `dataTableToChunkSource` / `bakeTransform` / `stackLods` | modern combinators | already used |
+| `processDataTable([{kind:'decimate'}])` | source sibling `decimateSource` is stream-once (its `spill` is optional, only used once an intermediate generation exceeds `memoryBudgetBytes`, which defaults to 24 GiB); `writeLodSource` needs random-access **gathers** over `mainSource`, so each level would still have to be materialized/compacted before it could be read back | server-only, and parity-risky |
+| server `materializeToDataTable` | required because downstream is `writeHtml`/`writeVoxel`/the `writeSog` adapter | none |
 
-**Related maintenance item (worth an upstream request):** the LCC **v1** environment
-codec is now vendored in `src/io/read/lcc-environment.ts` (a faithful port of
-splat-transform's internal `deserializeEnvironment`). It could drift if upstream
-changes the LCC format (guarded with a fallback, so it degrades to "no skybox").
-splat-transform *has* the function (`readLccEnvironmentSource`) but doesn't export
-it and tree-shakes it out of the runtime bundle. **File an upstream issue/PR asking
-them to export `readLcc[2]EnvironmentSource` (or add a `readFile` option to include
-the environment); when they ship it, delete the v1 codec port** and call theirs.
-LCC2's env is already read via the public API (no custom codec), so it's low-risk.
+Two further facts that close the "deprecated functions" question:
+
+- **No `@deprecated` tag anywhere in splat-transform 3.1.6.** The DataTable API
+  is documented as "compat (secondary)" / "Legacy", which is not deprecation, and
+  it cannot be removed while `writeHtml`/`writeVoxel`/`writeSpz` are
+  DataTable-only (`writeImage` is also DataTable-only but unused by the fork).
+  The DataTable path is the supported end state, not scaffolding.
+- **Zero of engine 2.21's 53 `@deprecated` symbols are used by the fork.** The
+  `splatBudget` references are all `app.scene.gsplat.splatBudget` (the
+  *recommended* property); the deprecated one is `GSplatComponent#splatBudget`.
+
+Also note: splat-transform's README line "resident memory is bounded by chunk
+size rather than scene size" describes the **export/transform** side (it sits in
+the *Library Usage* section and ends "…the same pipeline the CLI uses"). It says
+nothing about the exported viewer, which is the PlayCanvas engine's gsplat
+renderer and is already chunk-bounded via streamed SOG + `splatBudget` + the
+fork's budget-residency work in `portal-preload.ts`.
+
+A streamed LOD chain is blocked by shape, not just cost: `decimateSource`
+"supports a single sequential pass — the PLY-terminal consumption model", while
+`writeLodSource` needs random-access **gathers** over `mainSource`. Feeding a
+stream-once source into a random-access gather means each level would have to
+be materialized (and, once the resident budget forces it, spilled/compacted)
+before `writeLodSource` could read it back — landing on the same memory profile
+the fork already has, not a smaller one. The CLI never builds an LOD chain by
+decimating at all; for `lod` output it requires input that already carries
+structural LODs, so there is no upstream pattern to copy.
+
+**What replaced Phase 2:** the real portal-export memory cliff turned out to be
+eager per-scene `DataTable` extraction, fixed separately — see
+`docs/superpowers/specs/2026-07-25-splat-transform-v3-phase2-closeout-design.md`.
+
+**Still open (unchanged):** the LCC **v1** environment codec vendored in
+`src/io/read/lcc-environment.ts` is a faithful port of splat-transform's internal
+`deserializeEnvironment`. 3.1.6 still does not export `readLccEnvironmentSource`
+(confirmed against `dist/lib/readers/index.d.ts`). File an upstream issue/PR
+asking them to export `readLcc[2]EnvironmentSource`; delete the port when they
+ship it. LCC2's env already uses the public API.
 
 ---
 
