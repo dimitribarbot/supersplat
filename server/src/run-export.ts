@@ -11,6 +11,7 @@ import {
     Transform
 } from '@playcanvas/splat-transform';
 import type { ProgressEvent, ProgressLoc } from './progress.js';
+import { loadFavicon } from './favicon.js';
 
 export type ExportOptions = {
     fileType: 'ply' | 'compressedPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
@@ -218,7 +219,10 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // packageViewer
     const viewerType = options.viewerExportSettings!.streaming ? 'streaming' : 'package';
     const extraScenes = buildExtraScenes();
-    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes);
+    // Deployment-configured favicon (VIEWER_FAVICON_URL), ZIP exports only:
+    // null when unset or unreachable, in which case the export is unchanged.
+    const favicon = await loadFavicon();
+    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes, favicon ?? undefined);
     flushChunk();
     return { files: [{ name: options.filename, data: memFs.results.get('output.zip')! }] };
 };

@@ -62,6 +62,17 @@ routes return 404 until you build).
 - `STATIC_ROOT` — directory to serve the web app from (default: the repo-root `dist/`,
   resolved relative to the server module).
 - `MAX_UPLOAD` — maximum accepted upload size in bytes for the gzipped PLY (default `1073741824`, i.e. 1 GiB). Uploads above this are rejected by the multipart parser.
+- `VIEWER_FAVICON_URL` — absolute `http(s)` URL of a favicon to embed in **ZIP viewer
+  exports** (`packageViewer`, plain and streaming, including the S3 publish that reuses
+  them). The server fetches it once per export and stores a copy as `favicon.<ext>` beside
+  `index.html`, so the exported archive stays self-contained. Accepted types: PNG, ICO,
+  SVG, JPEG, WebP, GIF; 1 MiB maximum; 5 s fetch timeout. Prefer PNG or ICO: an SVG icon is
+  embedded as-is and browsers render `image/svg+xml` favicons as a document (capable of
+  executing embedded scripts), so only point this at an icon host you control. If unset,
+  the export completes unchanged with no icon — silently, since that's the default state,
+  not a failure. If the fetch fails for any other reason (timeout, non-2xx, unsupported
+  type, oversize), the export still completes without an icon, but a warning is logged.
+  Single-file HTML exports and local in-browser exports are unaffected.
 - `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` —
   S3-compatible (DigitalOcean Spaces) credentials. When all five are present, the
   capabilities endpoint reports `publish: true` and the client's Publish menu

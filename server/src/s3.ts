@@ -25,6 +25,9 @@ const makeClient = (c: ReturnType<typeof cfg>) => new S3Client({
     credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }
 });
 
+// Keep in sync with the favicon allow-list in favicon.ts: a published viewer's
+// icon (and its poster) must be served with a real image type, not
+// octet-stream, or browsers refuse to render it.
 const CONTENT_TYPES: Record<string, string> = {
     html: 'text/html',
     js: 'text/javascript',
@@ -32,12 +35,23 @@ const CONTENT_TYPES: Record<string, string> = {
     json: 'application/json',
     wasm: 'application/wasm',
     webp: 'image/webp',
-    png: 'image/png'
+    png: 'image/png',
+    ico: 'image/x-icon',
+    svg: 'image/svg+xml',
+    gif: 'image/gif',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg'
 };
+
+// Own-property lookup, matching favicon.ts's MIME_EXT/EXT_MIME guard: entry
+// names come from our own exporters today, so a prototype-chain key like
+// "constructor" is unreachable in practice, but the two maps are documented
+// as siblings and should not diverge in style.
+const hasOwn = (obj: Record<string, unknown>, key: string): boolean => Object.prototype.hasOwnProperty.call(obj, key);
 
 const contentType = (name: string): string => {
     const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
-    return CONTENT_TYPES[ext] ?? 'application/octet-stream';
+    return hasOwn(CONTENT_TYPES, ext) ? CONTENT_TYPES[ext] : 'application/octet-stream';
 };
 
 const publicUrl = (c: ReturnType<typeof cfg>, prefix: string): string => {

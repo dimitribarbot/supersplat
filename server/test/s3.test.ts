@@ -56,17 +56,21 @@ describe('publishZip', () => {
         const zip = zipSync({
             'index.html': new TextEncoder().encode('<html></html>'),
             '0_0/meta.json': new TextEncoder().encode('{}'),
-            '0_0/0.webp': new Uint8Array([1, 2, 3])
+            '0_0/0.webp': new Uint8Array([1, 2, 3]),
+            'favicon.png': new Uint8Array([4, 5, 6]),
+            'poster.jpg': new Uint8Array([7, 8, 9])
         });
         const onProgress = vi.fn();
         const res = await s3.publishZip(zip, { prefix: 'sub/scene', public: true }, onProgress);
         const puts = sent.filter(c => c.__type === 'PutObject');
-        expect(puts).toHaveLength(3);
+        expect(puts).toHaveLength(5);
         const byKey = Object.fromEntries(puts.map(p => [p.input.Key, p.input]));
         expect(byKey['sub/scene/index.html'].ContentType).toBe('text/html');
         expect(byKey['sub/scene/index.html'].ACL).toBe('public-read');
         expect(byKey['sub/scene/0_0/meta.json'].ContentType).toBe('application/json');
         expect(byKey['sub/scene/0_0/0.webp'].ContentType).toBe('image/webp');
+        expect(byKey['sub/scene/favicon.png'].ContentType).toBe('image/png');
+        expect(byKey['sub/scene/poster.jpg'].ContentType).toBe('image/jpeg');
         expect(res.url).toBe('https://cdn.example.com/sub/scene/index.html');
         expect(res.prefix).toBe('sub/scene');
         const calls = onProgress.mock.calls.map(c => c[0].value);

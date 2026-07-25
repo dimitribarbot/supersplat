@@ -23,6 +23,7 @@ import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subse
 import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
+import { injectFaviconLink } from './viewer-companion/favicon';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
@@ -82,6 +83,25 @@ const applyPoster = (
         return injectPoster(html, viewerSettingsJson, './poster.jpg');
     }
     return injectPoster(html, viewerSettingsJson, `data:image/jpeg;base64,${bytesToBase64(posterBytes)}`);
+};
+
+// Optional favicon for ZIP exports: the export server fetched the bytes from
+// its VIEWER_FAVICON_URL and handed them down (the browser never does, so local
+// exports carry no icon). Emit the file beside the viewer and point the injected
+// <head> link at it. Mirrors applyPoster's memFs handling — every memFs entry is
+// zipped by the callers below.
+type Favicon = { filename: string; mime: string; data: Uint8Array };
+
+const applyFavicon = (
+    html: string,
+    favicon: Favicon | undefined,
+    memFs: { results: Map<string, Uint8Array> }
+): string => {
+    if (!favicon) {
+        return html;
+    }
+    memFs.results.set(favicon.filename, favicon.data);
+    return injectFaviconLink(html, `./${favicon.filename}`, favicon.mime);
 };
 
 // Inject the annotation-link companion into an HTML string before </body>.
@@ -646,7 +666,8 @@ const writeStreamingViewerCore = async (
     shouldCancel?: () => boolean,
     collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
     extraScenes?: ExtraPortalScene[],
-    posterBytes?: Uint8Array
+    posterBytes?: Uint8Array,
+    favicon?: Favicon
 ): Promise<void> => {
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
@@ -761,7 +782,7 @@ const writeStreamingViewerCore = async (
     const withLinks = injectAnnotationLinks(withPoster, settingsWithLods);
     const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
-    memFs.results.set('index.html', new TextEncoder().encode(injectDeviceFallback(withPortals)));
+    memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injectDeviceFallback(withPortals), favicon, memFs)));
     patchEngineLoaderInMemFs(memFs);
     if (collision) {
         repointCollisionUrl(memFs);
@@ -817,7 +838,8 @@ const writeViewerCore = async (
     shouldCancel?: () => boolean,
     collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
     extraScenes?: ExtraPortalScene[],
-    posterBytes?: Uint8Array
+    posterBytes?: Uint8Array,
+    favicon?: Favicon
 ): Promise<void> => {
     // Scene-prefixed progress support: when extra portal scenes are present, we
     // label the primary write as "Scene 1/total" and each extra as "Scene N/total".
@@ -865,7 +887,7 @@ const writeViewerCore = async (
             await writer.write(new TextEncoder().encode(enginePatch.source));
             await writer.close();
         } else if (viewerType === 'streaming') {
-            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes);
+            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon);
         } else {
             // Package (ZIP) path: write primary scene, then extra portal scenes, then ZIP everything.
             const memFs = new MemoryFileSystem();
@@ -902,7 +924,7 @@ const writeViewerCore = async (
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
             const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings));
-            memFs.results.set('index.html', new TextEncoder().encode(injected));
+            memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injected, favicon, memFs)));
             patchEngineLoaderInMemFs(memFs);
             if (collision) {
                 repointCollisionUrl(memFs);
