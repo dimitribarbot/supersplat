@@ -21,15 +21,16 @@ const buildLinkTable = (annotations: AnyAnnotation[]): { label: number, url: str
 //
 // The exported viewer renders annotations with a single shared tooltip
 // (.pc-annotation, holding .pc-annotation-title/.pc-annotation-text) whose
-// content is rewritten each time a hotspot (.pc-annotation-hotspot) is clicked.
-// Hotspots are emitted in annotation order, so the Nth hotspot maps to label
-// N+1. The tooltip itself is pointer-events:none, so any link inside it must
-// re-enable pointer events (see .ss-annotation-link in companionStyle).
+// title/text are rewritten on every activation. The tooltip itself is
+// pointer-events:none, so any link inside it must re-enable pointer events
+// (see .ss-annotation-link in companionStyle).
 //
-// This companion: (1) reads the link table, (2) binds a click handler to each
-// hotspot that has a link, (3) on click injects/refreshes a clickable link in
-// the shared tooltip. A MutationObserver keeps binding hotspots created after
-// load (the splat scene loads asynchronously). URLs are sanitised to http(s).
+// This companion listens for 'annotation.activate' and injects, refreshes or
+// clears a clickable link in that shared tooltip from the activated
+// annotation's own extras. Reading extras directly means there is no
+// "Nth hotspot = Nth annotation" ordering assumption to violate. URLs are
+// sanitised to http(s). The baked link table survives only as the gate that
+// decides whether this companion is injected at all.
 const companionRuntime = `
 (function () {
   var links = window.__supersplatAnnotationLinks || [];
@@ -48,9 +49,6 @@ const companionRuntime = `
   var navLang = (navigator.language || 'en').toLowerCase();
   var openLinkText = (openLinkLabels[navLang] || openLinkLabels[navLang.split('-')[0]] || openLinkLabels.en) + ' \\u2197';
 
-  var byLabel = {};
-  links.forEach(function (l) { byLabel[String(l.label)] = l; });
-
   function safeHref(url) {
     try {
       var u = new URL(url, window.location.href);
@@ -58,8 +56,6 @@ const companionRuntime = `
     } catch (e) {}
     return null;
   }
-
-  function container() { return document.getElementById('annotations') || document; }
 
   // Inject (or refresh) the link inside the shared tooltip for the given link
   // entry. Passing null just clears any previously injected link.
@@ -82,26 +78,23 @@ const companionRuntime = `
     tip.appendChild(a);
   }
 
-  // Bind every not-yet-bound hotspot to inject its label's link on click. Our
-  // listener is added after the viewer's (the hotspot already exists), so it
-  // runs after showTooltip has populated the shared tooltip.
-  function bindHotspots() {
-    var hotspots = container().querySelectorAll('.pc-annotation-hotspot');
-    for (var i = 0; i < hotspots.length; i++) {
-      var h = hotspots[i];
-      if (h.getAttribute('data-ss-bound')) continue;
-      h.setAttribute('data-ss-bound', '1');
-      (function (label) {
-        h.addEventListener('click', function () { injectLink(byLabel[String(label)] || null); });
-      })(i + 1);
-    }
-  }
-
+  // Refresh the link on every activation. Both the nav chevrons and a hotspot
+  // click end at 'annotation.activate', which showTooltip fires AFTER writing
+  // the shared tooltip's title/text -- so appending here is correctly ordered.
+  // Binding the hotspot click instead (as this companion first did) missed
+  // chevron navigation entirely: the viewer rewrites title/text on the *shared*
+  // tooltip but never touches our appended link, so the previous annotation's
+  // link stayed on screen and read as if it belonged to the new one.
   function start() {
-    bindHotspots();
-    // hotspots are created once the splat scene loads; keep binding as they appear
-    var obs = new MutationObserver(function () { bindHotspots(); });
-    obs.observe(document.body, { childList: true, subtree: true });
+    var viewer = window.__supersplatViewer;
+    var ev = viewer && viewer.global && viewer.global.events;
+    if (!ev || !ev.on) { requestAnimationFrame(start); return; }
+    ev.on('annotation.activate', function (ann) {
+      var extras = ann && ann.extras;
+      var url = extras && extras.url;
+      injectLink(url ? { url: url, newTab: !!extras.newTab } : null);
+    });
+    ev.on('annotation.deactivate', function () { injectLink(null); });
   }
 
   if (document.readyState === 'loading') {
