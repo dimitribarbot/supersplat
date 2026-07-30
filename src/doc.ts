@@ -133,7 +133,9 @@ const registerDocEvents = (scene: Scene, events: Events) => {
 
             events.invoke('docDeserialize.timeline', document.timeline);
             events.invoke('docDeserialize.poseSets', document.poseSets, document.camera?.fov);
-            events.invoke('docDeserialize.annotations', document.annotations);
+            events.invoke('docDeserialize.annotations', document.annotations, {
+                indexToUid: loadedSplats.map(s => s.uid)
+            });
             events.invoke('docDeserialize.offLimitsZones', document.offLimitsZones, document.offLimitsMessage);
             events.invoke('docDeserialize.portals', document.portals, document.portalsStartSplat, document.portalsEntrypoints, {
                 indexToUid: loadedSplats.map(s => s.uid),
@@ -202,7 +204,7 @@ const registerDocEvents = (scene: Scene, events: Events) => {
                 view: events.invoke('docSerialize.view'),
                 poseSets: events.invoke('docSerialize.poseSets'),
                 timeline: events.invoke('docSerialize.timeline'),
-                annotations: events.invoke('docSerialize.annotations'),
+                annotations: events.invoke('docSerialize.annotations', uidToIndex),
                 offLimitsZones: events.invoke('docSerialize.offLimitsZones'),
                 offLimitsMessage: events.invoke('offLimitsZones.message'),
                 portals: events.invoke('docSerialize.portals', uidToIndex),

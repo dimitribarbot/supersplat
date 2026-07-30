@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { buildPortalBundle, resolveCollisionSeed, resolvePortalExtras, EYE_HEIGHT, SIDE_NUDGE, collisionSeedTuple } from '../src/portal-export';
+import { buildPortalBundle, resolveCollisionSeed, resolvePortalExtras, resolveAnnotationSceneIndex, EYE_HEIGHT, SIDE_NUDGE, collisionSeedTuple } from '../src/portal-export';
 
 const portal = (front: number | null, back: number | null) => ({
     position: [0, 0, 0] as [number, number, number],
@@ -209,5 +209,29 @@ describe('collisionSeedTuple', () => {
         expect(collisionSeedTuple({})).toEqual([0, 0, 0]);
         expect(collisionSeedTuple({ cameras: [] })).toEqual([0, 0, 0]);
         expect(collisionSeedTuple({ cameras: [{}] })).toEqual([0, 0, 0]);
+    });
+});
+
+describe('resolveAnnotationSceneIndex', () => {
+    it('resolves the start splat to index 0', () => {
+        expect(resolveAnnotationSceneIndex(10, [10, 20])).toBe(0);
+    });
+
+    it('resolves a non-start splat to its bundle index', () => {
+        expect(resolveAnnotationSceneIndex(20, [10, 20])).toBe(1);
+    });
+
+    it('returns null when the annotation has no scene', () => {
+        expect(resolveAnnotationSceneIndex(null, [10, 20])).toBeNull();
+        expect(resolveAnnotationSceneIndex(undefined, [10, 20])).toBeNull();
+    });
+
+    it('returns null when no bundle is being exported', () => {
+        expect(resolveAnnotationSceneIndex(10, null)).toBeNull();
+        expect(resolveAnnotationSceneIndex(10, undefined)).toBeNull();
+    });
+
+    it('returns null for a splat that is not a portal scene', () => {
+        expect(resolveAnnotationSceneIndex(99, [10, 20])).toBeNull();
     });
 });

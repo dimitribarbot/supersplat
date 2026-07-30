@@ -397,6 +397,17 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('voxels[snapshotIdx] = snapshot(live)');
         expect(out).not.toContain('voxels[activeIndex] = snapshot');
     });
+
+    it('binds the annotation-activation scene switch', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0
+        });
+        expect(out).toContain('annotation.activate');
+        expect(out).toContain("ev.on('annotation.activate'");
+        expect(out).toContain('idx >= data.portalScenes.length');
+    });
 });
 
 describe('buildPortalsInjection smoke', () => {

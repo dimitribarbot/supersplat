@@ -62,6 +62,8 @@
     "panel.annotations.text": "Texto",
     "panel.annotations.url": "URL del enlace",
     "panel.annotations.new-tab": "Abrir en pestaña nueva",
+    "panel.annotations.scene": "Escena",
+    "panel.annotations.scene-none": "Ninguna",
     "offLimitsZones.add": "Añadir zona",
     "offLimitsZones.move": "Mover",
     "offLimitsZones.rotate": "Rotar",

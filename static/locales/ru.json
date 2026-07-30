@@ -62,6 +62,8 @@
     "panel.annotations.text": "Текст",
     "panel.annotations.url": "URL ссылки",
     "panel.annotations.new-tab": "Открыть в новой вкладке",
+    "panel.annotations.scene": "Сцена",
+    "panel.annotations.scene-none": "Нет",
     "offLimitsZones.add": "Добавить зону",
     "offLimitsZones.move": "Переместить",
     "offLimitsZones.rotate": "Повернуть",

@@ -707,6 +707,24 @@ const companionRuntime = `
           lastSafe = null;
         }
       });
+      // The annotation navigator chevrons and a hotspot click both end at
+      // 'annotation.activate', fired with the RAW settings annotation -- so
+      // extras.scene (baked at export from the annotation's splat) says which
+      // scene the pose it flies to actually lives in. The fly-to is a TELEPORT:
+      // it need not pass through a doorway, so free-nav crossing detection
+      // can never see it, exactly like the reset case above. Route through the
+      // reducer so a not-yet-resident target reuses the normal loading overlay,
+      // and clear lastSafe so the position discontinuity is not read as a
+      // spurious crossing on the next frame.
+      ev.on('annotation.activate', function (ann) {
+        var idx = ann && ann.extras && ann.extras.scene;
+        // NaN is typeof 'number' and fails every ordering comparison, so idx < 0
+        // and idx >= length would both be false for it without this isFinite check.
+        if (typeof idx !== 'number' || !isFinite(idx) || idx < 0 || idx >= data.portalScenes.length) { return; }
+        if (idx === activeIndex) { return; }
+        dispatch({ type: 'crossing', target: idx, loaded: !!(entities[idx] || sceneLoading[idx]), ready: sceneReady(idx) });
+        lastSafe = null;
+      });
       // walk/fly resetToSpawn restores the pose captured on mode ENTRY, so the
       // scene active at entry is the scene that spawn pose lives in. Record it
       // for the reset handler above. (value, prev) fires on every mode change.

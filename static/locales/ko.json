@@ -62,6 +62,8 @@
     "panel.annotations.text": "텍스트",
     "panel.annotations.url": "링크 URL",
     "panel.annotations.new-tab": "새 탭에서 열기",
+    "panel.annotations.scene": "장면",
+    "panel.annotations.scene-none": "없음",
     "offLimitsZones.add": "영역 추가",
     "offLimitsZones.move": "이동",
     "offLimitsZones.rotate": "회전",

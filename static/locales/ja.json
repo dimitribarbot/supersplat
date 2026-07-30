@@ -62,6 +62,8 @@
     "panel.annotations.text": "テキスト",
     "panel.annotations.url": "リンクURL",
     "panel.annotations.new-tab": "新しいタブで開く",
+    "panel.annotations.scene": "シーン",
+    "panel.annotations.scene-none": "なし",
     "offLimitsZones.add": "ゾーンを追加",
     "offLimitsZones.move": "移動",
     "offLimitsZones.rotate": "回転",

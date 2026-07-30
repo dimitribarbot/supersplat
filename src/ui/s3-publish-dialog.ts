@@ -246,7 +246,7 @@ class S3PublishDialog extends Container {
                     postEffectSettings: defaultPostEffectSettings,
                     animTracks,
                     cameras,
-                    annotations: events.invoke('annotations.export') ?? [],
+                    annotations: events.invoke('annotations.export', bundle?.sceneUids) ?? [],
                     offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
                     offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
                     ...(bundle ? {

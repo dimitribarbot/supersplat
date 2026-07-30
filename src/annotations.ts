@@ -1,4 +1,5 @@
 import { Events } from './events';
+import { resolveAnnotationSceneIndex } from './portal-export';
 
 // Camera fly-to view stored per annotation (packed arrays for serialization).
 type AnnotationCamera = {
@@ -16,7 +17,18 @@ type AnnotationData = {
     text: string,
     url: string,
     newTab: boolean,
+    // Editor splat this annotation belongs to (session-scoped uid), or null.
+    // Resolved to an export scene index at export time; persisted by document
+    // splat index (see docSerialize.annotations) because uids are not stable.
+    sceneUid: number | null,
     camera: AnnotationCamera
+};
+
+// On-disk annotation record: AnnotationData plus a stable splat reference as an
+// index into the document's splat array (uids are session-scoped and NOT stable
+// across loads; the sceneUid field is kept only for rollback to older builds).
+type AnnotationDocData = AnnotationData & {
+    sceneIndex?: number | null
 };
 
 // Export-shaped annotation matching splat-serialize.ts `Annotation`. The link
@@ -26,7 +38,7 @@ type AnnotationExport = {
     title: string,
     text: string,
     camera: { initial: { position: [number, number, number], target: [number, number, number], fov: number } },
-    extras: { url?: string, newTab?: boolean }
+    extras: { url?: string, newTab?: boolean, scene?: number }
 };
 
 class AddAnnotationOp {
@@ -182,41 +194,72 @@ const registerAnnotationsEvents = (events: Events) => {
 
     // --- export shape (read by the export popups) ---
 
-    events.function('annotations.export', (): AnnotationExport[] => {
-        return annotations.map(a => ({
-            position: [a.position[0], a.position[1], a.position[2]],
-            title: a.title,
-            text: a.text,
-            camera: {
-                initial: {
-                    position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
-                    target: [a.camera.target[0], a.camera.target[1], a.camera.target[2]],
-                    fov: a.camera.fov
+    // `sceneUids` is the portal bundle's scene ordering (index 0 = start scene);
+    // absent on non-portal export paths, in which case no annotation gets a scene.
+    events.function('annotations.export', (sceneUids?: number[]): AnnotationExport[] => {
+        return annotations.map((a) => {
+            const scene = resolveAnnotationSceneIndex(a.sceneUid, sceneUids);
+            return {
+                position: [a.position[0], a.position[1], a.position[2]],
+                title: a.title,
+                text: a.text,
+                camera: {
+                    initial: {
+                        position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
+                        target: [a.camera.target[0], a.camera.target[1], a.camera.target[2]],
+                        fov: a.camera.fov
+                    }
+                },
+                extras: {
+                    url: a.url || undefined,
+                    newTab: a.url ? a.newTab : undefined,
+                    scene: scene ?? undefined
                 }
-            },
-            extras: { url: a.url || undefined, newTab: a.url ? a.newTab : undefined }
-        }));
+            };
+        });
     });
 
     // --- document serialization ---
 
-    events.function('docSerialize.annotations', (): AnnotationData[] => {
-        return annotations.map(a => ({
-            id: a.id,
-            position: [a.position[0], a.position[1], a.position[2]],
-            title: a.title,
-            text: a.text,
-            url: a.url,
-            newTab: a.newTab,
-            camera: {
-                position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
-                target: [a.camera.target[0], a.camera.target[1], a.camera.target[2]],
-                fov: a.camera.fov
+    events.function('docSerialize.annotations', (uidToIndex?: Map<number, number>): AnnotationDocData[] => {
+        return annotations.map((a) => {
+            const doc: AnnotationDocData = {
+                id: a.id,
+                position: [a.position[0], a.position[1], a.position[2]],
+                title: a.title,
+                text: a.text,
+                url: a.url,
+                newTab: a.newTab,
+                sceneUid: a.sceneUid,
+                camera: {
+                    position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
+                    target: [a.camera.target[0], a.camera.target[1], a.camera.target[2]],
+                    fov: a.camera.fov
+                }
+            };
+            if (uidToIndex) {
+                // always write a value (null, never undefined) so the field
+                // survives JSON.stringify and marks the record as new-format
+                const i = (a.sceneUid === null) ? undefined : uidToIndex.get(a.sceneUid);
+                doc.sceneIndex = (typeof i === 'number') ? i : null;
             }
-        }));
+            return doc;
+        });
     });
 
-    events.function('docDeserialize.annotations', (data: AnnotationData[]) => {
+    events.function('docDeserialize.annotations', (data: AnnotationDocData[], remap?: { indexToUid: number[] }) => {
+        // the index field is authoritative when present (uids are session-scoped
+        // and only valid in the session that saved them); legacy documents
+        // without it simply have no association
+        const indexToUid = (remap && Array.isArray(remap.indexToUid)) ? remap.indexToUid : null;
+        const fromIndex = (index: number | null | undefined): number | null => {
+            if (!indexToUid || typeof index !== 'number') {
+                return null;
+            }
+            const uid = indexToUid[index];
+            return (typeof uid === 'number') ? uid : null;
+        };
+
         annotations.length = 0;
         nextId = 0;
         selectedId = null;
@@ -229,6 +272,7 @@ const registerAnnotationsEvents = (events: Events) => {
                     text: d.text ?? '',
                     url: d.url ?? '',
                     newTab: d.newTab ?? false,
+                    sceneUid: indexToUid ? fromIndex(d.sceneIndex) : (d.sceneUid ?? null),
                     camera: d.camera ?? { position: [0, 0, 0], target: [0, 0, 1], fov: 60 }
                 });
                 // keep the counter ahead of any numeric id we loaded
@@ -249,6 +293,7 @@ export {
     RemoveAnnotationOp,
     UpdateAnnotationOp,
     AnnotationData,
+    AnnotationDocData,
     AnnotationCamera,
     AnnotationExport
 };

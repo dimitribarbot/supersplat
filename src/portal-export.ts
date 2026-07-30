@@ -93,6 +93,24 @@ const buildPortalBundle = (args: {
 
 export { buildPortalBundle, sceneUrl, collisionUrl, ExportPortal, PortalBundle, Vec3, Quat };
 
+// Resolve an annotation's editor splat reference to an exported scene index.
+// Returns null when the annotation has no scene, when no portal bundle is being
+// exported (a plain single-scene export), or when the referenced splat is not a
+// portal scene (unreferenced by any portal, or deleted since it was assigned).
+// All three cases mean the same thing downstream: do not switch scene.
+const resolveAnnotationSceneIndex = (
+    sceneUid: number | null | undefined,
+    sceneUids: number[] | null | undefined
+): number | null => {
+    if (typeof sceneUid !== 'number' || !Array.isArray(sceneUids)) {
+        return null;
+    }
+    const i = sceneUids.indexOf(sceneUid);
+    return i >= 0 ? i : null;
+};
+
+export { resolveAnnotationSceneIndex };
+
 const EYE_HEIGHT = 1.6;
 const SIDE_NUDGE = 0.5;
 

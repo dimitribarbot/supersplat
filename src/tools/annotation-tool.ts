@@ -1,13 +1,19 @@
-import { BooleanInput, Container, Label, TextInput } from '@playcanvas/pcui';
+import { BooleanInput, Container, Label, SelectInput, TextInput } from '@playcanvas/pcui';
 import { Entity, TranslateGizmo, Vec3 } from 'playcanvas';
 
 import { AddAnnotationOp, AnnotationData, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
+import { ElementType } from '../element';
 import { Events } from '../events';
 import { Scene } from '../scene';
+import { Splat } from '../splat';
 import { i18n } from '../ui/localization';
 
 const p = new Vec3();
 const screen = new Vec3();
+
+// The Scene dropdown is a numeric SelectInput, so "no scene" needs a numeric
+// stand-in; -1 can never collide with a splat uid (uids are monotonic from 0).
+const NO_SCENE = -1;
 
 class AnnotationTool {
     activate: () => void;
@@ -32,6 +38,8 @@ class AnnotationTool {
         const urlInput = new TextInput({ class: 'annotations-toolbar-input', placeholder: 'https://' });
         const newTabLabel = new Label({ text: i18n.t('panel.annotations.new-tab') });
         const newTabInput = new BooleanInput({ type: 'toggle' });
+        const sceneLabel = new Label({ text: i18n.t('panel.annotations.scene') });
+        const sceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
 
         bar.append(titleLabel);
         bar.append(titleInput);
@@ -41,6 +49,8 @@ class AnnotationTool {
         bar.append(urlInput);
         bar.append(newTabLabel);
         bar.append(newTabInput);
+        bar.append(sceneLabel);
+        bar.append(sceneInput);
         canvasContainer.append(bar);
 
         // --- selection helpers ---
@@ -48,6 +58,21 @@ class AnnotationTool {
         const selected = (): AnnotationData | null => {
             const id = events.invoke('annotations.selected') as string | null;
             return id ? (events.invoke('annotations.byId', id) as AnnotationData) : null;
+        };
+
+        // Scene options are every loaded splat (not just portal-referenced ones):
+        // placement auto-assigns whichever splat was clicked, which may not be
+        // wired into a portal yet. Mirrors portal-tool.ts's option construction.
+        const splatList = () => scene.getElementsByType(ElementType.splat) as Splat[];
+        const splatName = (splat: Splat) => {
+            const filename = splat.name ?? (splat.asset.file as any)?.filename ?? `Splat ${splat.uid}`;
+            return `${splat.uid}: ${filename}`;
+        };
+        const refreshSceneOptions = () => {
+            sceneInput.options = [
+                { v: NO_SCENE, t: i18n.t('panel.annotations.scene-none') },
+                ...splatList().map(splat => ({ v: splat.uid, t: splatName(splat) }))
+            ];
         };
 
         let suppress = false;
@@ -62,10 +87,21 @@ class AnnotationTool {
             textInput.value = a.text;
             urlInput.value = a.url;
             newTabInput.value = a.newTab;
+            // the scene association is meaningless without portals: no portals
+            // means no exported scene indices and so nothing to switch between
+            const hasPortals = ((events.invoke('portals.count') as number) ?? 0) > 0;
+            sceneLabel.hidden = !hasPortals;
+            sceneInput.hidden = !hasPortals;
+            if (hasPortals) {
+                refreshSceneOptions();
+                const options = sceneInput.options as { v: number, t: string }[];
+                // a splat deleted since assignment leaves a dangling uid -> show "None"
+                sceneInput.value = options.some(o => o.v === a.sceneUid) ? a.sceneUid : NO_SCENE;
+            }
             suppress = false;
         };
 
-        const commit = (field: keyof AnnotationData, value: string | boolean) => {
+        const commit = (field: keyof AnnotationData, value: string | boolean | number | null) => {
             if (suppress) {
                 return;
             }
@@ -85,6 +121,7 @@ class AnnotationTool {
         textInput.on('change', (v: string) => commit('text', v));
         urlInput.on('change', (v: string) => commit('url', v));
         newTabInput.on('change', (v: boolean) => commit('newTab', v));
+        sceneInput.on('change', (v: number) => commit('sceneUid', v === NO_SCENE ? null : v));
 
         // --- move gizmo ---
 
@@ -213,6 +250,8 @@ class AnnotationTool {
                 text: '',
                 url: '',
                 newTab: false,
+                // the splat under the cursor is the scene this annotation belongs to
+                sceneUid: result.splat?.uid ?? null,
                 camera: {
                     position: [pose.position.x, pose.position.y, pose.position.z],
                     target: [pose.target.x, pose.target.y, pose.target.z],
@@ -251,6 +290,11 @@ class AnnotationTool {
         events.on('annotations.selectionChanged', () => {
             refreshBar();
             updateGizmo();
+        });
+        // adding or removing the project's first/last portal shows or hides the
+        // Scene row while the annotation tool is active
+        events.on('portals.changed', () => {
+            refreshBar();
         });
 
         this.activate = () => {

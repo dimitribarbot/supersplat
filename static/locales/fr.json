@@ -62,6 +62,8 @@
     "panel.annotations.text": "Texte",
     "panel.annotations.url": "URL du lien",
     "panel.annotations.new-tab": "Ouvrir dans un nouvel onglet",
+    "panel.annotations.scene": "Scène",
+    "panel.annotations.scene-none": "Aucune",
     "offLimitsZones.add": "Ajouter une zone",
     "offLimitsZones.move": "Déplacer",
     "offLimitsZones.rotate": "Pivoter",
