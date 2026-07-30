@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SuperSplat viewer — iframe annotation API example</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
+  nav { width: 240px; padding: 16px; background: #1b1b1b; color: #eee; overflow: auto; }
+  nav h1 { font-size: 15px; margin: 0 0 12px; }
+  nav button { display: block; width: 100%; margin-bottom: 6px; padding: 8px; cursor: pointer;
+               border: 1px solid #444; background: #2a2a2a; color: #eee; border-radius: 4px; text-align: left; }
+  nav button.active { background: #4a7dff; border-color: #4a7dff; }
+  #log { margin-top: 16px; font-size: 11px; white-space: pre-wrap; color: #999; }
+  iframe { flex: 1; border: 0; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>Annotations</h1>
+  <div id="buttons"></div>
+  <div id="log"></div>
+</nav>
+<!-- point this at your exported viewer -->
+<iframe id="viewer" src="../../dist/index.html"></iframe>
+
+<script>
+  const frame = document.getElementById('viewer');
+  const buttons = document.getElementById('buttons');
+  const logEl = document.getElementById('log');
+
+  const send = msg => frame.contentWindow.postMessage(msg, '*');
+  const log = line => {
+      logEl.textContent = `${line}\n${logEl.textContent}`.split('\n').slice(0, 12).join('\n');
+  };
+
+  // Subscribe once the iframe's document exists. Sending this immediately
+  // would post to the iframe's initial about:blank window (no listener there
+  // yet, since the navigation to src has not started) and the message would
+  // just be dropped -- the viewer's message listener is only installed once
+  // its own document starts parsing. 'load' fires well after that listener is
+  // in place, so this ping is genuinely queued and answered on ready if the
+  // scene is still loading, or answered immediately if it already finished --
+  // in practice the page also works from the 'ready' broadcast alone (below),
+  // this just covers the case where the page missed it.
+  frame.addEventListener('load', () => send({ type: 'supersplat:ping' }));
+
+  const buildButtons = (annotations) => {
+      buttons.textContent = '';
+      annotations.forEach((a) => {
+          const b = document.createElement('button');
+          b.textContent = a.title || `(untitled ${a.index})`;
+          b.dataset.id = a.id;
+          // Navigate by id, not title: ids are always non-empty and unique,
+          // whereas a blank annotation title renders as "(untitled N)" here
+          // and would fail with bad-request if sent as `name`.
+          b.onclick = () => send({ type: 'supersplat:annotation.goto', id: a.id, requestId: a.id });
+          buttons.appendChild(b);
+      });
+  };
+
+  const highlight = (id) => {
+      buttons.querySelectorAll('button').forEach((b) => {
+          b.classList.toggle('active', b.dataset.id === id);
+      });
+  };
+
+  addEventListener('message', (e) => {
+      if (e.source !== frame.contentWindow) return;
+      const d = e.data;
+      if (!d || typeof d !== 'object') return;
+      switch (d.type) {
+          case 'supersplat:ready':
+              log('viewer ready');
+              send({ type: 'supersplat:annotation.list' });
+              break;
+          case 'supersplat:annotation.list.result':
+              log(`${d.annotations.length} annotations`);
+              buildButtons(d.annotations);
+              break;
+          case 'supersplat:annotation.goto.result':
+              log(d.ok ? `goto ok: ${d.annotation.title} (scene ${d.annotation.scene})` : `goto failed: ${d.reason}`);
+              break;
+          case 'supersplat:annotation.activated':
+              log(`activated: ${d.title}`);
+              highlight(d.id);
+              break;
+          case 'supersplat:annotation.deactivated':
+              highlight(null);
+              break;
+      }
+  });
+</script>
+</body>
+</html>

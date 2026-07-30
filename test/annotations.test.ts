@@ -68,7 +68,7 @@ describe('annotations.export scene index', () => {
         registerAnnotationsEvents(events);
         new AddAnnotationOp(events, annotation({ url: 'https://x.test', newTab: true, sceneUid: 10 })).do();
         const out = events.invoke('annotations.export', [10, 20]);
-        expect(out[0].extras).toEqual({ url: 'https://x.test', newTab: true, scene: 0 });
+        expect(out[0].extras).toEqual({ url: 'https://x.test', newTab: true, scene: 0, id: 'annotation_0' });
     });
 });
 
@@ -125,5 +125,15 @@ describe('annotations document serialization', () => {
         delete legacy.sceneUid;
         events.invoke('docDeserialize.annotations', [legacy], { indexToUid: [100, 200] });
         expect((events.invoke('annotations.list') as AnnotationData[])[0].sceneUid).toBeNull();
+    });
+});
+
+describe('annotations.export id', () => {
+    it('bakes the stable annotation id into extras', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        new AddAnnotationOp(events, annotation({ id: 'annotation_7' })).do();
+        const out = events.invoke('annotations.export');
+        expect(out[0].extras.id).toBe('annotation_7');
     });
 });

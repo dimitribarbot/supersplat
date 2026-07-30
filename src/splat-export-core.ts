@@ -24,6 +24,7 @@ import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { injectFaviconLink } from './viewer-companion/favicon';
+import { buildIframeApiInjection } from './viewer-companion/iframe-api';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
@@ -104,6 +105,24 @@ const applyFavicon = (
     return injectFaviconLink(html, `./${favicon.filename}`, favicon.mime);
 };
 
+// Insert `injection` immediately before the first </body> (or append it, if
+// the document has none) LITERALLY. html.replace(pattern, replacementString)
+// treats a STRING replacement as a pattern of its own: $&, $`, $' and $$ are
+// expanded by the engine. The injected fragments here bake untrusted content
+// (annotation titles/text, off-limits messages, portal data) as JSON --
+// HTML-escaped elsewhere so it cannot break out of a <script> tag, but that
+// escaping does nothing against $ substitution. A title containing e.g. "$`"
+// would splice the entire HTML preceding the match into the injection point;
+// for a single-file export that is the whole engine + base64 splat payload,
+// which contains its own </script> and so truncates the tag early -- a blank
+// or garbled export produced silently. Passing a replacer FUNCTION sidesteps
+// this: its return value is inserted verbatim, with no pattern semantics.
+const insertBeforeBodyClose = (html: string, injection: string): string => {
+    return html.includes('</body>') ?
+        html.replace('</body>', () => `${injection}</body>`) :
+        html + injection;
+};
+
 // Inject the annotation-link companion into an HTML string before </body>.
 // No-op (returns the input) when there are no annotation links.
 const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string => {
@@ -111,10 +130,19 @@ const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string =>
     if (!injection) {
         return html;
     }
-    if (html.includes('</body>')) {
-        return html.replace('</body>', `${injection}</body>`);
-    }
-    return html + injection;
+    return insertBeforeBodyClose(html, injection);
+};
+
+// Inject the iframe API bridge into an HTML string before </body>. ALWAYS
+// injected, unlike the annotation-link companion: a host page embedding a scene
+// that happens to have no annotations should still receive a ready broadcast and
+// an empty list rather than silence. It needs no bootstrap soft-replace of its
+// own -- injectDeviceFallback runs unconditionally on every path below and
+// always publishes window.__supersplatViewer -- and the runtime polls for that
+// handle, so chain position does not matter.
+const injectIframeApi = (html: string, viewerSettingsJson: any): string => {
+    const injection = buildIframeApiInjection(viewerSettingsJson?.annotations ?? []);
+    return insertBeforeBodyClose(html, injection);
 };
 
 // Inject the WebGPU->WebGL2 crash-fallback companion into an HTML string
@@ -155,10 +183,7 @@ const injectOffLimitsZones = (html: string, viewerSettingsJson: any): string => 
     const withHandle = html.includes(bootstrap) ?
         html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
         html;
-    if (withHandle.includes('</body>')) {
-        return withHandle.replace('</body>', `${injection}</body>`);
-    }
-    return withHandle + injection;
+    return insertBeforeBodyClose(withHandle, injection);
 };
 
 // Inject the portals companion into an HTML string before </body>.
@@ -176,7 +201,7 @@ const injectPortals = (html: string, viewerSettingsJson: any): string => {
     const withHandle = (html.includes(bootstrap) && !html.includes('window.__supersplatViewer = viewer;')) ?
         html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
         html;
-    return withHandle.includes('</body>') ? withHandle.replace('</body>', `${injection}</body>`) : withHandle + injection;
+    return insertBeforeBodyClose(withHandle, injection);
 };
 
 // Bridge splat-transform progress events to supersplat's events.
@@ -782,7 +807,8 @@ const writeStreamingViewerCore = async (
     const withLinks = injectAnnotationLinks(withPoster, settingsWithLods);
     const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
-    memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injectDeviceFallback(withPortals), favicon, memFs)));
+    const withApi = injectIframeApi(injectDeviceFallback(withPortals), settingsWithLods);
+    memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(withApi, favicon, memFs)));
     patchEngineLoaderInMemFs(memFs);
     if (collision) {
         repointCollisionUrl(memFs);
@@ -877,7 +903,7 @@ const writeViewerCore = async (
             }
             // Single-file output: the poster is inlined as a data URI (no memFs).
             const withPoster = applyPoster(new TextDecoder().decode(raw), viewerSettingsJson, posterBytes, null);
-            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson));
+            const injected = injectIframeApi(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson)), viewerSettingsJson);
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
@@ -923,7 +949,7 @@ const writeViewerCore = async (
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings));
+            const injected = injectIframeApi(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings)), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injected, favicon, memFs)));
             patchEngineLoaderInMemFs(memFs);
             if (collision) {
@@ -949,4 +975,4 @@ const writeViewerCore = async (
     }
 };
 
-export { createProgressRenderer, writeSogCore, writeViewerCore };
+export { createProgressRenderer, injectIframeApi, writeSogCore, writeViewerCore };

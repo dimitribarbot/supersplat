@@ -38,7 +38,7 @@ type AnnotationExport = {
     title: string,
     text: string,
     camera: { initial: { position: [number, number, number], target: [number, number, number], fov: number } },
-    extras: { url?: string, newTab?: boolean, scene?: number }
+    extras: { url?: string, newTab?: boolean, scene?: number, id?: string }
 };
 
 class AddAnnotationOp {
@@ -213,7 +213,8 @@ const registerAnnotationsEvents = (events: Events) => {
                 extras: {
                     url: a.url || undefined,
                     newTab: a.url ? a.newTab : undefined,
-                    scene: scene ?? undefined
+                    scene: scene ?? undefined,
+                    id: a.id
                 }
             };
         });
