@@ -94,6 +94,8 @@
     "portals.bounds.right": "Rechts",
     "portals.bounds.bottom": "Unten",
     "portals.bounds.left": "Links",
+    "portals.transition": "Übergang",
+    "portals.transition.tooltip": "Beim Durchqueren dieses Portals einen Übergangseffekt abspielen",
     "panel.settings": "Einstellungen",
     "panel.settings.language": "Sprache",
     "panel.settings.language.auto": "Automatisch",

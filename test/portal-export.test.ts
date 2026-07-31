@@ -103,6 +103,22 @@ describe('buildPortalBundle', () => {
         })!;
         expect(b.portals[0].infinite).toEqual(inf);
     });
+
+    it('carries an explicit transition:false into the rewritten portals', () => {
+        const b = buildPortalBundle({
+            portals: [{ ...portal(10, 20), transition: false }],
+            startUid: 10, availableUids: [10, 20], streaming: false, collision: false
+        })!;
+        expect(b.portals[0].transition).toBe(false);
+    });
+
+    it('leaves the transition field absent when the portal never set it', () => {
+        const b = buildPortalBundle({
+            portals: [portal(10, 20)],
+            startUid: 10, availableUids: [10, 20], streaming: false, collision: false
+        })!;
+        expect(b.portals[0].transition).toBeUndefined();
+    });
 });
 
 const portalAt = (pos: [number, number, number], front: number | null, back: number | null, h = 2) => ({

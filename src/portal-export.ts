@@ -16,12 +16,13 @@ type ExportPortal = {
     height: number,
     frontUid: number | null,
     backUid: number | null,
-    infinite?: InfiniteEdges
+    infinite?: InfiniteEdges,
+    transition?: boolean   // absent = enabled
 };
 
 type PortalBundle = {
     sceneUids: number[];                 // index -> editor uid (index 0 = start)
-    portals: { position: Vec3, rotation: Quat, width: number, height: number, front: number | null, back: number | null, infinite?: InfiniteEdges }[];
+    portals: { position: Vec3, rotation: Quat, width: number, height: number, front: number | null, back: number | null, infinite?: InfiniteEdges, transition?: boolean }[];
     portalScenes: string[];              // index -> relative asset URL (index 0 = '')
     portalStart: number;                 // always 0
     portalCollision: (string | null)[];  // index -> voxel URL, or [] when collision off
@@ -82,7 +83,8 @@ const buildPortalBundle = (args: {
         height: p.height,
         front: indexOf(p.frontUid),
         back: indexOf(p.backUid),
-        infinite: p.infinite
+        infinite: p.infinite,
+        transition: p.transition
     }));
 
     const portalScenes = sceneUids.map((_, i) => sceneUrl(i, streaming));

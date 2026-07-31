@@ -277,3 +277,44 @@ describe('portal doc-index serialization', () => {
         expect(events.invoke('portals.startSplat')).toBeNull();
     });
 });
+
+describe('portal transition flag', () => {
+    it('portals.export carries the transition flag through', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.fire('portals.insertRaw', portal({ id: 'portal_0', transition: false }));
+        events.fire('portals.insertRaw', portal({ id: 'portal_1' }));
+        const out = events.invoke('portals.export');
+        expect(out[0].transition).toBe(false);
+        expect(out[1].transition).toBeUndefined();
+    });
+
+    it('docSerialize keeps an explicit false and omits an absent flag', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.fire('portals.insertRaw', portal({ id: 'portal_0', transition: false }));
+        events.fire('portals.insertRaw', portal({ id: 'portal_1' }));
+        const serialized = events.invoke('docSerialize.portals');
+        expect(serialized[0].transition).toBe(false);
+        expect(JSON.parse(JSON.stringify(serialized[1])).transition).toBeUndefined();
+    });
+
+    it('docDeserialize restores an explicit false', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.invoke('docDeserialize.portals', [
+            { id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, frontUid: 1, backUid: 2, transition: false }
+        ]);
+        expect((events.invoke('portals.list') as PortalData[])[0].transition).toBe(false);
+    });
+
+    it('a legacy document without the field loads as enabled (absent)', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.invoke('docDeserialize.portals', [
+            { id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, frontUid: 1, backUid: 2 }
+        ]);
+        const p = (events.invoke('portals.list') as PortalData[])[0];
+        expect(p.transition).toBeUndefined();
+    });
+});

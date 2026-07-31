@@ -94,6 +94,8 @@
     "portals.bounds.right": "오른쪽",
     "portals.bounds.bottom": "아래",
     "portals.bounds.left": "왼쪽",
+    "portals.transition": "전환 효과",
+    "portals.transition.tooltip": "이 포털을 통과할 때 전환 효과 재생",
     "panel.settings": "설정",
     "panel.settings.language": "언어",
     "panel.settings.language.auto": "자동",

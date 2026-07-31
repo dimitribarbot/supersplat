@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { segmentCrossesRect, resolveActiveSplat, PortalRect } from '../src/portal-geom';
+import { segmentCrossesRect, resolveActiveSplat, resolvePortalCrossing, PortalRect } from '../src/portal-geom';
 
 const rect = (over: Partial<PortalRect> = {}): PortalRect => ({
     position: [0, 0, 0],
@@ -114,5 +114,44 @@ describe('resolveActiveSplat', () => {
         const a = rect({ position: [0, 0, 0], frontUid: 10, backUid: 20 });
         const b = rect({ position: [0, 0, 3], frontUid: null, backUid: null });
         expect(resolveActiveSplat([0, 0, -1], [0, 0, 4], [a, b], 20)).toBe(10);
+    });
+});
+
+describe('resolvePortalCrossing', () => {
+    it('returns the crossed portal index alongside the resulting scene', () => {
+        const portals = [rect({ frontUid: 10, backUid: 20 })];
+        const r = resolvePortalCrossing([0, 0, -1], [0, 0, 1], portals, 20);
+        expect(r).toEqual({ uid: 10, portalIndex: 0 });
+    });
+
+    it('returns a null portal index when nothing was crossed', () => {
+        const portals = [rect()];
+        const r = resolvePortalCrossing([0, 0, -2], [0, 0, -1], portals, 20);
+        expect(r).toEqual({ uid: 20, portalIndex: null });
+    });
+
+    it('reports the LAST effective crossing when a segment crosses two portals', () => {
+        const portals = [
+            rect({ position: [0, 0, 0], frontUid: 10, backUid: 20 }),
+            rect({ position: [0, 0, 2], frontUid: 30, backUid: 10 })
+        ];
+        const r = resolvePortalCrossing([0, 0, -1], [0, 0, 3], portals, 20);
+        expect(r).toEqual({ uid: 30, portalIndex: 1 });
+    });
+
+    it('skips a crossing into a side with no bound scene', () => {
+        const portals = [
+            rect({ position: [0, 0, 0], frontUid: 10, backUid: 20 }),
+            rect({ position: [0, 0, 2], frontUid: null, backUid: 10 })
+        ];
+        const r = resolvePortalCrossing([0, 0, -1], [0, 0, 3], portals, 20);
+        expect(r).toEqual({ uid: 10, portalIndex: 0 });
+    });
+
+    it('agrees with resolveActiveSplat on the resulting scene', () => {
+        const portals = [rect({ frontUid: 10, backUid: 20 })];
+        const a = resolveActiveSplat([0, 0, -1], [0, 0, 1], portals, 20);
+        const b = resolvePortalCrossing([0, 0, -1], [0, 0, 1], portals, 20);
+        expect(b.uid).toBe(a);
     });
 });

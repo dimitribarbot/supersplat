@@ -94,6 +94,8 @@
     "portals.bounds.right": "右",
     "portals.bounds.bottom": "下",
     "portals.bounds.left": "左",
+    "portals.transition": "トランジション",
+    "portals.transition.tooltip": "このポータルを通過するときにトランジション効果を再生",
     "panel.settings": "設定",
     "panel.settings.language": "言語",
     "panel.settings.language.auto": "自動",

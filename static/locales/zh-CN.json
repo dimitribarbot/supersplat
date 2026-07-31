@@ -94,6 +94,8 @@
     "portals.bounds.right": "右",
     "portals.bounds.bottom": "下",
     "portals.bounds.left": "左",
+    "portals.transition": "过渡效果",
+    "portals.transition.tooltip": "穿过此传送门时播放过渡效果",
     "panel.settings": "设置",
     "panel.settings.language": "语言",
     "panel.settings.language.auto": "自动",

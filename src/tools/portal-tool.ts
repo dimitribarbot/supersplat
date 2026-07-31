@@ -53,6 +53,8 @@ class PortalTool {
         const rotateButton = new Button({ text: i18n.t('portals.rotate'), class: 'select-toolbar-button' });
         const boundsButton = new Button({ text: '⤢', class: 'select-toolbar-button' });
         boundsButton.dom.title = i18n.t('portals.bounds.tooltip');
+        const transitionButton = new Button({ text: '⧉', class: 'select-toolbar-button' });
+        transitionButton.dom.title = i18n.t('portals.transition.tooltip');
         const widthLabel = new Label({ text: i18n.t('portals.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
         const heightLabel = new Label({ text: i18n.t('portals.height') });
@@ -78,6 +80,7 @@ class PortalTool {
         bar.append(moveButton);
         bar.append(rotateButton);
         bar.append(boundsButton);
+        bar.append(transitionButton);
         bar.append(group(widthLabel, widthInput));
         bar.append(group(heightLabel, heightInput));
         bar.append(group(frontLabel, frontInput));
@@ -150,6 +153,20 @@ class PortalTool {
             });
         });
 
+        // Per-portal transition toggle. Absent means enabled, so the first click
+        // on a fresh portal writes an explicit false; clicking again clears it
+        // back to undefined (enabled) rather than writing true, keeping the
+        // "absent means enabled" invariant in the document.
+        transitionButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            const z = selected();
+            if (!z) {
+                return;
+            }
+            const next = (z.transition === false) ? undefined : false;
+            events.fire('edit.add', new UpdatePortalOp(events, z.id, { transition: z.transition }, { transition: next }));
+        });
+
         // --- selection helpers ---
         // Declared as a hoisted function so the deferred handlers above can
         // reference it before this point (no-use-before-define allows functions).
@@ -214,6 +231,8 @@ class PortalTool {
             const hasEp = selectedEntryUid != null && !!events.invoke('portals.entrypoint', selectedEntryUid);
             entryClearButton.enabled = hasEp;
             entrySetButton.enabled = selectedEntryUid != null;
+            transitionButton.enabled = !!z;
+            transitionButton.class[(z && z.transition !== false) ? 'add' : 'remove']('active');
             refreshBoundsPopup();
             suppress = false;
             updateEntryGizmo();

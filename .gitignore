@@ -12,3 +12,6 @@ dist-shared/
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# superpowers brainstorming companion artifacts
+.superpowers/

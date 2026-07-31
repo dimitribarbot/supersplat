@@ -1,7 +1,8 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
-import { segmentCrossesRect, resolveActiveSplat } from '../portal-geom';
+import { segmentCrossesRect, resolvePortalCrossing } from '../portal-geom';
 import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam } from '../portal-preload';
+import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -48,6 +49,18 @@ const companionStyle = `
   margin-top: 16px; color: #fff; font-family: sans-serif; font-size: 15px;
 }
 @keyframes ss-portal-spin { to { transform: rotate(360deg); } }
+.ss-portal-tiles {
+  position: fixed; inset: 0; z-index: 1999; pointer-events: none;
+  display: grid; visibility: hidden; opacity: .7;
+}
+.ss-portal-tiles.armed { visibility: visible; }
+.ss-portal-tiles.armed .ss-portal-tile { will-change: transform, opacity; }
+.ss-portal-tile {
+  background: #0a0c10; opacity: 0;
+  transition: opacity 150ms ease-out, transform 150ms cubic-bezier(.2,.75,.3,1);
+}
+.ss-portal-tiles.reduced .ss-portal-tile { transition: opacity 150ms linear; }
+.ss-portal-tile.on { opacity: 1; transform: scale(1.02) rotate(0deg); }
 `;
 
 // Runtime companion injected verbatim into the exported viewer. It creates one
@@ -63,7 +76,6 @@ const companionRuntime = `
   var data = window.__supersplatPortals;
   if (!data || !data.portals || !data.portalScenes || data.portalScenes.length < 2) return;
   var segmentCrossesRect = ${segmentCrossesRect.toString()};
-  var resolveActiveSplat = ${resolveActiveSplat.toString()};
   var crossingReducer = ${crossingReducer.toString()};
   var resolveLoadingMessage = ${resolveLoadingMessage.toString()};
   var collectLodFileUrls = ${collectLodFileUrls.toString()};
@@ -80,6 +92,11 @@ const companionRuntime = `
   var pinBatchAllowed = ${pinBatchAllowed.toString()};
   var parseBudgetParam = ${parseBudgetParam.toString()};
   var computeRevealLevel = ${computeRevealLevel.toString()};
+  var resolvePortalCrossing = ${resolvePortalCrossing.toString()};
+  var tileGrid = ${tileGrid.toString()};
+  var tileGeometry = ${tileGeometry.toString()};
+  var tileDelay = ${tileDelay.toString()};
+  var transitionReducer = ${transitionReducer.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
@@ -298,6 +315,156 @@ const companionRuntime = `
   function showLoading() { lBackdrop.classList.add('active'); }
   function hideLoading() { lBackdrop.classList.remove('active'); }
 
+  // --- portal transition cover -------------------------------------------
+  // A grid of translucent tiles above the canvas (below the loading overlay).
+  // Dismantle: tiles fly in from outside, spinning, edges-first, so the centre
+  // of the outgoing scene is covered last. The scene swap happens under the
+  // cover. Reconstruct: tiles spin away outward, centre-first, revealing the
+  // incoming scene. All phase decisions live in transitionReducer.
+  var REDUCED_MOTION = false;
+  try { REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (mmErr) { REDUCED_MOTION = false; }
+  var T_SWEEP = REDUCED_MOTION ? 0 : 225;     // stagger across the grid
+  var T_TILE = REDUCED_MOTION ? 150 : 150;    // per-tile motion
+  var T_HOLD = 100;                            // covered hold before reconstruct
+  var T_COVERED_MAX_FRAMES = 120;              // ~2s watchdog while covered with no overlay
+
+  var tileLayer = document.createElement('div');
+  tileLayer.className = 'ss-portal-tiles' + (REDUCED_MOTION ? ' reduced' : '');
+  var tiles = [];                 // {el, dist, ux, uy, spin}
+  var transState = { phase: 'idle', target: null };
+  var coveredFrames = 0;
+  var coverTimer = null;
+  var lastGridCols = 0;            // last built grid shape; an idle resize that keeps the
+  var lastGridRows = 0;            // same cols x rows (e.g. mobile URL bar show/hide) is a no-op
+
+  function mountTiles() { document.body.appendChild(tileLayer); }
+  if (document.body) { mountTiles(); } else { document.addEventListener('DOMContentLoaded', mountTiles); }
+
+  function buildTiles() {
+    var g = tileGrid(window.innerWidth || 1280, window.innerHeight || 720);
+    if (g.cols === lastGridCols && g.rows === lastGridRows) { return; }   // 1fr tracks: same shape needs no rebuild
+    lastGridCols = g.cols; lastGridRows = g.rows;
+    tileLayer.style.gridTemplateColumns = 'repeat(' + g.cols + ', 1fr)';
+    tileLayer.style.gridTemplateRows = 'repeat(' + g.rows + ', 1fr)';
+    while (tileLayer.firstChild) { tileLayer.removeChild(tileLayer.firstChild); }
+    tiles = [];
+    var n = g.cols * g.rows;
+    for (var i = 0; i < n; i++) {
+      var el = document.createElement('div');
+      el.className = 'ss-portal-tile';
+      tileLayer.appendChild(el);
+      var geo = tileGeometry(g.cols, g.rows, i);
+      tiles.push({
+        el: el, dist: geo.dist, ux: geo.ux, uy: geo.uy,
+        spin: (16 + Math.random() * 50) * (geo.ux > 0 ? 1 : -1)
+      });
+    }
+  }
+  // Only build the tile grid (and pay its up-to-320-div compositor cost) when at
+  // least one portal has the effect enabled. When none do, transitionEnabled
+  // returns false for every portal, the phase machine below can never leave
+  // 'idle' (see the tick() gating on transitionEnabled(cr.portalIndex)), and no
+  // code path ever dereferences tiles -- it is safe to leave it empty.
+  var wantsTransition = data.portals.some(function (p) { return p.transition !== false; });
+  if (wantsTransition) { buildTiles(); }
+  window.addEventListener('resize', function () {
+    if (wantsTransition && transState.phase === 'idle') { buildTiles(); }
+  });
+
+  // The off-slot transform a tile animates from (dismantle) and to
+  // (reconstruct): pushed outward along its radial direction, small, spun.
+  // Reduced motion keeps the tile in place and animates opacity only.
+  function tileAway(t) {
+    if (REDUCED_MOTION) { return 'none'; }
+    return 'translate(' + (t.ux * 140) + 'px,' + (t.uy * 140) + 'px) scale(.25) rotate(' + t.spin + 'deg)';
+  }
+
+  function startDismantle() {
+    tileLayer.classList.add('armed');
+    for (var i = 0; i < tiles.length; i++) {
+      var t = tiles[i];
+      t.el.style.transition = 'none';
+      t.el.style.transitionDelay = '0ms';
+      t.el.classList.remove('on');
+      t.el.style.transform = tileAway(t);
+    }
+    void tileLayer.offsetWidth;                 // one flush for the whole layer, so the class add animates
+    for (var j = 0; j < tiles.length; j++) {
+      var u = tiles[j];
+      u.el.style.transition = '';
+      u.el.style.transitionDelay = tileDelay(u.dist, T_SWEEP, 'dismantle') + 'ms';
+      u.el.classList.add('on');
+      u.el.style.transform = '';
+    }
+    if (coverTimer) { clearTimeout(coverTimer); }
+    coverTimer = setTimeout(onCoverComplete, T_SWEEP + T_TILE);
+  }
+
+  function startReconstruct() {
+    if (coverTimer) { clearTimeout(coverTimer); }
+    coverTimer = setTimeout(function () {
+      for (var i = 0; i < tiles.length; i++) {
+        var t = tiles[i];
+        t.el.style.transitionDelay = tileDelay(t.dist, T_SWEEP, 'reconstruct') + 'ms';
+        t.el.style.transform = tileAway(t);
+        t.el.classList.remove('on');
+      }
+      coverTimer = setTimeout(function () { transDispatch({ type: 'done' }); }, T_SWEEP + T_TILE);
+    }, T_HOLD);
+  }
+
+  function clearCover() {
+    if (coverTimer) { clearTimeout(coverTimer); coverTimer = null; }
+    for (var i = 0; i < tiles.length; i++) {
+      var t = tiles[i];
+      t.el.style.transition = 'none';
+      t.el.style.transitionDelay = '0ms';
+      t.el.classList.remove('on');
+      t.el.style.transform = 'none';
+    }
+    void tileLayer.offsetWidth;                 // one flush for the whole layer
+    for (var j = 0; j < tiles.length; j++) {
+      tiles[j].el.style.transition = '';
+    }
+    tileLayer.classList.remove('armed');
+  }
+
+  // Does portal p want the effect? Absent means enabled.
+  function transitionEnabled(portalIndex) {
+    if (portalIndex === null || portalIndex === undefined) { return false; }
+    var p = data.portals[portalIndex];
+    return !!p && p.transition !== false;
+  }
+
+  // Cover complete: re-resolve the crossing from the FROZEN lastSafe to the
+  // camera's current position. If the user walked back through the doorway
+  // during the dismantle, the target is gone -> cancel with no switch.
+  function onCoverComplete() {
+    var target = null;
+    try {
+      if (lastSafe) {
+        var r = resolvePortalCrossing(lastSafe, curPos, rects, activeIndex, segmentCrossesRect);
+        if (r.uid !== null && r.uid !== activeIndex) { target = r.uid; }
+      }
+    } catch (ccErr) { target = transState.target; }
+    transDispatch({ type: 'covered', target: target });
+  }
+
+  function transDispatch(ev) {
+    var res = transitionReducer(transState, ev);
+    transState = res.state;
+    var a = res.actions;
+    if (transState.phase === 'covered') { coveredFrames = 0; }
+    if (a.cover === 'dismantle') { startDismantle(); }
+    else if (a.cover === 'reconstruct') { startReconstruct(); }
+    else if (a.cover === 'clear') { clearCover(); }
+    if (a.dispatchTarget !== null) {
+      var u = a.dispatchTarget;
+      dispatch({ type: 'crossing', target: u, loaded: !!(entities[u] || sceneLoading[u]), ready: sceneReady(u) });
+    }
+    if (transState.phase === 'idle' && a.cover !== 'dismantle') { tileLayer.classList.remove('armed'); }
+  }
+
   // The LOD level a crossing's loading overlay waits for -- the "coarsest
   // acceptable" quality: normally the finest level THIS device loads
   // (deviceFinest, clamped to the scene coarsest), or REVEAL_MARGIN levels
@@ -480,10 +647,17 @@ const companionRuntime = `
     if (a.overlay === 'show') { pendingIndex = null; overlayShown = true; showLoading(); loadScene(crossState.target); }
     else if (a.overlay === 'poll') { beginLoading(crossState.target); }
     else if (a.overlay === 'hide') { pendingIndex = null; overlayShown = false; hideLoading(); }
+    // The cover is up and the crossing lifecycle just settled (switched and
+    // ready, reveal completed, or the crossing was abandoned): the destination
+    // is on screen behind the tiles, so reconstruct. This single hook covers
+    // the immediate-ready commit AND the post-loading-overlay reveal.
+    if (transState.phase === 'covered' && crossState.mode === 'idle') {
+      transDispatch({ type: 'sceneShown' });
+    }
   }
 
   // Portal rects carry index-based front/back: the export (buildPortalBundle)
-  // already rewrote editor scene-uids to scene indices, so resolveActiveSplat's
+  // already rewrote editor scene-uids to scene indices, so resolvePortalCrossing's
   // "uid" values are indices here, matching the entities/collision arrays.
   var rects = data.portals.map(function (p) {
     return { position: p.position, rotation: p.rotation, width: p.width, height: p.height, frontUid: p.front, backUid: p.back, infinite: p.infinite };
@@ -979,21 +1153,43 @@ const companionRuntime = `
           // Copy (never alias curPos) so next frame's fill can't corrupt lastSafe.
           lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf;   // anim mode: keep fresh for the mode hand-off
         } else if (lastSafe) {
-          var next = resolveActiveSplat(lastSafe, curPos, rects, activeIndex, segmentCrossesRect);
+          var cr = resolvePortalCrossing(lastSafe, curPos, rects, activeIndex, segmentCrossesRect);
+          var next = cr.uid;
           if (next !== activeIndex && next !== null) {
-            dispatch({ type: 'crossing', target: next, loaded: !!(entities[next] || sceneLoading[next]), ready: sceneReady(next) });
+            if (transState.phase === 'dismantling') {
+              // Crossing already latched; the commit re-resolves it. Dispatching
+              // now would switch the scene before the cover has closed.
+            } else if (transState.phase === 'idle' && transitionEnabled(cr.portalIndex)) {
+              // Defer the switch: dismantle first, commit when covered.
+              transDispatch({ type: 'crossing', target: next });
+            } else {
+              // No transition for this portal, or one is already past its commit
+              // (covered / reconstructing). Dispatch normally. This path is
+              // REQUIRED, not just an optimisation: when the committed crossing
+              // came back 'blocked', the frozen-lastSafe re-fire arrives here
+              // every frame and is what finally completes the switch once the
+              // target loads. Suppressing it would strand the cover until the
+              // watchdog.
+              dispatch({ type: 'crossing', target: next, loaded: !!(entities[next] || sceneLoading[next]), ready: sceneReady(next) });
+            }
           } else if (crossState.mode === 'blocked') {
             dispatch({ type: 'noCrossing' });   // user retreated to the known side
           }
-          // Freeze lastSafe while blocked so the pending crossing keeps firing;
-          // advance it normally otherwise.
-          if (crossState.mode !== 'blocked') { lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf; }
+          // Freeze lastSafe while a crossing is blocked OR while the dismantle
+          // is playing. The dismantle freeze is load-bearing: without it the
+          // camera walks past the portal during the sweep, the frozen segment
+          // no longer crosses the rectangle, and a later blocked dispatch could
+          // never re-fire - the crossing would be lost.
+          if (crossState.mode !== 'blocked' && transState.phase !== 'dismantling') {
+            lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf;
+          }
         } else {
           lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf;
         }
       }
     } catch (err) {
       if (!tickErrored) { tickErrored = true; console.warn('portal tick error (suppressed further):', err); }
+      try { if (transState.phase !== 'idle') { transDispatch({ type: 'abort' }); } } catch (abortErr) {}
     }
     // Advance the loading overlay (outside the pose guard so it polls every
     // frame). Self-contained try/catch: a throw here must never kill the rAF
@@ -1034,12 +1230,24 @@ const companionRuntime = `
           overlayShown = true;
         }
       }
+      // Watchdog: the cover must never outlive its hand-off. While an overlay
+      // is showing, the overlay's own reveal caps bound the wait; with no
+      // overlay, a missed hand-off would strand the cover, so force the
+      // reconstruct after ~2s.
+      if (transState.phase === 'covered' && !overlayShown) {
+        coveredFrames++;
+        if (coveredFrames > T_COVERED_MAX_FRAMES) {
+          console.warn('[portals] transition cover watchdog fired -- reconstructing');
+          transDispatch({ type: 'sceneShown' });
+        }
+      }
     } catch (e) {
       // Defensive: never leave the overlay stuck (mark the in-flight scene
       // ready so we don't re-arm forever). Logged: a swallowed error here
       // force-reveals the scene and would otherwise masquerade as an early
       // legitimate reveal.
       console.warn('portal overlay poll error (overlay dropped):', e);
+      if (transState.phase !== 'idle') { transDispatch({ type: 'abort' }); }
       if (crossState.mode === 'loading' && crossState.target !== null) { readyScenes[crossState.target] = true; shown[crossState.target] = true; }
       crossState = { mode: 'idle', target: null };
       pendingIndex = null; overlayShown = false;

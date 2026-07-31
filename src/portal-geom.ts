@@ -114,4 +114,52 @@ const resolveActiveSplat = (prev: Vec3, cur: Vec3, portals: PortalRect[], curren
     return active;
 };
 
-export { segmentCrossesRect, resolveActiveSplat, PortalRect, InfiniteEdges, Vec3, Quat };
+// Same resolution as resolveActiveSplat, but it also reports WHICH portal
+// produced the resulting scene. The exported viewer needs that to read the
+// portal's per-portal `transition` flag.
+//
+// Deliberately duplicates the loop-and-sort instead of delegating to
+// resolveActiveSplat: both functions are stringified into the exported viewer
+// (Function.toString()) and evaluated in SEPARATE scopes, where a call to a
+// sibling top-level name would hit the terser-mangled identifier and throw.
+// The geometry itself is not duplicated - it stays in the injected `cross`.
+//
+// Hot path (every rAF frame): the no-crossing case allocates no PER-PORTAL
+// objects (the lazy `crossings` array is what stays allocation-free); the
+// {uid, portalIndex} result below is allocated on every call regardless.
+const resolvePortalCrossing = (
+    prev: Vec3,
+    cur: Vec3,
+    portals: PortalRect[],
+    currentUid: number | null,
+    cross = segmentCrossesRect
+): { uid: number | null, portalIndex: number | null } => {
+    let crossings: { t: number, uid: number | null, index: number }[] = null;
+    for (let i = 0; i < portals.length; i++) {
+        const p = portals[i];
+        const c = cross(prev, cur, p);
+        if (c) {
+            if (!crossings) {
+                crossings = [];
+            }
+            crossings.push({ t: c.t, uid: c.side === 'front' ? p.frontUid : p.backUid, index: i });
+        }
+    }
+    if (!crossings) {
+        return { uid: currentUid, portalIndex: null };
+    }
+    crossings.sort((m, n) => m.t - n.t);
+    let active = currentUid;
+    let portalIndex: number | null = null;
+    for (let i = 0; i < crossings.length; i++) {
+        // a crossing into a side with no bound scene leaves the active scene (and
+        // the reported portal) unchanged
+        if (crossings[i].uid !== null) {
+            active = crossings[i].uid;
+            portalIndex = crossings[i].index;
+        }
+    }
+    return { uid: active, portalIndex: portalIndex };
+};
+
+export { segmentCrossesRect, resolveActiveSplat, resolvePortalCrossing, PortalRect, InfiniteEdges, Vec3, Quat };

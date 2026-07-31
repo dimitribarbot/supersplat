@@ -13,7 +13,11 @@ type PortalData = {
     height: number,
     frontUid: number | null,
     backUid: number | null,
-    infinite?: InfiniteEdges
+    infinite?: InfiniteEdges,
+    // Play the exported viewer's tile transition when this portal is crossed.
+    // ABSENT MEANS ENABLED - only an explicit false disables it, so existing
+    // documents need no migration.
+    transition?: boolean
 };
 
 // On-disk portal record: PortalData plus stable splat references as indices
@@ -233,7 +237,8 @@ const registerPortalsEvents = (events: Events) => {
         height: p.height,
         frontUid: p.frontUid,
         backUid: p.backUid,
-        infinite: p.infinite
+        infinite: p.infinite,
+        transition: p.transition
     })));
 
     // --- document serialization ---
@@ -246,7 +251,8 @@ const registerPortalsEvents = (events: Events) => {
             height: p.height,
             frontUid: p.frontUid,
             backUid: p.backUid,
-            infinite: p.infinite
+            infinite: p.infinite,
+            transition: p.transition
         };
         if (uidToIndex) {
             // always write a value (null, never undefined) so the field
@@ -333,7 +339,8 @@ const registerPortalsEvents = (events: Events) => {
                     height: d.height ?? 1,
                     frontUid: resolve(d.frontIndex, d.frontUid),
                     backUid: resolve(d.backIndex, d.backUid),
-                    infinite: d.infinite
+                    infinite: d.infinite,
+                    transition: d.transition
                 });
                 const m = /^portal_(\d+)$/.exec(d.id ?? '');
                 if (m) {

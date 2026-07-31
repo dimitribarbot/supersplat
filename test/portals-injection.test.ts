@@ -408,6 +408,45 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain("ev.on('annotation.activate'");
         expect(out).toContain('idx >= data.portalScenes.length');
     });
+
+    it('ships the transition helpers, CSS and payload flag', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1, transition: false }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            portalCollision: [],
+            portalEnvironments: ['indoor', 'indoor'],
+            portalSceneLodCounts: [[1000], [1000]]
+        });
+        // the per-portal flag reaches the viewer payload
+        expect(out).toContain('"transition":false');
+        // the pure helpers are stringified in
+        expect(out).toContain('var transitionReducer =');
+        expect(out).toContain('var tileGrid =');
+        expect(out).toContain('var tileGeometry =');
+        expect(out).toContain('var tileDelay =');
+        expect(out).toContain('var resolvePortalCrossing =');
+        // the tile layer CSS ships
+        expect(out).toContain('ss-portal-tiles');
+        expect(out).toContain('#0a0c10');
+        expect(out).toContain('opacity: .7');
+    });
+
+    it('keeps the runtime free of template-literal hazards', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            portalCollision: [],
+            portalEnvironments: ['indoor', 'indoor'],
+            portalSceneLodCounts: [[1000], [1000]]
+        });
+        // A hand-authored '${' in the runtime body would interpolate at build
+        // time and can never reach the output; this guards the OTHER source --
+        // that no stringified helper's body contains a template literal with
+        // its own interpolation (which WOULD survive verbatim into the string).
+        expect(out.includes('$' + '{')).toBe(false);
+    });
 });
 
 describe('buildPortalsInjection smoke', () => {

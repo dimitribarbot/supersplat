@@ -94,6 +94,8 @@
     "portals.bounds.right": "Право",
     "portals.bounds.bottom": "Низ",
     "portals.bounds.left": "Лево",
+    "portals.transition": "Переход",
+    "portals.transition.tooltip": "Воспроизводить эффект перехода при прохождении через этот портал",
     "panel.settings": "Настройки",
     "panel.settings.language": "Язык",
     "panel.settings.language.auto": "Автоматически",
