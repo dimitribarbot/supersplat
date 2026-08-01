@@ -4,6 +4,7 @@ import { Mat4 } from 'playcanvas';
 import { DataPanel } from './data-panel';
 import { Events } from '../events';
 import { AboutPopup } from './about-popup';
+import { AnnotationImagesDialog } from './annotation-images-dialog';
 import { BottomToolbar } from './bottom-toolbar';
 import { CameraInfoOverlay } from './camera-info-overlay';
 import { ColorPanel } from './color-panel';
@@ -167,6 +168,9 @@ class EditorUI {
         // video settings
         const videoSettingsDialog = new VideoSettingsDialog(events);
 
+        // annotation images
+        const annotationImagesDialog = new AnnotationImagesDialog(events);
+
         // about popup
         const aboutPopup = new AboutPopup();
 
@@ -176,6 +180,7 @@ class EditorUI {
         topContainer.append(s3PublishDialog);
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
+        topContainer.append(annotationImagesDialog);
         topContainer.append(shortcutsPopup);
         topContainer.append(aboutPopup);
 

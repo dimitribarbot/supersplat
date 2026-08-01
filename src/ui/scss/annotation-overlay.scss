@@ -46,6 +46,10 @@
     .annotations-toolbar-input {
         width: 160px;
     }
+
+    .annotations-toolbar-button {
+        white-space: nowrap;
+    }
 }
 
 .annotation-preview {
@@ -78,5 +82,91 @@
         color: #fff;
         text-decoration: none;
         font-size: 13px;
+    }
+}
+
+#annotation-images-dialog {
+    // wider than the 400px shared settings-dialog default: a row carries a
+    // thumbnail, a label, a caption field and three buttons, which does not fit
+    // on one line at 400px. Two ids outrank `.settings-dialog #dialog`.
+    #dialog {
+        width: 560px;
+        max-width: calc(100vw - 32px);
+    }
+
+    .annotation-images-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 320px;
+        overflow-y: auto;
+    }
+
+    // flex-shrink: 0 or the rows compress once the list passes its max-height
+    // (from the 6th image on) rather than scrolling. Nothing floors them at the
+    // thumbnail's height, because .pcui-label carries overflow: hidden and that
+    // zeroes a flex item's automatic minimum size — so the thumbnail keeps its
+    // 56px, overflows the squeezed row and swallows the gap between images.
+    .annotation-images-row {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        flex-shrink: 0;
+        gap: 8px;
+    }
+
+    .annotation-images-thumb {
+        width: 80px;
+        height: 56px;
+        flex-shrink: 0;
+        margin: 0;
+        border-radius: 2px;
+        background-color: #1e1e1e;
+        background-size: cover;
+        background-position: center;
+        text-align: center;
+    }
+
+    // natural width, so the row's gap is the only space on either side of the
+    // label and the label + field group sits evenly between the thumbnail and
+    // the buttons. Every row renders the same string, so the fields still line
+    // up down the list without pinning a width.
+    .annotation-images-caption-label {
+        flex-shrink: 0;
+        margin: 0;
+        opacity: 0.7;
+    }
+
+    .annotation-images-caption {
+        flex-grow: 1;
+        min-width: 0;
+        margin: 0;
+    }
+
+    // .pcui-button sets overflow: hidden, which per the flexbox spec zeroes its
+    // automatic minimum size — without flex-shrink: 0 these three absorb the
+    // whole row deficit and clip their glyphs off-centre
+    .annotation-images-move,
+    .annotation-images-remove {
+        flex-shrink: 0;
+        width: 28px;
+        margin: 0;
+        padding: 0;
+    }
+
+    // PCUI's default 6px margin would indent this past the rows; zero the sides
+    // so it lines up with the thumbnails and the labels below it
+    .annotation-images-add {
+        margin: 12px 0 0;
+    }
+
+    // :not(.pcui-hidden) or this id-scoped rule outranks PCUI's
+    // .pcui-element.pcui-hidden { display: none } and the empty label,
+    // hidden in code, would stay on screen behind the rows
+    .annotation-images-empty:not(.pcui-hidden),
+    .annotation-images-total:not(.pcui-hidden) {
+        display: block;
+        margin: 6px 0;
+        opacity: 0.7;
     }
 }

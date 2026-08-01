@@ -8,6 +8,34 @@ type AnnotationCamera = {
     fov: number
 };
 
+// One attached image. Metadata only: the bytes live in the session store in
+// annotation-images.ts, keyed by imageId, because this record is snapshotted
+// into the undo stack by UpdateAnnotationOp.
+type AnnotationImage = {
+    imageId: string,
+    ext: string,
+    mime: string,
+    caption: string     // visible caption AND alt text; may be empty
+};
+
+// An image record read out of a project file is untrusted input: `imageId` and
+// `ext` are concatenated into a ZIP entry name (annotations/<imageId>.<ext>) on
+// save and into extras.images[].src on export, so a hand-crafted .ssproj
+// carrying imageId '../../../evil' with ext 'html' would write outside
+// annotations/ and point the exported viewer at an active document. This is the
+// same statement server/src/annotation-images.ts makes about an attacker-
+// controllable multipart filename; validating here, at the only door untrusted
+// records come through, keeps a bad value out of BOTH sinks. Records that fail
+// are dropped, never repaired.
+const IMAGE_ID_RE = /^annimg_\d+$/;
+const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp'];
+
+const isSafeImageRecord = (img: any): boolean => {
+    return !!img &&
+        typeof img.imageId === 'string' && IMAGE_ID_RE.test(img.imageId) &&
+        typeof img.ext === 'string' && IMAGE_EXTS.includes(img.ext);
+};
+
 // Editor-internal annotation record. Positions/cameras are packed arrays so
 // serialization is a straight copy (mirrors camera-poses.ts packing style).
 type AnnotationData = {
@@ -17,6 +45,13 @@ type AnnotationData = {
     text: string,
     url: string,
     newTab: boolean,
+    // Which action this annotation offers in the viewer. `url`/`newTab` and
+    // `images` are both retained across a mode switch (so flipping back and
+    // forth loses nothing); this field decides which one is live, which is
+    // what makes "link or gallery, never both" a property of the data rather
+    // than a rule the UI has to police.
+    linkType: 'none' | 'url' | 'images',
+    images: AnnotationImage[],
     // Editor splat this annotation belongs to (session-scoped uid), or null.
     // Resolved to an export scene index at export time; persisted by document
     // splat index (see docSerialize.annotations) because uids are not stable.
@@ -38,7 +73,13 @@ type AnnotationExport = {
     title: string,
     text: string,
     camera: { initial: { position: [number, number, number], target: [number, number, number], fov: number } },
-    extras: { url?: string, newTab?: boolean, scene?: number, id?: string }
+    extras: {
+        url?: string,
+        newTab?: boolean,
+        images?: { src: string, caption: string }[],
+        scene?: number,
+        id?: string
+    }
 };
 
 class AddAnnotationOp {
@@ -199,6 +240,21 @@ const registerAnnotationsEvents = (events: Events) => {
     events.function('annotations.export', (sceneUids?: number[]): AnnotationExport[] => {
         return annotations.map((a) => {
             const scene = resolveAnnotationSceneIndex(a.sceneUid, sceneUids);
+            // Emit ONLY the live action. An annotation in 'images' mode with an
+            // empty list exports exactly as 'none' does -- it must never fall
+            // back to the url the record still carries.
+            const isUrl = a.linkType === 'url' && !!a.url;
+            // An image whose bytes are not in the session store (a document
+            // loaded from an archive that lacked the entry) is skipped here for
+            // the same reason collectAnnotationImages skips its bytes: emitting
+            // the src anyway would give the viewer a broken slide it still
+            // counts ("2 / 3"). Asked over the event bus rather than by
+            // importing annotation-images.ts, which owns the store.
+            const images = (a.linkType === 'images') ?
+                a.images
+                .filter(img => events.invoke('annotationImages.has', img.imageId))
+                .map(img => ({ src: `annotations/${img.imageId}.${img.ext}`, caption: img.caption })) :
+                [];
             return {
                 position: [a.position[0], a.position[1], a.position[2]],
                 title: a.title,
@@ -211,13 +267,34 @@ const registerAnnotationsEvents = (events: Events) => {
                     }
                 },
                 extras: {
-                    url: a.url || undefined,
-                    newTab: a.url ? a.newTab : undefined,
+                    url: isUrl ? a.url : undefined,
+                    newTab: isUrl ? a.newTab : undefined,
+                    images: images.length ? images : undefined,
                     scene: scene ?? undefined,
                     id: a.id
                 }
             };
         });
+    });
+
+    // Every image still referenced by a live annotation, deduplicated. Used by
+    // document save and by the export popups to decide which bytes to emit --
+    // images orphaned by an edit are simply never written.
+    events.function('annotations.imageRefs', (): AnnotationImage[] => {
+        const seen = new Set<string>();
+        const refs: AnnotationImage[] = [];
+        annotations.forEach((a) => {
+            if (a.linkType !== 'images') {
+                return;
+            }
+            a.images.forEach((img) => {
+                if (!seen.has(img.imageId)) {
+                    seen.add(img.imageId);
+                    refs.push(img);
+                }
+            });
+        });
+        return refs;
     });
 
     // --- document serialization ---
@@ -231,6 +308,8 @@ const registerAnnotationsEvents = (events: Events) => {
                 text: a.text,
                 url: a.url,
                 newTab: a.newTab,
+                linkType: a.linkType,
+                images: a.images.map(img => ({ ...img })),
                 sceneUid: a.sceneUid,
                 camera: {
                     position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
@@ -273,6 +352,10 @@ const registerAnnotationsEvents = (events: Events) => {
                     text: d.text ?? '',
                     url: d.url ?? '',
                     newTab: d.newTab ?? false,
+                    // legacy documents have neither field: a record carrying a
+                    // url was, by definition, a link annotation
+                    linkType: d.linkType ?? (d.url ? 'url' : 'none'),
+                    images: Array.isArray(d.images) ? d.images.filter(isSafeImageRecord).map(img => ({ ...img })) : [],
                     sceneUid: indexToUid ? fromIndex(d.sceneIndex) : (d.sceneUid ?? null),
                     camera: d.camera ?? { position: [0, 0, 0], target: [0, 0, 1], fov: 60 }
                 });
@@ -296,5 +379,6 @@ export {
     AnnotationData,
     AnnotationDocData,
     AnnotationCamera,
-    AnnotationExport
+    AnnotationExport,
+    AnnotationImage
 };

@@ -661,14 +661,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 serializeSettings.removeInvalid = true;
             }
 
-            // Send to the server; it returns the finished file. The poster
-            // bytes travel as their own multipart part, not inside the JSON
-            // options (a Uint8Array does not survive JSON.stringify).
+            // Poster and annotation image bytes travel as their own multipart
+            // parts, not inside the JSON options (a Uint8Array does not survive
+            // JSON.stringify).
             const posterBytes = options.viewerExportSettings?.poster;
+            const annotationImages = options.viewerExportSettings?.annotationImages;
             const wire = {
                 ...options,
                 fileType,
-                ...(options.viewerExportSettings ? { viewerExportSettings: { ...options.viewerExportSettings, poster: undefined } } : {})
+                ...(options.viewerExportSettings ? { viewerExportSettings: { ...options.viewerExportSettings, poster: undefined, annotationImages: undefined } } : {})
             };
 
             // Portal walkthrough: the PRIMARY scene is the START scene ALONE (not all
@@ -710,7 +711,8 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 if (!useSpinner) {
                     events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
                 }
-            }, extraPlyGz, posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined);
+            }, extraPlyGz, posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined,
+            (annotationImages ?? []).map(img => ({ name: img.path.replace(/^annotations\//, ''), data: img.data })));
 
             // Save through the same path the local export uses (stream or download).
             const outFs = new BrowserFileSystem(filename, stream);

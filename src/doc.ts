@@ -136,6 +136,23 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             events.invoke('docDeserialize.annotations', document.annotations, {
                 indexToUid: loadedSplats.map(s => s.uid)
             });
+
+            // Attached annotation images. The metadata came back with the
+            // annotations above, so imageRefs now lists exactly what to read.
+            // A missing entry is not fatal: the dialog shows the row as missing
+            // and export skips it, which beats failing the whole load.
+            for (const ref of (events.invoke('annotations.imageRefs') ?? [])) {
+                const entry = `annotations/${ref.imageId}.${ref.ext}`;
+                try {
+                    const imageSource = await zipFs.createSource(entry);
+                    const imageData = await imageSource.read().readAll();
+                    imageSource.close();
+                    events.fire('annotationImages.put', ref.imageId, imageData);
+                } catch (err) {
+                    console.warn(`annotation image ${entry} is missing from the document:`, err);
+                }
+            }
+
             events.invoke('docDeserialize.offLimitsZones', document.offLimitsZones, document.offLimitsMessage);
             events.invoke('docDeserialize.portals', document.portals, document.portalsStartSplat, document.portalsEntrypoints, {
                 indexToUid: loadedSplats.map(s => s.uid),
@@ -237,6 +254,20 @@ const registerDocEvents = (scene: Scene, events: Events) => {
             // Write each splat as PLY
             for (let i = 0; i < splats.length; ++i) {
                 await writeSplatFile([splats[i]], serializeSettings, 'ply', `splat_${i}.ply`, {}, zipFs);
+            }
+
+            // Attached annotation images, one ZIP entry each. Only images still
+            // referenced by a live annotation are written -- the session store
+            // keeps orphans alive purely so undo can bring them back.
+            const imageRefs = events.invoke('annotations.imageRefs') ?? [];
+            for (const ref of imageRefs) {
+                const data = events.invoke('annotationImages.get', ref.imageId) as Uint8Array | null;
+                if (!data) {
+                    continue;
+                }
+                const imageWriter = await zipFs.createWriter(`annotations/${ref.imageId}.${ref.ext}`);
+                await imageWriter.write(data);
+                await imageWriter.close();
             }
 
             // Close zip (also closes underlying browser writer)

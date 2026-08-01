@@ -184,8 +184,13 @@ class AnnotationOverlay {
                     break;
                 }
             }
+            // An annotation offers a link only in 'url' mode: the record keeps
+            // its url across a switch to Images so flipping back loses nothing,
+            // but nothing of the sort exports (see annotations.export), so the
+            // preview must not promise one either.
+            const hasLink = !!hit && hit.linkType === 'url' && !!hit.url;
             // skip on miss, and on empty annotations (would show a blank box)
-            if (!hit || (!hit.title && !hit.text && !hit.url)) {
+            if (!hit || (!hit.title && !hit.text && !hasLink)) {
                 preview.classList.add('hidden');
                 return;
             }
@@ -193,7 +198,7 @@ class AnnotationOverlay {
             previewTitle.style.display = hit.title ? 'block' : 'none';
             previewText.textContent = hit.text || '';
             previewText.style.display = hit.text ? 'block' : 'none';
-            previewLink.style.display = hit.url ? 'inline-block' : 'none';
+            previewLink.style.display = hasLink ? 'inline-block' : 'none';
             // p already holds the hovered marker's screen coords from the hit-test loop
             preview.style.left = `${p.x + 12}px`;
             preview.style.top = `${p.y + 12}px`;

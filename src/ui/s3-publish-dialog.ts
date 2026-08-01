@@ -1,5 +1,6 @@
 import { BooleanInput, Button, ColorPicker, Container, Label, SelectInput, SliderInput, TextInput } from '@playcanvas/pcui';
 
+import { collectAnnotationImages } from '../annotation-images';
 import { Pose } from '../camera-poses';
 import { i18n } from './localization';
 import { Events } from '../events';
@@ -27,6 +28,7 @@ export type S3PublishOptions = {
         streaming: boolean;
         collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number };
         experienceSettings: ExperienceSettings;
+        annotationImages?: { path: string; data: Uint8Array }[];
     };
 };
 
@@ -271,7 +273,8 @@ class S3PublishDialog extends Container {
                         // source its environment from there (portalEnvironments[0]); fall back
                         // to the global select for a non-portal publish.
                         collision: collision.value ? { environment: (bundle ? (perSceneEnvSelects.get(0)?.value ?? 'indoor') : environment.value) as 'indoor' | 'outdoor', radius: radius.value, voxelSize: voxelSize.value } : undefined,
-                        experienceSettings
+                        experienceSettings,
+                        annotationImages: collectAnnotationImages(events)
                     }
                 };
             };

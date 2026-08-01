@@ -63,18 +63,26 @@ const registerS3PublishEvents = (events: Events) => {
             const pose = firstWalkthroughPose(es);
             const posterBytes = await events.invoke('render.poster', 1920, 1080, bg, pose) as Uint8Array | null;
 
+            const annotationImages = options.viewerExportSettings.annotationImages;
             const publishOptions = {
                 subfolder: options.subfolder,
                 name: options.name,
                 public: options.public,
                 overwrite: true,   // already confirmed (or didn't exist)
                 serializeSettings: options.serializeSettings,
-                // S3PublishOptions.viewerExportSettings never carries poster
-                // bytes (the poster travels as its own multipart part below)
-                viewerExportSettings: options.viewerExportSettings,
+                // S3PublishOptions.viewerExportSettings never carries poster or
+                // image bytes (they travel as their own multipart parts below)
+                viewerExportSettings: { ...options.viewerExportSettings, annotationImages: undefined as { path: string; data: Uint8Array }[] | undefined },
                 ...(upload ? { portalExtras: upload.portalExtras } : {})
             };
-            const result = await runServerPublish(plyGz, publishOptions, p => events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc }), upload?.extraPlyGz, posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined);
+            const result = await runServerPublish(
+                plyGz,
+                publishOptions,
+                p => events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc }),
+                upload?.extraPlyGz,
+                posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined,
+                (annotationImages ?? []).map(img => ({ name: img.path.replace(/^annotations\//, ''), data: img.data }))
+            );
 
             events.fire('progressEnd');
             await events.invoke('showPopup', {

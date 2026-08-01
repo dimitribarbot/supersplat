@@ -1,4 +1,4 @@
-import { BooleanInput, Container, Label, SelectInput, TextInput } from '@playcanvas/pcui';
+import { BooleanInput, Button, Container, Label, SelectInput, TextInput } from '@playcanvas/pcui';
 import { Entity, TranslateGizmo, Vec3 } from 'playcanvas';
 
 import { AddAnnotationOp, AnnotationData, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
@@ -34,10 +34,21 @@ class AnnotationTool {
         const titleInput = new TextInput({ class: 'annotations-toolbar-input' });
         const textLabel = new Label({ text: i18n.t('panel.annotations.text') });
         const textInput = new TextInput({ class: 'annotations-toolbar-input' });
+        const linkTypeLabel = new Label({ text: i18n.t('panel.annotations.link-type') });
+        const linkTypeInput = new SelectInput({
+            type: 'string',
+            width: 130,
+            options: [
+                { v: 'none', t: i18n.t('panel.annotations.link-type-none') },
+                { v: 'url', t: i18n.t('panel.annotations.link-type-url') },
+                { v: 'images', t: i18n.t('panel.annotations.link-type-images') }
+            ]
+        });
         const urlLabel = new Label({ text: i18n.t('panel.annotations.url') });
         const urlInput = new TextInput({ class: 'annotations-toolbar-input', placeholder: 'https://' });
         const newTabLabel = new Label({ text: i18n.t('panel.annotations.new-tab') });
         const newTabInput = new BooleanInput({ type: 'toggle' });
+        const imagesButton = new Button({ class: 'annotations-toolbar-button' });
         const sceneLabel = new Label({ text: i18n.t('panel.annotations.scene') });
         const sceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
 
@@ -45,10 +56,13 @@ class AnnotationTool {
         bar.append(titleInput);
         bar.append(textLabel);
         bar.append(textInput);
+        bar.append(linkTypeLabel);
+        bar.append(linkTypeInput);
         bar.append(urlLabel);
         bar.append(urlInput);
         bar.append(newTabLabel);
         bar.append(newTabInput);
+        bar.append(imagesButton);
         bar.append(sceneLabel);
         bar.append(sceneInput);
         canvasContainer.append(bar);
@@ -87,6 +101,16 @@ class AnnotationTool {
             textInput.value = a.text;
             urlInput.value = a.url;
             newTabInput.value = a.newTab;
+            const linkType = a.linkType ?? 'none';
+            linkTypeInput.value = linkType;
+            // exactly one action is live at a time: the selector swaps the tail
+            // of the bar rather than the two ever being visible together
+            urlLabel.hidden = linkType !== 'url';
+            urlInput.hidden = linkType !== 'url';
+            newTabLabel.hidden = linkType !== 'url';
+            newTabInput.hidden = linkType !== 'url';
+            imagesButton.hidden = linkType !== 'images';
+            imagesButton.text = i18n.t('panel.annotations.images-edit', { count: a.images.length });
             // the scene association is meaningless without portals: no portals
             // means no exported scene indices and so nothing to switch between
             const hasPortals = ((events.invoke('portals.count') as number) ?? 0) > 0;
@@ -119,8 +143,15 @@ class AnnotationTool {
 
         titleInput.on('change', (v: string) => commit('title', v));
         textInput.on('change', (v: string) => commit('text', v));
+        linkTypeInput.on('change', (v: string) => commit('linkType', v));
         urlInput.on('change', (v: string) => commit('url', v));
         newTabInput.on('change', (v: boolean) => commit('newTab', v));
+        imagesButton.on('click', () => {
+            const a = selected();
+            if (a) {
+                events.fire('annotation.images.edit', a.id);
+            }
+        });
         sceneInput.on('change', (v: number) => commit('sceneUid', v === NO_SCENE ? null : v));
 
         // --- move gizmo ---
@@ -250,6 +281,8 @@ class AnnotationTool {
                 text: '',
                 url: '',
                 newTab: false,
+                linkType: 'none',
+                images: [],
                 // the splat under the cursor is the scene this annotation belongs to
                 sceneUid: result.splat?.uid ?? null,
                 camera: {

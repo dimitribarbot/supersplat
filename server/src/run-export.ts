@@ -18,7 +18,7 @@ export type ExportOptions = {
     filename: string;
     serializeSettings?: { maxSHBands?: number };
     sogIterations?: number;
-    viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number }; poster?: Uint8Array };
+    viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number }; poster?: Uint8Array; annotationImages?: { path: string; data: Uint8Array }[] };
     // per-extra-scene metadata for a portal walkthrough (index-aligned to extraPlyGz)
     portalExtras?: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; collisionUrl: string | null; streaming: boolean }[];
 };
@@ -208,6 +208,10 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     const posterRaw = options.viewerExportSettings?.poster;
     const posterBytes = posterRaw && (posterRaw as any).byteLength ? new Uint8Array(posterRaw as any) : undefined;
 
+    // Same structured-clone hop as the poster: normalise back to Uint8Array.
+    const annotationImages = (options.viewerExportSettings?.annotationImages ?? [])
+    .map(img => ({ path: img.path, data: new Uint8Array(img.data as any) }));
+
     if (options.fileType === 'htmlViewer') {
         const extraScenes = buildExtraScenes();
         await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes);
@@ -222,7 +226,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // Deployment-configured favicon (VIEWER_FAVICON_URL), ZIP exports only:
     // null when unset or unreachable, in which case the export is unchanged.
     const favicon = await loadFavicon();
-    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes, favicon ?? undefined);
+    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes, favicon ?? undefined, annotationImages);
     flushChunk();
     return { files: [{ name: options.filename, data: memFs.results.get('output.zip')! }] };
 };

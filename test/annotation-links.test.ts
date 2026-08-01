@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
+import { stripHtmlGalleries } from '../src/splat-export-core';
 import { buildAnnotationLinksInjection, buildLinkTable } from '../src/viewer-companion/annotation-links';
 
 // The companion ships as a stringified runtime, so the only honest way to test
@@ -17,9 +18,25 @@ class FakeEl {
     href = '';
     target = '';
     rel = '';
+    src = '';
+    alt = '';
+    tabIndex = 0;
+    disabled = false;
+    style: Record<string, string> = {};
+    listeners: Record<string, ((e: any) => void)[]> = {};
+    focused = false;
     private attrs: Record<string, string> = {};
 
     constructor(public tagName: string) {}
+
+    dispatch(name: string, e: any = {}) {
+        const ev = { stopPropagation: () => {}, preventDefault: () => {}, target: this, ...e };
+        (this.listeners[name] ?? []).forEach(fn => fn(ev));
+    }
+
+    focus() {
+        this.focused = true;
+    }
 
     appendChild(child: FakeEl) {
         child.parent = this;
@@ -59,7 +76,10 @@ class FakeEl {
         return this.findAll(selector);
     }
 
-    addEventListener() {}
+    addEventListener(name: string, fn: (e: any) => void) {
+        (this.listeners[name] ??= []).push(fn);
+    }
+
     setAttribute(k: string, v: string) {
         this.attrs[k] = v;
     }
@@ -205,5 +225,125 @@ describe('annotation link companion runtime', () => {
 
     it('is not injected at all when no annotation has a url', () => {
         expect(buildAnnotationLinksInjection([{ title: 'a', extras: {} }])).toBe('');
+    });
+});
+
+describe('stripHtmlGalleries', () => {
+    const gallery = [{ src: 'annotations/annimg_0.jpg', caption: 'one' }];
+
+    it('drops extras.images from a gallery annotation', () => {
+        const out = stripHtmlGalleries({ annotations: [{ title: 'a', extras: { images: gallery, scene: 1 } }] });
+        expect(out.annotations[0].extras.images).toBeUndefined();
+        // the rest of extras is untouched
+        expect(out.annotations[0].extras.scene).toBe(1);
+        expect(out.annotations[0].title).toBe('a');
+    });
+
+    it('leaves a link annotation untouched', () => {
+        const input = { annotations: [{ title: 'a', extras: { url: 'https://a.test', newTab: true } }] };
+        const out = stripHtmlGalleries(input);
+        expect(out.annotations[0].extras).toEqual({ url: 'https://a.test', newTab: true });
+    });
+
+    it('does not mutate the caller settings object', () => {
+        const input = { annotations: [{ title: 'a', extras: { images: gallery } }] };
+        stripHtmlGalleries(input);
+        expect(input.annotations[0].extras.images).toEqual(gallery);
+    });
+
+    it('passes settings with no annotations straight through', () => {
+        const input = { annotations: [] as any[] };
+        expect(stripHtmlGalleries(input)).toBe(input);
+        expect(stripHtmlGalleries(undefined)).toBeUndefined();
+    });
+});
+
+describe('annotation chip precedence', () => {
+    const gallery = [{ src: 'annotations/annimg_0.jpg', caption: 'one' }, { src: 'annotations/annimg_1.jpg', caption: 'two' }];
+
+    it('is injected when an annotation has images but no url', () => {
+        expect(buildAnnotationLinksInjection([{ title: 'a', extras: { images: gallery } }])).not.toBe('');
+    });
+
+    it('shows a gallery chip for an image annotation', () => {
+        const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
+        const viewer = makeViewer();
+        expect(runCompanion(annotations, viewer)).toBe(true);
+
+        viewer.events.fire('annotation.activate', annotations[0]);
+
+        const chip = linkIn(viewer);
+        expect(chip).not.toBeNull();
+        expect(chip.textContent).toContain('2');
+    });
+
+    it('opens the carousel when the chip is clicked', () => {
+        const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
+        const viewer = makeViewer();
+        runCompanion(annotations, viewer);
+        viewer.events.fire('annotation.activate', annotations[0]);
+
+        linkIn(viewer).dispatch('click');
+
+        expect(viewer.root.querySelector('.ss-gallery')).not.toBeNull();
+    });
+
+    // Only the editor's linkType can produce one of these, but the runtime must
+    // still resolve deterministically if a hand-edited export carries both.
+    it('prefers the gallery when an annotation carries both', () => {
+        const annotations = [{ title: 'a', text: '', extras: { url: 'https://a.test', images: gallery } }];
+        const viewer = makeViewer();
+        runCompanion(annotations, viewer);
+        viewer.events.fire('annotation.activate', annotations[0]);
+
+        linkIn(viewer).dispatch('click');
+
+        expect(viewer.root.querySelector('.ss-gallery')).not.toBeNull();
+    });
+
+    it('closes an open carousel when the annotation is deactivated', () => {
+        const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
+        const viewer = makeViewer();
+        runCompanion(annotations, viewer);
+        viewer.events.fire('annotation.activate', annotations[0]);
+        linkIn(viewer).dispatch('click');
+
+        viewer.events.fire('annotation.deactivate');
+
+        expect(viewer.root.querySelector('.ss-gallery')).toBeNull();
+    });
+
+    it('swaps a gallery chip for a link chip across activations', () => {
+        const annotations = [
+            { title: 'a', text: '', extras: { images: gallery } },
+            { title: 'b', text: '', extras: { url: 'https://b.test' } }
+        ];
+        const viewer = makeViewer();
+        runCompanion(annotations, viewer);
+
+        viewer.events.fire('annotation.activate', annotations[0]);
+        viewer.events.fire('annotation.activate', annotations[1]);
+
+        expect(viewer.tooltip.querySelectorAll('.ss-annotation-link')).toHaveLength(1);
+        expect(linkIn(viewer).href).toBe('https://b.test/');
+    });
+
+    // A single-file HTML export ships no image files, so writeViewerCore strips
+    // the galleries out of the settings BEFORE writeHtml bakes them in -- the
+    // chip reads its images from those baked settings, so a gate on the
+    // injection alone would still render "View images (N)" over dead src paths.
+    it('is not injected for the shape the HTML export produces', () => {
+        const settings = stripHtmlGalleries({ annotations: [{ title: 'a', extras: { images: gallery } }] });
+        expect(buildAnnotationLinksInjection(settings.annotations)).toBe('');
+    });
+
+    // Captions ride in the viewer's settings JSON, not in this injection --
+    // this pins that they never leak into it unescaped.
+    it('never emits a raw script breakout from a hostile caption', () => {
+        const injection = buildAnnotationLinksInjection([{
+            title: 'a',
+            extras: { images: [{ src: 'annotations/annimg_0.jpg', caption: '</script><b>$&' }] }
+        }]);
+        expect(injection).not.toContain('</script><b>');
     });
 });

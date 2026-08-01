@@ -161,6 +161,10 @@ type ViewerExportSettings = {
     // export-time screenshot from the start camera (JPEG bytes); shown blurred
     // by the viewer's stock poster path until the coarse batch is streamed
     poster?: Uint8Array;
+    // attached annotation images, emitted beside the viewer in ZIP exports at
+    // the paths baked into each annotation's extras (ZIP only: the single-file
+    // HTML export drops them and the export popup warns)
+    annotationImages?: { path: string; data: Uint8Array }[];
 };
 
 type ProgressFunc = (loaded: number, total: number) => void;
@@ -1499,7 +1503,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
         })) ?? [] :
         [];
 
-    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision, extraScenes, options.poster);
+    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision, extraScenes, options.poster, undefined, options.annotationImages);
 };
 const serializeViewerSettings = async (
     experienceSettings: ExperienceSettings,

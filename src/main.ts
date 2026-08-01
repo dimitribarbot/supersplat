@@ -2,6 +2,7 @@ import { WebPCodec, WorkerQueue } from '@playcanvas/splat-transform';
 import { Color, createGraphicsDevice } from 'playcanvas';
 
 import { AlignmentManager } from './alignment';
+import { registerAnnotationImageEvents } from './annotation-images';
 import { AnnotationOverlay } from './annotation-overlay';
 import { registerAnnotationsEvents } from './annotations';
 import { registerCameraPosesEvents } from './camera-poses';
@@ -124,6 +125,7 @@ const main = async () => {
     registerTimelineEvents(events);
     registerCameraPosesEvents(events);
     registerAnnotationsEvents(events);
+    registerAnnotationImageEvents(events);
     registerOffLimitsZonesEvents(events);
     registerPortalsEvents(events);
     registerTrackManagerEvents(events);

@@ -96,6 +96,21 @@
             }
         }
 
+        // :not(.pcui-hidden) or this id-scoped rule outranks PCUI's
+        // .pcui-element.pcui-hidden { display: none } and the warning, hidden
+        // in code when the format is not HTML, would stay on screen with its
+        // last text. .pcui-label also defaults to a single ellipsised line;
+        // this one is a sentence, so let it wrap instead.
+        .export-warning:not(.pcui-hidden) {
+            display: block;
+            margin: 4px 0;
+            color: #e0a030;
+            font-size: 11px;
+            white-space: normal;
+            overflow: visible;
+            text-overflow: clip;
+        }
+
         #footer {
             display: flex;
             justify-content: center;

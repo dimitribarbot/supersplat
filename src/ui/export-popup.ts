@@ -1,5 +1,6 @@
 import { BooleanInput, Button, ColorPicker, Container, Element, Label, SelectInput, SliderInput, TextInput } from '@playcanvas/pcui';
 
+import { collectAnnotationImages } from '../annotation-images';
 import { Pose } from '../camera-poses';
 import { i18n } from './localization';
 import { Events } from '../events';
@@ -85,6 +86,8 @@ class ExportPopup extends Container {
 
         const content = new Container({ id: 'content' });
 
+        let currentExportType: ExportType;
+
         // type
 
         const viewerTypeRow = new Container({
@@ -107,6 +110,20 @@ class ExportPopup extends Container {
 
         viewerTypeRow.append(viewerTypeLabel);
         viewerTypeRow.append(viewerTypeSelect);
+
+        // Galleries cannot ride in a single-file HTML export; say so rather
+        // than dropping them silently.
+        const galleryWarning = new Label({ class: 'export-warning' });
+        galleryWarning.hidden = true;
+
+        const refreshGalleryWarning = () => {
+            const count = ((events.invoke('annotations.list') ?? []) as { linkType?: string, images?: unknown[] }[])
+            .filter(a => a.linkType === 'images' && (a.images?.length ?? 0) > 0).length;
+            galleryWarning.hidden = !(currentExportType === 'viewer' && viewerTypeSelect.value === 'html' && count > 0);
+            if (!galleryWarning.hidden) {
+                galleryWarning.text = i18n.t('export.annotation-images-html-warning', { count });
+            }
+        };
 
         // viewer: animation
 
@@ -454,6 +471,7 @@ class ExportPopup extends Container {
         // content
 
         content.append(viewerTypeRow);
+        content.append(galleryWarning);
         content.append(animationRow);
         content.append(loopRow);
         content.append(colorRow);
@@ -520,8 +538,6 @@ class ExportPopup extends Container {
             filenameEntry.value = removeKnownExtension(filenameEntry.value) + ext;
         };
 
-        let currentExportType: ExportType;
-
         // server export capabilities (probed once, asynchronously). Until the probe
         // resolves the server row stays hidden; it appears on the next popup open or
         // export-type change once capabilities are known.
@@ -573,6 +589,7 @@ class ExportPopup extends Container {
             updateExtension(viewerTypeSelect.value === 'html' ? '.html' : '.zip');
             updateStreamingVisibility();
             updateCollisionVisibility();
+            refreshGalleryWarning();
         });
 
         collisionToggle.on('change', () => {
@@ -667,6 +684,8 @@ class ExportPopup extends Container {
             colorPicker.value = [bgClr.r, bgClr.g, bgClr.b];
 
             fovSlider.value = events.invoke('camera.fov');
+
+            refreshGalleryWarning();
         };
 
         this.show = (exportType: ExportType, splatNames: string[], showFilenameEdit: boolean) => {
@@ -824,7 +843,10 @@ class ExportPopup extends Container {
                         // source its environment from there (portalEnvironments[0]); fall back
                         // to the global select for a non-portal export.
                         collision: (viewerTypeSelect.value === 'zip' && collisionToggle.value) ? { environment: (bundle ? (perSceneEnvSelects.get(0)?.value ?? 'indoor') : environmentSelect.value) as 'indoor' | 'outdoor', radius: radiusSlider.value, voxelSize: voxelSizeSlider.value } : undefined,
-                        experienceSettings
+                        experienceSettings,
+                        // ZIP only: the single-file HTML export has nowhere to
+                        // put them (the warning below tells the user)
+                        annotationImages: viewerTypeSelect.value === 'zip' ? collectAnnotationImages(events) : undefined
                     },
                     useServer: !serverRow.hidden && serverToggle.value
                 };

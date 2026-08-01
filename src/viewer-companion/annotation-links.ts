@@ -1,7 +1,9 @@
+import { galleryRuntime, galleryStyle, hasGallery } from './annotation-gallery';
+
 type AnyAnnotation = {
     title?: string,
     text?: string,
-    extras?: { url?: string, newTab?: boolean }
+    extras?: { url?: string, newTab?: boolean, images?: { src: string, caption: string }[] }
 };
 
 // Build the link table the runtime companion consumes. label is 1-based to
@@ -29,13 +31,16 @@ const buildLinkTable = (annotations: AnyAnnotation[]): { label: number, url: str
 // clears a clickable link in that shared tooltip from the activated
 // annotation's own extras. Reading extras directly means there is no
 // "Nth hotspot = Nth annotation" ordering assumption to violate. URLs are
-// sanitised to http(s). The baked link table survives only as the gate that
-// decides whether this companion is injected at all.
+// sanitised to http(s).
+//
+// The runtime reads nothing from the baked window.__supersplatAnnotationLinks
+// table: whether this companion is injected at all is decided at build time by
+// buildAnnotationLinksInjection (which gates on links OR galleries, since a
+// gallery-only export legitimately has an empty link table). The table is still
+// baked as a build-time record of which annotations carry links -- readable in
+// an exported file, and asserted by the injection tests.
 const companionRuntime = `
 (function () {
-  var links = window.__supersplatAnnotationLinks || [];
-  if (!links.length) return;
-
   // Localize the "Open link" label by the viewer's browser language (the
   // exported file is standalone, with no access to the editor's i18next). Keys
   // are primary subtags; a navigator.language like 'pt-BR'/'zh-CN' falls back to
@@ -49,6 +54,19 @@ const companionRuntime = `
   var navLang = (navigator.language || 'en').toLowerCase();
   var openLinkText = (openLinkLabels[navLang] || openLinkLabels[navLang.split('-')[0]] || openLinkLabels.en) + ' \\u2197';
 
+  ${galleryRuntime}
+
+  // Literal non-ASCII glyphs are fine here: the exported HTML declares
+  // <meta charset="UTF-8"> and is written through TextEncoder, so the bytes
+  // survive. The unicode escapes in openLinkLabels above are equivalent, just
+  // an older convention -- neither table needs converting to the other.
+  var viewImagesLabels = {
+    en: 'View images', de: 'Bilder ansehen', es: 'Ver imágenes', fr: 'Voir les images',
+    ja: '画像を見る', ko: '이미지 보기', pt: 'Ver imagens', ru: 'Смотреть изображения',
+    zh: '查看图片'
+  };
+  var viewImagesText = viewImagesLabels[navLang] || viewImagesLabels[navLang.split('-')[0]] || viewImagesLabels.en;
+
   function safeHref(url) {
     try {
       var u = new URL(url, window.location.href);
@@ -57,21 +75,37 @@ const companionRuntime = `
     return null;
   }
 
-  // Inject (or refresh) the link inside the shared tooltip for the given link
-  // entry. Passing null just clears any previously injected link.
-  function injectLink(link) {
+  // Inject (or refresh) the action chip inside the shared tooltip for the given
+  // annotation. Passing null just clears any previously injected chip.
+  function injectChip(ann) {
     var tip = document.querySelector('.pc-annotation');
     if (!tip) return;
     var existing = tip.querySelector('.ss-annotation-link');
     if (existing) existing.remove();
-    if (!link) return;
-    var href = safeHref(link.url);
+    if (!ann) return;
+    var extras = ann.extras || {};
+    var images = extras.images;
+    if (images && images.length) {
+      var chip = document.createElement('a');
+      chip.className = 'ss-annotation-link';
+      chip.href = '#';
+      chip.textContent = viewImagesText + ' (' + images.length + ')';
+      chip.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openGallery(images, chip);
+      });
+      tip.appendChild(chip);
+      return;
+    }
+    var url = extras.url;
+    var href = url ? safeHref(url) : null;
     if (!href) return;
     var a = document.createElement('a');
     a.className = 'ss-annotation-link';
     a.href = href;
     a.textContent = openLinkText;
-    if (link.newTab) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+    if (extras.newTab) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
     // keep the tooltip open (the viewer closes it on document click) and let
     // the navigation proceed normally
     a.addEventListener('click', function (e) { e.stopPropagation(); });
@@ -90,11 +124,13 @@ const companionRuntime = `
     var ev = viewer && viewer.global && viewer.global.events;
     if (!ev || !ev.on) { requestAnimationFrame(start); return; }
     ev.on('annotation.activate', function (ann) {
-      var extras = ann && ann.extras;
-      var url = extras && extras.url;
-      injectLink(url ? { url: url, newTab: !!extras.newTab } : null);
+      closeGallery();
+      injectChip(ann);
     });
-    ev.on('annotation.deactivate', function () { injectLink(null); });
+    ev.on('annotation.deactivate', function () {
+      closeGallery();
+      injectChip(null);
+    });
   }
 
   if (document.readyState === 'loading') {
@@ -123,8 +159,11 @@ const companionStyle = `
 
 // Produce the full HTML fragment to inject before </body>, or '' if no links.
 const buildAnnotationLinksInjection = (annotations: AnyAnnotation[]): string => {
-    const table = buildLinkTable(annotations || []);
-    if (table.length === 0) {
+    const list = annotations || [];
+    const table = buildLinkTable(list);
+    // Gate on either action: a gallery-only export has an empty link table but
+    // still needs the companion.
+    if (table.length === 0 && !hasGallery(list)) {
         return '';
     }
     // Escape characters that are unsafe inside an HTML <script> context so a
@@ -136,7 +175,7 @@ const buildAnnotationLinksInjection = (annotations: AnyAnnotation[]): string => 
     .replace(/&/g, '\\u0026')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
-    return `<style>${companionStyle}</style>` +
+    return `<style>${companionStyle}${galleryStyle}</style>` +
         `<script>window.__supersplatAnnotationLinks = ${tableJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };

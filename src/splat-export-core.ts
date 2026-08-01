@@ -105,6 +105,47 @@ const applyFavicon = (
     return injectFaviconLink(html, `./${favicon.filename}`, favicon.mime);
 };
 
+// Attached annotation images for ZIP exports: emitted beside the viewer at the
+// export-derived paths baked into each annotation's extras (annotations/<id>.<ext>).
+// Mirrors applyFavicon -- every memFs entry is zipped by the callers below, and
+// the S3 publish path uploads every ZIP entry, so this one insertion point
+// serves package, streaming and publish alike. The single-file HTML path has
+// nowhere to put them and ignores this.
+type AnnotationImageFile = { path: string; data: Uint8Array };
+
+const applyAnnotationImages = (
+    annotationImages: AnnotationImageFile[] | undefined,
+    memFs: { results: Map<string, Uint8Array> }
+): void => {
+    (annotationImages ?? []).forEach((img) => {
+        memFs.results.set(img.path, img.data);
+    });
+};
+
+// Drop every annotation's image list from a viewer settings object, returning a
+// copy (annotations that carry none are passed through by reference).
+//
+// A single-file HTML export has nowhere to put the image files -- only the ZIP
+// paths get an annotations/ folder (see applyAnnotationImages) -- so it must not
+// advertise a gallery at all: the chip would read "View images (N)" over src
+// paths that resolve to nothing, while the export popup tells the user the
+// galleries were omitted. The chip is driven by the settings BAKED INTO the
+// document by writeHtml, not by the companion's own data, so stripping at
+// injection time would be too late; this runs before writeHtml. Applied inside
+// writeViewerCore so the browser and the Node export server are covered by one
+// insertion point.
+const stripHtmlGalleries = (viewerSettingsJson: any): any => {
+    if (!viewerSettingsJson?.annotations?.length) {
+        return viewerSettingsJson;
+    }
+    return {
+        ...viewerSettingsJson,
+        annotations: viewerSettingsJson.annotations.map((a: any) => (
+            a?.extras?.images ? { ...a, extras: { ...a.extras, images: undefined } } : a
+        ))
+    };
+};
+
 // Insert `injection` immediately before the first </body> (or append it, if
 // the document has none) LITERALLY. html.replace(pattern, replacementString)
 // treats a STRING replacement as a pattern of its own: $&, $`, $' and $$ are
@@ -692,7 +733,8 @@ const writeStreamingViewerCore = async (
     collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
     extraScenes?: ExtraPortalScene[],
     posterBytes?: Uint8Array,
-    favicon?: Favicon
+    favicon?: Favicon,
+    annotationImages?: AnnotationImageFile[]
 ): Promise<void> => {
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
@@ -810,6 +852,7 @@ const writeStreamingViewerCore = async (
     const withApi = injectIframeApi(injectDeviceFallback(withPortals), settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(withApi, favicon, memFs)));
     patchEngineLoaderInMemFs(memFs);
+    applyAnnotationImages(annotationImages, memFs);
     if (collision) {
         repointCollisionUrl(memFs);
     }
@@ -865,8 +908,15 @@ const writeViewerCore = async (
     collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
     extraScenes?: ExtraPortalScene[],
     posterBytes?: Uint8Array,
-    favicon?: Favicon
+    favicon?: Favicon,
+    annotationImages?: AnnotationImageFile[]
 ): Promise<void> => {
+    // A single-file HTML export carries no image files, so it must not advertise
+    // a gallery (see stripHtmlGalleries).
+    if (viewerType === 'html') {
+        viewerSettingsJson = stripHtmlGalleries(viewerSettingsJson);
+    }
+
     // Scene-prefixed progress support: when extra portal scenes are present, we
     // label the primary write as "Scene 1/total" and each extra as "Scene N/total".
     const total = 1 + (extraScenes?.length ?? 0);
@@ -913,7 +963,7 @@ const writeViewerCore = async (
             await writer.write(new TextEncoder().encode(enginePatch.source));
             await writer.close();
         } else if (viewerType === 'streaming') {
-            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon);
+            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon, annotationImages);
         } else {
             // Package (ZIP) path: write primary scene, then extra portal scenes, then ZIP everything.
             const memFs = new MemoryFileSystem();
@@ -952,6 +1002,7 @@ const writeViewerCore = async (
             const injected = injectIframeApi(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings)), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injected, favicon, memFs)));
             patchEngineLoaderInMemFs(memFs);
+            applyAnnotationImages(annotationImages, memFs);
             if (collision) {
                 repointCollisionUrl(memFs);
             }
@@ -975,4 +1026,4 @@ const writeViewerCore = async (
     }
 };
 
-export { createProgressRenderer, injectIframeApi, writeSogCore, writeViewerCore };
+export { createProgressRenderer, injectIframeApi, stripHtmlGalleries, writeSogCore, writeViewerCore, AnnotationImageFile };

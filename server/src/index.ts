@@ -6,6 +6,7 @@ import fastifyStatic from '@fastify/static';
 import { config as loadEnv } from 'dotenv';
 import Fastify from 'fastify';
 import type { RouteHandlerMethod } from 'fastify';
+import { safeAnnotationImageName } from './annotation-images.js';
 import { probeGpu } from './gpu.js';
 import { createJob, getJob, subscribe } from './jobs.js';
 import { isConfigured as s3IsConfigured, listPrefix } from './s3.js';
@@ -47,6 +48,7 @@ export const buildApp = async () => {
         let options: any = null;
         let poster: Buffer | null = null;
         const extraPlyGz: Buffer[] = [];
+        const annotationImages: { path: string; data: Uint8Array }[] = [];
         for await (const part of req.parts()) {
             if (part.type === 'file' && part.fieldname === 'ply') {
                 plyGz = await part.toBuffer();
@@ -54,6 +56,13 @@ export const buildApp = async () => {
                 extraPlyGz.push(await part.toBuffer());
             } else if (part.type === 'file' && part.fieldname === 'poster') {
                 poster = await part.toBuffer();
+            } else if (part.type === 'file' && part.fieldname === 'annotationImage') {
+                const data = await part.toBuffer();
+                const name = safeAnnotationImageName(part.filename);
+                if (!name) {
+                    return reply.code(400).send({ error: 'invalid annotation image filename' });
+                }
+                annotationImages.push({ path: `annotations/${name}`, data: new Uint8Array(data) });
             } else if (part.type === 'field' && part.fieldname === 'options') {
                 try {
                     options = JSON.parse(part.value as string);
@@ -69,6 +78,11 @@ export const buildApp = async () => {
         // worker (Uint8Array survives the structured-clone postMessage).
         if (poster && options.viewerExportSettings) {
             options.viewerExportSettings.poster = new Uint8Array(poster);
+        }
+        // Image bytes travel as their own multipart parts, not inside the JSON
+        // options (a Uint8Array does not survive JSON.stringify).
+        if (annotationImages.length && options.viewerExportSettings) {
+            options.viewerExportSettings.annotationImages = annotationImages;
         }
         const filenameOk = /^[A-Za-z0-9._-]+$/.test(options.filename) && !options.filename.includes('..');
         if (!filenameOk) {
@@ -146,6 +160,7 @@ export const buildApp = async () => {
         let options: any = null;
         let poster: Buffer | null = null;
         const extraPlyGz: Buffer[] = [];
+        const annotationImages: { path: string; data: Uint8Array }[] = [];
         for await (const part of req.parts()) {
             if (part.type === 'file' && part.fieldname === 'ply') {
                 plyGz = await part.toBuffer();
@@ -153,12 +168,24 @@ export const buildApp = async () => {
                 extraPlyGz.push(await part.toBuffer());
             } else if (part.type === 'file' && part.fieldname === 'poster') {
                 poster = await part.toBuffer();
+            } else if (part.type === 'file' && part.fieldname === 'annotationImage') {
+                const data = await part.toBuffer();
+                const name = safeAnnotationImageName(part.filename);
+                if (!name) {
+                    return reply.code(400).send({ error: 'invalid annotation image filename' });
+                }
+                annotationImages.push({ path: `annotations/${name}`, data: new Uint8Array(data) });
             } else if (part.type === 'field' && part.fieldname === 'options') {
                 try { options = JSON.parse(part.value as string); } catch { return reply.code(400).send({ error: 'options is not valid JSON' }); }
             }
         }
         if (poster && options?.viewerExportSettings) {
             options.viewerExportSettings.poster = new Uint8Array(poster);
+        }
+        // Image bytes travel as their own multipart parts, not inside the JSON
+        // options (a Uint8Array does not survive JSON.stringify).
+        if (annotationImages.length && options?.viewerExportSettings) {
+            options.viewerExportSettings.annotationImages = annotationImages;
         }
         if (!plyGz || !options || !options.viewerExportSettings) {
             return reply.code(400).send({ error: 'missing ply file or viewer options' });
