@@ -162,6 +162,36 @@ class UpdateAnnotationOp {
     }
 }
 
+// Reordering an annotation is a move of its slot in the array, which IS the
+// annotation order (badge numbers, export order, the exported viewer's iframe
+// api index). A single move is its own inverse, so from/to round-trip exactly.
+class MoveAnnotationOp {
+    name = 'moveAnnotation';
+    events: Events;
+    id: string;
+    fromIndex: number;
+    toIndex: number;
+
+    constructor(events: Events, id: string, fromIndex: number, toIndex: number) {
+        this.events = events;
+        this.id = id;
+        this.fromIndex = fromIndex;
+        this.toIndex = toIndex;
+    }
+
+    do() {
+        this.events.fire('annotations.moveRaw', this.id, this.toIndex);
+    }
+
+    undo() {
+        this.events.fire('annotations.moveRaw', this.id, this.fromIndex);
+    }
+
+    destroy() {
+        this.events = null;
+    }
+}
+
 const registerAnnotationsEvents = (events: Events) => {
     const annotations: AnnotationData[] = [];
     let nextId = 0;
@@ -212,6 +242,23 @@ const registerAnnotationsEvents = (events: Events) => {
             Object.assign(a, patch);
             fireChanged();
         }
+    });
+
+    // Splices in place rather than remove+insert: removeRaw clears the
+    // selection (see above), which would close the annotation toolbar on every
+    // click of a move button.
+    events.on('annotations.moveRaw', (id: string, toIndex: number) => {
+        const from = annotations.findIndex(a => a.id === id);
+        if (from < 0) {
+            return;
+        }
+        const to = Math.max(0, Math.min(annotations.length - 1, toIndex));
+        if (to === from) {
+            return;
+        }
+        const [a] = annotations.splice(from, 1);
+        annotations.splice(to, 0, a);
+        fireChanged();
     });
 
     // --- selection ---
@@ -376,6 +423,7 @@ export {
     AddAnnotationOp,
     RemoveAnnotationOp,
     UpdateAnnotationOp,
+    MoveAnnotationOp,
     AnnotationData,
     AnnotationDocData,
     AnnotationCamera,

@@ -51,6 +51,11 @@ Fly the camera to an annotation.
 | `index` | number | Match by position in the annotation list, 0-based |
 | `requestId` | any | Optional; echoed back on the reply so you can await a specific call |
 
+Note that `index` reflects the annotation order at export time; if the author
+reorders annotations in the editor using the toolbar's ↑/↓ buttons, `index`
+values will shift in the next export. For persistent external references, use
+`id`, which is stable across reorders.
+
 Supply at least one of `name`, `id`, `index`. If you supply several, the first
 one that matches wins, tried in the order `id`, `index`, `name`. Duplicate titles
 are allowed in the editor; `name` resolves to the first annotation with that

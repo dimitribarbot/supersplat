@@ -50,6 +50,28 @@
     .annotations-toolbar-button {
         white-space: nowrap;
     }
+
+    // The set-view/move buttons carry plain text glyphs (⊙ ↑ ↓), not pcui
+    // icon-font characters, so a fallback font supplies them and their ink sits
+    // wherever that font's baseline metrics put it -- inline-block centring
+    // (line-height for the vertical, text-align for the horizontal) lines up the
+    // advance box, not the mark. Flex centring a square box places the glyph in
+    // the middle on both axes whichever font ends up serving it.
+    //
+    // The margin restores what .select-toolbar-button (upstream) zeroes: every
+    // other control in this bar carries pcui's 6px element margin, and the bar
+    // itself has no vertical padding -- it leans on min-height to look padded
+    // while it fits on one row. So a wrapped row of only these buttons sat flush
+    // against the bar's bottom edge, while a row that also held an input did not.
+    .select-toolbar-button.annotations-toolbar-glyph {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        margin: 6px 1px;
+        padding: 0px;
+        line-height: 1;
+    }
 }
 
 .annotation-preview {

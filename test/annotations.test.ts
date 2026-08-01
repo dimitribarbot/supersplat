@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { AddAnnotationOp, AnnotationData, AnnotationImage, registerAnnotationsEvents } from '../src/annotations';
+import { AddAnnotationOp, AnnotationData, AnnotationImage, MoveAnnotationOp, registerAnnotationsEvents, UpdateAnnotationOp } from '../src/annotations';
 
 // Minimal Events double: function/invoke registry + on/fire listeners.
 //
@@ -353,5 +353,120 @@ describe('annotations document round-trip', () => {
         const doc = events.invoke('docSerialize.annotations');
         events.fire('annotations.updateRaw', 'annotation_0', { images: [image({ caption: 'b' })] });
         expect(doc[0].images[0].caption).toBe('a');
+    });
+});
+
+describe('annotations reordering', () => {
+    const seed = (events: any, n: number) => {
+        for (let i = 0; i < n; i++) {
+            new AddAnnotationOp(events, annotation({ id: `annotation_${i}` })).do();
+        }
+    };
+
+    const ids = (events: any) => (events.invoke('annotations.list') as AnnotationData[]).map(a => a.id);
+
+    it('moves a record to the given index', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        events.fire('annotations.moveRaw', 'annotation_2', 0);
+        expect(ids(events)).toEqual(['annotation_2', 'annotation_0', 'annotation_1']);
+    });
+
+    it('clamps an index past the end', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        events.fire('annotations.moveRaw', 'annotation_0', 99);
+        expect(ids(events)).toEqual(['annotation_1', 'annotation_2', 'annotation_0']);
+    });
+
+    it('clamps a negative index', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        events.fire('annotations.moveRaw', 'annotation_2', -5);
+        expect(ids(events)).toEqual(['annotation_2', 'annotation_0', 'annotation_1']);
+    });
+
+    it('does not fire changed when the record is already at the index', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        let changes = 0;
+        events.on('annotations.changed', () => {
+            changes++;
+        });
+        events.fire('annotations.moveRaw', 'annotation_1', 1);
+        expect(changes).toBe(0);
+        expect(ids(events)).toEqual(['annotation_0', 'annotation_1', 'annotation_2']);
+    });
+
+    it('ignores an unknown id', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 2);
+        events.fire('annotations.moveRaw', 'annotation_9', 0);
+        expect(ids(events)).toEqual(['annotation_0', 'annotation_1']);
+    });
+
+    // The property that ruled out remove+insert: removeRaw clears the selection,
+    // which would close the annotation toolbar on every click of a move button.
+    it('leaves the selection intact when the moved record is selected', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        expect(events.invoke('annotations.selected')).toBe('annotation_2');
+        events.fire('annotations.moveRaw', 'annotation_2', 0);
+        expect(events.invoke('annotations.selected')).toBe('annotation_2');
+    });
+
+    it('MoveAnnotationOp restores the original order on undo', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        const op = new MoveAnnotationOp(events, 'annotation_2', 2, 1);
+        op.do();
+        expect(ids(events)).toEqual(['annotation_0', 'annotation_2', 'annotation_1']);
+        op.undo();
+        expect(ids(events)).toEqual(['annotation_0', 'annotation_1', 'annotation_2']);
+    });
+
+    it('the new order drives the export order', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        new MoveAnnotationOp(events, 'annotation_2', 2, 0).do();
+        const out = events.invoke('annotations.export');
+        expect(out.map((a: any) => a.extras.id)).toEqual(['annotation_2', 'annotation_0', 'annotation_1']);
+    });
+
+    it('the new order drives the document serialization order', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        seed(events, 3);
+        new MoveAnnotationOp(events, 'annotation_0', 0, 2).do();
+        const doc = events.invoke('docSerialize.annotations');
+        expect(doc.map((d: any) => d.id)).toEqual(['annotation_1', 'annotation_2', 'annotation_0']);
+    });
+});
+
+describe('annotation camera pose', () => {
+    it('an update of camera round-trips through undo and reaches the export', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        new AddAnnotationOp(events, annotation()).do();
+        const op = new UpdateAnnotationOp(
+            events,
+            'annotation_0',
+            { camera: { position: [0, 0, 0], target: [0, 0, 1], fov: 60 } },
+            { camera: { position: [1, 2, 3], target: [4, 5, 6], fov: 45 } }
+        );
+        op.do();
+        expect(events.invoke('annotations.export')[0].camera.initial)
+        .toEqual({ position: [1, 2, 3], target: [4, 5, 6], fov: 45 });
+        op.undo();
+        expect(events.invoke('annotations.export')[0].camera.initial)
+        .toEqual({ position: [0, 0, 0], target: [0, 0, 1], fov: 60 });
     });
 });

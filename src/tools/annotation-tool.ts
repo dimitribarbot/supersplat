@@ -1,7 +1,7 @@
 import { BooleanInput, Button, Container, Label, SelectInput, TextInput } from '@playcanvas/pcui';
 import { Entity, TranslateGizmo, Vec3 } from 'playcanvas';
 
-import { AddAnnotationOp, AnnotationData, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
+import { AddAnnotationOp, AnnotationCamera, AnnotationData, MoveAnnotationOp, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
 import { ElementType } from '../element';
 import { Events } from '../events';
 import { Scene } from '../scene';
@@ -51,6 +51,13 @@ class AnnotationTool {
         const imagesButton = new Button({ class: 'annotations-toolbar-button' });
         const sceneLabel = new Label({ text: i18n.t('panel.annotations.scene') });
         const sceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
+        const glyphClass = ['select-toolbar-button', 'annotations-toolbar-glyph'];
+        const viewButton = new Button({ text: '⊙', class: glyphClass });
+        viewButton.dom.title = i18n.t('panel.annotations.set-view');
+        const upButton = new Button({ text: '↑', class: glyphClass });
+        upButton.dom.title = i18n.t('panel.annotations.move-earlier');
+        const downButton = new Button({ text: '↓', class: glyphClass });
+        downButton.dom.title = i18n.t('panel.annotations.move-later');
 
         bar.append(titleLabel);
         bar.append(titleInput);
@@ -65,6 +72,9 @@ class AnnotationTool {
         bar.append(imagesButton);
         bar.append(sceneLabel);
         bar.append(sceneInput);
+        bar.append(viewButton);
+        bar.append(upButton);
+        bar.append(downButton);
         canvasContainer.append(bar);
 
         // --- selection helpers ---
@@ -122,6 +132,11 @@ class AnnotationTool {
                 // a splat deleted since assignment leaves a dangling uid -> show "None"
                 sceneInput.value = options.some(o => o.v === a.sceneUid) ? a.sceneUid : NO_SCENE;
             }
+            // the ends are dead rather than silently no-op
+            const list = events.invoke('annotations.list') as AnnotationData[];
+            const index = list.indexOf(a);
+            upButton.enabled = index > 0;
+            downButton.enabled = index < list.length - 1;
             suppress = false;
         };
 
@@ -153,6 +168,74 @@ class AnnotationTool {
             }
         });
         sceneInput.on('change', (v: number) => commit('sceneUid', v === NO_SCENE ? null : v));
+
+        // The stored pose is a plain object, so the generic commit() helper's
+        // `a[field] === value` test can never be true for it -- comparing
+        // component-wise here is what keeps a repeated click from pushing an
+        // empty entry onto the undo stack.
+        const samePose = (c: AnnotationCamera, pose: { position: { x: number, y: number, z: number }, target: { x: number, y: number, z: number }, fov: number }) => {
+            return c.position[0] === pose.position.x &&
+                   c.position[1] === pose.position.y &&
+                   c.position[2] === pose.position.z &&
+                   c.target[0] === pose.target.x &&
+                   c.target[1] === pose.target.y &&
+                   c.target[2] === pose.target.z &&
+                   c.fov === pose.fov;
+        };
+
+        // pointerdown + stopPropagation (as in portal-tool.ts) so a press on the
+        // bar never falls through to the canvas and places a new annotation
+        viewButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            const a = selected();
+            if (!active || !a) {
+                return;
+            }
+            const pose = events.invoke('camera.getPose');
+            if (!pose || samePose(a.camera, pose)) {
+                return;
+            }
+            events.fire('edit.add', new UpdateAnnotationOp(
+                events,
+                a.id,
+                { camera: {
+                    position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
+                    target: [a.camera.target[0], a.camera.target[1], a.camera.target[2]],
+                    fov: a.camera.fov
+                } },
+                { camera: {
+                    position: [pose.position.x, pose.position.y, pose.position.z],
+                    target: [pose.target.x, pose.target.y, pose.target.z],
+                    fov: pose.fov
+                } }
+            ));
+        });
+
+        // A disabled PCUI button can still receive a raw dom pointerdown, so the
+        // bounds check here is the real guard, not the enabled flag.
+        const move = (delta: number) => {
+            const a = selected();
+            if (!active || !a) {
+                return;
+            }
+            const list = events.invoke('annotations.list') as AnnotationData[];
+            const index = list.indexOf(a);
+            const to = index + delta;
+            if (index < 0 || to < 0 || to >= list.length) {
+                return;
+            }
+            events.fire('edit.add', new MoveAnnotationOp(events, a.id, index, to));
+        };
+
+        upButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            move(-1);
+        });
+
+        downButton.dom.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            move(1);
+        });
 
         // --- move gizmo ---
 
