@@ -409,6 +409,25 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('idx >= data.portalScenes.length');
     });
 
+    it('guards viewer-driven camera transitions against free-nav crossing detection', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0
+        });
+        // the pure guard helpers are stringified in
+        expect(out).toContain('var beginTeleportGuard =');
+        expect(out).toContain('var tickTeleportGuard =');
+        // every viewer-driven camera lerp opens the guard: annotation jump,
+        // reset (R / menu) and frame all goto + startTransition
+        expect(out).toContain('function beginTeleport(idx)');
+        expect(out).toContain('beginTeleport(known ? idx : activeIndex)');
+        expect(out).toContain('beginTeleport(sIdx)');
+        expect(out).toContain("name === 'frame'");
+        // and the guard is consulted before free-nav detection each frame
+        expect(out).toContain('tickTeleportGuard(teleportGuard');
+    });
+
     it('ships the transition helpers, CSS and payload flag', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1, transition: false }],

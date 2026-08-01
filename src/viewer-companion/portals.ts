@@ -2,6 +2,7 @@ import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolvePortalCrossing } from '../portal-geom';
 import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam } from '../portal-preload';
+import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
@@ -93,6 +94,8 @@ const companionRuntime = `
   var parseBudgetParam = ${parseBudgetParam.toString()};
   var computeRevealLevel = ${computeRevealLevel.toString()};
   var resolvePortalCrossing = ${resolvePortalCrossing.toString()};
+  var beginTeleportGuard = ${beginTeleportGuard.toString()};
+  var tickTeleportGuard = ${tickTeleportGuard.toString()};
   var tileGrid = ${tileGrid.toString()};
   var tileGeometry = ${tileGeometry.toString()};
   var tileDelay = ${tileDelay.toString()};
@@ -178,6 +181,14 @@ const companionRuntime = `
   var curPos = [0, 0, 0];                   // per-frame scratch for the camera position
   var timeline = data.portalAnimTimeline || null;   // [{t, scene}] sorted ascending; null/absent when no animation
   var spawnScene = null;                    // scene active when walk/fly was last ENTERED (== the scene its reset-spawn pose lives in); null until first walk/fly entry
+  // Viewer-driven camera transition guard (see portal-teleport-guard.ts): open
+  // while an annotation jump / reset / frame is lerping the camera to its new
+  // pose, so that flight cannot be read as free navigation through a doorway.
+  var teleportGuard = { target: null, until: 0 };
+  var TELEPORT_GUARD_MS = 1250;             // the viewer's transition is a fixed 1s lerp (transitionSpeed 1.0) + margin for the frame it lands on
+  function nowMs() {
+    try { return performance.now(); } catch (e) { return Date.now(); }
+  }
   function getState() {
     var v = window.__supersplatViewer;
     return (v && v.global && v.global.state) || (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.state) || null;
@@ -656,6 +667,24 @@ const companionRuntime = `
     }
   }
 
+  // Assert idx as the active scene for a viewer-driven camera jump (annotation
+  // activation, reset, frame) and open the transition guard that covers the
+  // flight. The viewer LERPS the camera to the new pose over ~1s, so without the
+  // guard the flight path is read as free navigation and any portal quad it
+  // punches through overrides this assertion (and plays the tile transition) -
+  // the reported "annotation A -> B lands in the wrong scene" bug.
+  //
+  // A cover already dismantling is aborted: when it closed it would re-resolve
+  // the OLD crossing from the frozen lastSafe and dispatch that portal's target
+  // on top of the jump. lastSafe is cleared as well so the pose discontinuity
+  // can never be read as a crossing if a later frame does reach the free-nav
+  // branch (e.g. the guard was closed by the anim timeline taking over).
+  function beginTeleport(idx) {
+    teleportGuard = beginTeleportGuard(idx, nowMs(), TELEPORT_GUARD_MS);
+    lastSafe = null;
+    if (transState.phase !== 'idle') { transDispatch({ type: 'abort' }); }
+  }
+
   // Portal rects carry index-based front/back: the export (buildPortalBundle)
   // already rewrote editor scene-uids to scene indices, so resolvePortalCrossing's
   // "uid" values are indices here, matching the entities/collision arrays.
@@ -852,11 +881,12 @@ const companionRuntime = `
       ev.on('collisionOverlayEnabled:changed', function (on) { if (on) refreshOverlay(); });
       // The R shortcut and the viewer's reset menu both fire inputEvent 'reset',
       // returning the camera to its spawn pose. free-nav crossing detection
-      // can't see the move (it need not pass through a doorway), so force the
-      // matching scene here via the reducer -- which also drops any
-      // blocked/loading overlay WITHOUT falsely marking its abandoned target
-      // ready. lastSafe is cleared so the spawn discontinuity isn't read as a
-      // spurious crossing on the next frame.
+      // can't see the move as a doorway crossing, so force the matching scene
+      // here via the reducer -- which also drops any blocked/loading overlay
+      // WITHOUT falsely marking its abandoned target ready. The reset does not
+      // jump the camera either: it goes through the same goto + startTransition
+      // lerp an annotation jump uses, so beginTeleport guards the flight (see
+      // beginTeleport / portal-teleport-guard.ts).
       //
       // Which scene the reset restores depends on the viewer's cameraMode: in
       // orbit/anim it goes to the initial camera (start scene), but in walk/fly
@@ -877,27 +907,39 @@ const companionRuntime = `
           if (spawnScene !== null && s && (s.cameraMode === 'walk' || s.cameraMode === 'fly')) {
             sIdx = spawnScene;
           }
+          beginTeleport(sIdx);
           dispatch({ type: 'crossing', target: sIdx, loaded: !!(entities[sIdx] || sceneLoading[sIdx]), ready: sceneReady(sIdx) });
-          lastSafe = null;
+        } else if (name === 'frame') {
+          // 'frame' pulls the camera back to frame the whole scene through the
+          // same 1s lerp. It asserts no scene of its own (the active one stays),
+          // but its flight sweeps a long way and would otherwise cross doorways.
+          beginTeleport(activeIndex);
         }
       });
       // The annotation navigator chevrons and a hotspot click both end at
       // 'annotation.activate', fired with the RAW settings annotation -- so
       // extras.scene (baked at export from the annotation's splat) says which
-      // scene the pose it flies to actually lives in. The fly-to is a TELEPORT:
-      // it need not pass through a doorway, so free-nav crossing detection
-      // can never see it, exactly like the reset case above. Route through the
-      // reducer so a not-yet-resident target reuses the normal loading overlay,
-      // and clear lastSafe so the position discontinuity is not read as a
-      // spurious crossing on the next frame.
+      // scene the pose it flies to actually lives in. Route it through the
+      // reducer so a not-yet-resident target reuses the normal loading overlay.
+      //
+      // The fly-to is NOT a teleport (this companion assumed it was, which is
+      // what made an annotation jump land in the wrong scene): the viewer lerps
+      // the camera to the new pose over ~1s, and free-nav crossing detection
+      // reads that flight as real movement, so every doorway the straight line
+      // happens to punch through overrode the scene asserted here. beginTeleport
+      // guards the whole flight -- including a jump WITHIN the active scene,
+      // whose flight can cross a doorway just as easily.
       ev.on('annotation.activate', function (ann) {
         var idx = ann && ann.extras && ann.extras.scene;
         // NaN is typeof 'number' and fails every ordering comparison, so idx < 0
         // and idx >= length would both be false for it without this isFinite check.
-        if (typeof idx !== 'number' || !isFinite(idx) || idx < 0 || idx >= data.portalScenes.length) { return; }
-        if (idx === activeIndex) { return; }
-        dispatch({ type: 'crossing', target: idx, loaded: !!(entities[idx] || sceneLoading[idx]), ready: sceneReady(idx) });
-        lastSafe = null;
+        var known = (typeof idx === 'number' && isFinite(idx) && idx >= 0 && idx < data.portalScenes.length);
+        // With no baked scene (an older export) the flight still has to be
+        // guarded; it just asserts the scene we are already in.
+        beginTeleport(known ? idx : activeIndex);
+        if (known && idx !== activeIndex) {
+          dispatch({ type: 'crossing', target: idx, loaded: !!(entities[idx] || sceneLoading[idx]), ready: sceneReady(idx) });
+        }
       });
       // walk/fly resetToSpawn restores the pose captured on mode ENTRY, so the
       // scene active at entry is the scene that spawn pose lives in. Record it
@@ -1143,6 +1185,14 @@ const companionRuntime = `
         // If state is unreachable (st null) we fall back to the free-nav branch;
         // exports always bake a truthy timeline, so this only degrades to
         // delta-detection in the unexpected case where the viewer state is missing.
+        //
+        // A viewer-driven camera transition (annotation jump / reset / frame)
+        // takes precedence over free-nav detection while its guard is open: the
+        // camera is being lerped to a pose it did not walk to, so the swept
+        // segment means nothing (see beginTeleport). Only consulted when a guard
+        // is actually open, keeping the steady state allocation-free.
+        var tg = (teleportGuard.target !== null) ? tickTeleportGuard(teleportGuard, nowMs(), crossState.mode, crossState.target) : null;
+        if (tg) { teleportGuard = tg.state; }
         if (st && st.cameraMode === 'anim' && timeline) {
           var want = sceneAtTime(st.animationTime || 0);
           if (want !== activeIndex && want !== null && want !== undefined) {
@@ -1150,8 +1200,24 @@ const companionRuntime = `
           } else if (crossState.mode === 'blocked') {
             dispatch({ type: 'noCrossing' });   // timeline moved back before the target loaded
           }
+          // The timeline owns the active scene in anim mode, so any open guard
+          // is moot -- drop it rather than let it suppress the first free-nav
+          // frames after the mode hand-off.
+          if (teleportGuard.target !== null) { teleportGuard = { target: null, until: 0 }; }
           // Copy (never alias curPos) so next frame's fill can't corrupt lastSafe.
           lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf;   // anim mode: keep fresh for the mode hand-off
+        } else if (tg && tg.active) {
+          // Guarded flight: no crossing detection at all, just keep lastSafe at
+          // the camera so the free-nav branch resumes from the landing pose. The
+          // re-fire (target still not loadable) is what completes a jump into a
+          // scene that has to load first: a jump has no segment of its own, so
+          // without it the next unguarded frame's noCrossing would abandon the
+          // crossing and leave the jump in the wrong scene with the overlay gone.
+          if (tg.refire) {
+            var ti = teleportGuard.target;
+            dispatch({ type: 'crossing', target: ti, loaded: !!(entities[ti] || sceneLoading[ti]), ready: sceneReady(ti) });
+          }
+          lastSafeBuf[0] = curPos[0]; lastSafeBuf[1] = curPos[1]; lastSafeBuf[2] = curPos[2]; lastSafe = lastSafeBuf;
         } else if (lastSafe) {
           var cr = resolvePortalCrossing(lastSafe, curPos, rects, activeIndex, segmentCrossesRect);
           var next = cr.uid;
