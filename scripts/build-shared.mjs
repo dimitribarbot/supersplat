@@ -26,10 +26,14 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const tsconfig = join(repoRoot, 'tsconfig.shared.json');
 const distDir = join(repoRoot, 'dist-shared');
 
-// Resolve the local tsc binary (works whether invoked from repo root or server/).
-const tscBin = join(repoRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
+// Resolve TypeScript's JS entry point (works whether invoked from repo root or
+// server/). Deliberately not the node_modules/.bin shim: on Windows that is a
+// .cmd, which Node cannot spawn without `shell: true`, and passing an args array
+// with a shell triggers DEP0190. Running the .js with the current Node binary
+// needs no shell and is platform-independent.
+const tscBin = join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc');
 
-execFileSync(tscBin, ['-p', tsconfig], { stdio: 'inherit', cwd: repoRoot, shell: process.platform === 'win32' });
+execFileSync(process.execPath, [tscBin, '-p', tsconfig], { stdio: 'inherit', cwd: repoRoot });
 
 writeFileSync(join(distDir, 'package.json'), `${JSON.stringify({ type: 'module' }, null, 2)}\n`);
 
