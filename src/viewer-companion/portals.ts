@@ -55,13 +55,52 @@ const companionStyle = `
   display: grid; visibility: hidden; opacity: .7;
 }
 .ss-portal-tiles.armed { visibility: visible; }
-.ss-portal-tiles.armed .ss-portal-tile { will-change: transform, opacity; }
+/* Deliberately no will change hint on the tiles. Browsers already promote an
+   element with a running transform/opacity transition, and at a 26px target the
+   grid is up to 1200 cells -- far past where the hint stops helping and starts
+   costing. It also had no lead time to work with: startTileDismantle adds
+   .armed and starts the transition in the same frame. */
 .ss-portal-tile {
   background: #0a0c10; opacity: 0;
-  transition: opacity 150ms ease-out, transform 150ms cubic-bezier(.2,.75,.3,1);
+  /* Bleed 1px past the grid track on every side. The 1fr tracks land on
+     fractional pixel boundaries, so without this a hairline of the scene shows
+     through wherever the accumulated fraction crosses a pixel. The scale(1.02)
+     below used to cover it on its own, but that overlap is proportional to tile
+     size: at the old 110px target it was ~1.1px per side, at 26px it is ~0.34px
+     -- under one device pixel, so the seams reappeared. A margin is absolute
+     and holds at any tile size. Safe to overlap because the layer carries a
+     single group opacity, so overlapping opaque tiles do not stack alpha. */
+  margin: -1px;
+  transition: opacity 100ms ease-out, transform 100ms cubic-bezier(.2,.75,.3,1);
 }
 .ss-portal-tiles.reduced .ss-portal-tile { transition: opacity 150ms linear; }
 .ss-portal-tile.on { opacity: 1; transform: scale(1.02) rotate(0deg); }
+.ss-portal-defocus {
+  position: fixed; inset: 0; z-index: 1999; pointer-events: none;
+  visibility: hidden;
+  background-color: rgba(7,10,14,0);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  transition-property: background-color, -webkit-backdrop-filter, backdrop-filter;
+  /* duration/easing below are a pre-arm default only; both drivers always set
+     transition-duration and transition-timing-function inline before
+     animating, so these never actually drive a transition */
+  transition-duration: 213ms;
+  transition-timing-function: cubic-bezier(.32,0,.67,0);
+}
+/* No will change hint here either: a backdrop-filter transition composites
+   anyway, and background-color is a paint property that no compositor fast path
+   covers, so naming it bought a layer for nothing. */
+.ss-portal-defocus.armed {
+  visibility: visible;
+  -webkit-backdrop-filter: blur(0px) saturate(1); backdrop-filter: blur(0px) saturate(1);
+}
+.ss-portal-defocus.armed.on {
+  background-color: rgba(7,10,14,.9);
+  -webkit-backdrop-filter: blur(26px) saturate(.45); backdrop-filter: blur(26px) saturate(.45);
+}
+.ss-portal-defocus.reduced.armed, .ss-portal-defocus.reduced.armed.on {
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
 `;
 
 // Runtime companion injected verbatim into the exported viewer. It creates one
@@ -334,22 +373,53 @@ const companionRuntime = `
   // incoming scene. All phase decisions live in transitionReducer.
   var REDUCED_MOTION = false;
   try { REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (mmErr) { REDUCED_MOTION = false; }
-  var T_SWEEP = REDUCED_MOTION ? 0 : 225;     // stagger across the grid
-  var T_TILE = REDUCED_MOTION ? 150 : 150;    // per-tile motion
-  var T_HOLD = 100;                            // covered hold before reconstruct
+  var T_SWEEP = REDUCED_MOTION ? 0 : 150;     // stagger across the grid
+  var T_TILE = REDUCED_MOTION ? 150 : 100;    // per-tile motion; MUST match the CSS duration above
+  var T_HOLD = 67;                            // covered hold before reconstruct
+  var T_DEFOCUS_IN = REDUCED_MOTION ? 150 : 213;    // cubicIn dismantle
+  var T_DEFOCUS_OUT = REDUCED_MOTION ? 150 : 373;   // quintOut reconstruct
+  var DEFOCUS_IN_EASE = REDUCED_MOTION ? 'linear' : 'cubic-bezier(.32,0,.67,0)';
+  var DEFOCUS_OUT_EASE = REDUCED_MOTION ? 'linear' : 'cubic-bezier(.22,1,.36,1)';
   var T_COVERED_MAX_FRAMES = 120;              // ~2s watchdog while covered with no overlay
+
+  // Which cover portal p wants. Mirrors normalizePortalTransition in
+  // portal-transition.ts (kept separate on purpose: this file is stringified
+  // into the exported viewer, so the normalizer is duplicated here rather than
+  // imported). The boolean branch is defensive: payloads are normalized at
+  // export, but this reads the raw stored field rather than trusting that.
+  // Defocus is the default -- only an explicit 'tiles' selects the tile cover.
+  function transitionKind(portalIndex) {
+    if (portalIndex === null || portalIndex === undefined) { return 'none'; }
+    var p = data.portals[portalIndex];
+    if (!p) { return 'none'; }
+    var v = p.transition;
+    if (v === false || v === 'none') { return 'none'; }
+    if (v === 'tiles') { return 'tiles'; }
+    return 'defocus';
+  }
+
+  // The cover the in-flight crossing is using. Captured when the reducer accepts
+  // a crossing; the reducer only accepts while idle, so exactly one crossing is
+  // ever in flight and this stays stable across its whole lifecycle.
+  var coverKind = 'tiles';
 
   var tileLayer = document.createElement('div');
   tileLayer.className = 'ss-portal-tiles' + (REDUCED_MOTION ? ' reduced' : '');
+  // Defocus cover: one full-screen layer whose backdrop blur and veil ramp on a
+  // single curve. No grid, no portal origin -- the whole frame dips. Mounted
+  // unconditionally like the tile layer: idle it is one hidden div with no
+  // filter and no children, so an unused cover costs nothing.
+  var defocusLayer = document.createElement('div');
+  defocusLayer.className = 'ss-portal-defocus' + (REDUCED_MOTION ? ' reduced' : '');
   var tiles = [];                 // {el, dist, ux, uy, spin}
   var transState = { phase: 'idle', target: null };
   var coveredFrames = 0;
   var coverTimer = null;
   var lastGridCols = 0;            // last built grid shape; an idle resize that keeps the
-  var lastGridRows = 0;            // same cols x rows (e.g. mobile URL bar show/hide) is a no-op
+  var lastGridRows = 0;            // same cols x rows (e.g. a sub-pixel width change) is a no-op
 
-  function mountTiles() { document.body.appendChild(tileLayer); }
-  if (document.body) { mountTiles(); } else { document.addEventListener('DOMContentLoaded', mountTiles); }
+  function mountCovers() { document.body.appendChild(tileLayer); document.body.appendChild(defocusLayer); }
+  if (document.body) { mountCovers(); } else { document.addEventListener('DOMContentLoaded', mountCovers); }
 
   function buildTiles() {
     var g = tileGrid(window.innerWidth || 1280, window.innerHeight || 720);
@@ -371,26 +441,35 @@ const companionRuntime = `
       });
     }
   }
-  // Only build the tile grid (and pay its up-to-320-div compositor cost) when at
-  // least one portal has the effect enabled. When none do, transitionEnabled
-  // returns false for every portal, the phase machine below can never leave
-  // 'idle' (see the tick() gating on transitionEnabled(cr.portalIndex)), and no
-  // code path ever dereferences tiles -- it is safe to leave it empty.
-  var wantsTransition = data.portals.some(function (p) { return p.transition !== false; });
-  if (wantsTransition) { buildTiles(); }
+  // Only build the tile grid (and pay its up-to-1200-div compositor cost) when at
+  // least one portal asks for the tile cover. When transitionKind returns
+  // 'none' or 'defocus' for every portal, tiles is left empty and unreferenced
+  // -- no code path ever dereferences it.
+  var wantsTiles = data.portals.some(function (p, i) { return transitionKind(i) === 'tiles'; });
+  if (wantsTiles) { buildTiles(); }
+  // Coalesce: at a 26px target, cols changes every 26px of width, so a drag
+  // resize fires this constantly and each rebuild recreates ~1170 divs.
+  var resizeTimer = null;
   window.addEventListener('resize', function () {
-    if (wantsTransition && transState.phase === 'idle') { buildTiles(); }
+    if (!wantsTiles) { return; }
+    if (resizeTimer) { clearTimeout(resizeTimer); }
+    resizeTimer = setTimeout(function () {
+      resizeTimer = null;
+      if (transState.phase === 'idle') { buildTiles(); }
+    }, 150);
   });
 
   // The off-slot transform a tile animates from (dismantle) and to
   // (reconstruct): pushed outward along its radial direction, small, spun.
+  // 86.5px scales the old 140px offset down for the 26px tile grid target:
+  // 140 * (0.5 + 0.5 * 26/110).
   // Reduced motion keeps the tile in place and animates opacity only.
   function tileAway(t) {
     if (REDUCED_MOTION) { return 'none'; }
-    return 'translate(' + (t.ux * 140) + 'px,' + (t.uy * 140) + 'px) scale(.25) rotate(' + t.spin + 'deg)';
+    return 'translate(' + (t.ux * 86.5) + 'px,' + (t.uy * 86.5) + 'px) scale(.25) rotate(' + t.spin + 'deg)';
   }
 
-  function startDismantle() {
+  function startTileDismantle() {
     tileLayer.classList.add('armed');
     for (var i = 0; i < tiles.length; i++) {
       var t = tiles[i];
@@ -411,7 +490,7 @@ const companionRuntime = `
     coverTimer = setTimeout(onCoverComplete, T_SWEEP + T_TILE);
   }
 
-  function startReconstruct() {
+  function startTileReconstruct() {
     if (coverTimer) { clearTimeout(coverTimer); }
     coverTimer = setTimeout(function () {
       for (var i = 0; i < tiles.length; i++) {
@@ -424,7 +503,7 @@ const companionRuntime = `
     }, T_HOLD);
   }
 
-  function clearCover() {
+  function clearTiles() {
     if (coverTimer) { clearTimeout(coverTimer); coverTimer = null; }
     for (var i = 0; i < tiles.length; i++) {
       var t = tiles[i];
@@ -440,11 +519,53 @@ const companionRuntime = `
     tileLayer.classList.remove('armed');
   }
 
-  // Does portal p want the effect? Absent means enabled.
-  function transitionEnabled(portalIndex) {
-    if (portalIndex === null || portalIndex === undefined) { return false; }
-    var p = data.portals[portalIndex];
-    return !!p && p.transition !== false;
+  // Dismantle: 0 -> 1 on cubicIn. The zero-duration flush pins blur(0px) as the
+  // transition's start value (armed installs it) so the ramp has a numeric
+  // origin rather than interpolating out of 'none'.
+  function startDefocusIn() {
+    defocusLayer.classList.add('armed');
+    defocusLayer.style.transitionDuration = '0ms';
+    defocusLayer.classList.remove('on');
+    void defocusLayer.offsetWidth;
+    defocusLayer.style.transitionDuration = T_DEFOCUS_IN + 'ms';
+    defocusLayer.style.transitionTimingFunction = DEFOCUS_IN_EASE;
+    defocusLayer.classList.add('on');
+    if (coverTimer) { clearTimeout(coverTimer); }
+    coverTimer = setTimeout(onCoverComplete, T_DEFOCUS_IN);
+  }
+
+  // Reconstruct: transitioning the same properties back to their base values on
+  // an ease-out curve IS the prototype's c = 1 - quintOut(p). No rAF needed.
+  function startDefocusOut() {
+    if (coverTimer) { clearTimeout(coverTimer); }
+    coverTimer = setTimeout(function () {
+      defocusLayer.style.transitionDuration = T_DEFOCUS_OUT + 'ms';
+      defocusLayer.style.transitionTimingFunction = DEFOCUS_OUT_EASE;
+      defocusLayer.classList.remove('on');
+      coverTimer = setTimeout(function () { transDispatch({ type: 'done' }); }, T_DEFOCUS_OUT);
+    }, T_HOLD);
+  }
+
+  function clearDefocus() {
+    if (coverTimer) { clearTimeout(coverTimer); coverTimer = null; }
+    defocusLayer.style.transitionDuration = '0ms';
+    defocusLayer.classList.remove('on');
+    void defocusLayer.offsetWidth;
+    defocusLayer.style.transitionDuration = '';
+    defocusLayer.style.transitionTimingFunction = '';
+    defocusLayer.classList.remove('armed');
+  }
+
+  // Cover-kind dispatchers. transDispatch only ever calls these three; each
+  // cover owns its own timing and its own coverTimer usage.
+  function startDismantle() {
+    if (coverKind === 'defocus') { startDefocusIn(); } else { startTileDismantle(); }
+  }
+  function startReconstruct() {
+    if (coverKind === 'defocus') { startDefocusOut(); } else { startTileReconstruct(); }
+  }
+  function clearCover() {
+    if (coverKind === 'defocus') { clearDefocus(); } else { clearTiles(); }
   }
 
   // Cover complete: re-resolve the crossing from the FROZEN lastSafe to the
@@ -480,7 +601,10 @@ const companionRuntime = `
       var u = a.dispatchTarget;
       dispatch({ type: 'crossing', target: u, loaded: !!(entities[u] || sceneLoading[u]), ready: sceneReady(u) });
     }
-    if (transState.phase === 'idle' && a.cover !== 'dismantle') { tileLayer.classList.remove('armed'); }
+    if (transState.phase === 'idle' && a.cover !== 'dismantle') {
+      tileLayer.classList.remove('armed');
+      defocusLayer.classList.remove('armed');
+    }
   }
 
   // The LOD level a crossing's loading overlay waits for -- the "coarsest
@@ -1252,11 +1376,13 @@ const companionRuntime = `
           var cr = resolvePortalCrossing(lastSafe, curPos, rects, activeIndex, segmentCrossesRect);
           var next = cr.uid;
           if (next !== activeIndex && next !== null) {
+            var kind = transitionKind(cr.portalIndex);
             if (transState.phase === 'dismantling') {
               // Crossing already latched; the commit re-resolves it. Dispatching
               // now would switch the scene before the cover has closed.
-            } else if (transState.phase === 'idle' && transitionEnabled(cr.portalIndex)) {
+            } else if (transState.phase === 'idle' && kind !== 'none') {
               // Defer the switch: dismantle first, commit when covered.
+              coverKind = kind;
               transDispatch({ type: 'crossing', target: next });
             } else {
               // No transition for this portal, or one is already past its commit

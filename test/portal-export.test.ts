@@ -104,20 +104,36 @@ describe('buildPortalBundle', () => {
         expect(b.portals[0].infinite).toEqual(inf);
     });
 
-    it('carries an explicit transition:false into the rewritten portals', () => {
+    it('carries an explicit transition kind into the rewritten portals', () => {
         const b = buildPortalBundle({
-            portals: [{ ...portal(10, 20), transition: false }],
+            portals: [{ ...portal(10, 20), transition: 'defocus' as const }],
             startUid: 10, availableUids: [10, 20], streaming: false, collision: false
         })!;
-        expect(b.portals[0].transition).toBe(false);
+        expect(b.portals[0].transition).toBe('defocus');
     });
 
-    it('leaves the transition field absent when the portal never set it', () => {
+    it('resolves an absent transition to the default cover so the payload is always explicit', () => {
         const b = buildPortalBundle({
             portals: [portal(10, 20)],
             startUid: 10, availableUids: [10, 20], streaming: false, collision: false
         })!;
-        expect(b.portals[0].transition).toBeUndefined();
+        expect(b.portals[0].transition).toBe('defocus');
+    });
+
+    it('carries an explicit tiles selection through rather than defaulting it away', () => {
+        const b = buildPortalBundle({
+            portals: [{ ...portal(10, 20), transition: 'tiles' as const }],
+            startUid: 10, availableUids: [10, 20], streaming: false, collision: false
+        })!;
+        expect(b.portals[0].transition).toBe('tiles');
+    });
+
+    it('migrates a legacy boolean false to none', () => {
+        const b = buildPortalBundle({
+            portals: [{ ...portal(10, 20), transition: false as any }],
+            startUid: 10, availableUids: [10, 20], streaming: false, collision: false
+        })!;
+        expect(b.portals[0].transition).toBe('none');
     });
 });
 

@@ -5,6 +5,7 @@
 // playcanvas / splat-transform imports so it is unit-testable in isolation.
 
 import { InfiniteEdges } from './portal-geom';
+import { normalizePortalTransition, PortalTransition } from './portal-transition';
 
 type Vec3 = [number, number, number];
 type Quat = [number, number, number, number];
@@ -17,12 +18,12 @@ type ExportPortal = {
     frontUid: number | null,
     backUid: number | null,
     infinite?: InfiniteEdges,
-    transition?: boolean   // absent = enabled
+    transition?: PortalTransition   // absent = 'defocus' (the default)
 };
 
 type PortalBundle = {
     sceneUids: number[];                 // index -> editor uid (index 0 = start)
-    portals: { position: Vec3, rotation: Quat, width: number, height: number, front: number | null, back: number | null, infinite?: InfiniteEdges, transition?: boolean }[];
+    portals: { position: Vec3, rotation: Quat, width: number, height: number, front: number | null, back: number | null, infinite?: InfiniteEdges, transition: PortalTransition }[];
     portalScenes: string[];              // index -> relative asset URL (index 0 = '')
     portalStart: number;                 // always 0
     portalCollision: (string | null)[];  // index -> voxel URL, or [] when collision off
@@ -84,7 +85,7 @@ const buildPortalBundle = (args: {
         front: indexOf(p.frontUid),
         back: indexOf(p.backUid),
         infinite: p.infinite,
-        transition: p.transition
+        transition: normalizePortalTransition(p.transition)
     }));
 
     const portalScenes = sceneUids.map((_, i) => sceneUrl(i, streaming));

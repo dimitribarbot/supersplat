@@ -2,12 +2,14 @@
 // (a tile cover that dismantles the outgoing scene and reconstructs the
 // incoming one).
 //
-// Every function here is stringified into the exported viewer
-// (Function.toString()) and evaluated in a separate scope, so each one must be
-// SELF-CONTAINED: no imports, no references to sibling functions or module
-// constants, all literals inline. The runtime body that hosts them is authored
-// inside a template literal, so this file must also contain no backslash
-// escapes and no '${' sequences in code that is stringified.
+// tileGrid, tileGeometry, tileDelay and transitionReducer are stringified into
+// the exported viewer (Function.toString()) and evaluated in a separate scope,
+// so each of those four must be SELF-CONTAINED: no imports, no references to
+// sibling functions or module constants, all literals inline. The runtime body
+// that hosts them is authored inside a template literal, so this file must also
+// contain no backslash escapes and no '${' sequences in code that is
+// stringified. normalizePortalTransition is NOT stringified; it is a plain
+// import used by the editor and the export builder.
 
 type TilePhase = 'dismantle' | 'reconstruct';
 
@@ -39,25 +41,75 @@ type TransitionActions = {
 
 type TransitionResult = { state: TransitionState, actions: TransitionActions };
 
-// Tile grid for a viewport: roughly square tiles around a 110px target, clamped
-// so a phone does not get one giant tile and an ultrawide does not get hundreds.
+// Which cover the exported viewer plays when a portal is crossed. NOT
+// stringified into the viewer -- this is a plain import used by the editor UI,
+// the document reader and the export payload builder.
+type PortalTransition = 'none' | 'tiles' | 'defocus';
+
+// Single reader for every stored shape of the field. Documents written before
+// the dropdown stored a boolean, where absent meant "enabled", so anything that
+// is not an explicit off resolves to the DEFAULT cover -- which is defocus.
+// Note this also re-points pre-dropdown documents: a portal that played tiles
+// by virtue of having no field now plays defocus. That is deliberate; nothing
+// on disk is rewritten, only how absence is read. Only an explicit 'tiles'
+// selects the tile cover. Mirrored (not imported -- see the file header) by
+// transitionKind in viewer-companion/portals.ts; keep both in sync when a
+// fourth kind is added, including which one is the fallback.
+const normalizePortalTransition = (v: unknown): PortalTransition => {
+    if (v === false || v === 'none') {
+        return 'none';
+    }
+    if (v === 'tiles') {
+        return 'tiles';
+    }
+    return 'defocus';
+};
+
+// Tile grid for a viewport: roughly square tiles around a 26px target, floored
+// so a phone does not get one giant tile and capped on total count so a large
+// display does not animate several thousand composited divs. Phones and small
+// laptops hit 26px exactly; only big displays fall back to a coarser grid, and
+// they land around 40-56px -- still ~4x finer than the 110px this replaced.
 const tileGrid = (width: number, height: number): { cols: number, rows: number } => {
-    const TARGET = 110;
+    const TARGET = 26;
+    const MAX_TILES = 1200;
     const w = (typeof width === 'number' && width > 0) ? width : TARGET;
     const h = (typeof height === 'number' && height > 0) ? height : TARGET;
     let cols = Math.round(w / TARGET);
     if (cols < 6) {
         cols = 6;
     }
-    if (cols > 20) {
-        cols = 20;
-    }
     let rows = Math.round(cols * h / w);
     if (rows < 4) {
         rows = 4;
     }
-    if (rows > 16) {
-        rows = 16;
+    if (cols * rows > MAX_TILES) {
+        // scale both axes by the same factor so the tiles stay roughly square
+        const k = Math.sqrt(MAX_TILES / (cols * rows));
+        cols = Math.floor(cols * k);
+        rows = Math.floor(rows * k);
+        if (cols < 6) {
+            cols = 6;
+        }
+        if (rows < 4) {
+            rows = 4;
+        }
+        // An axis already sitting at its minimum before the cap gets scaled
+        // down and then reclamped straight back up, re-inflating the product
+        // past MAX_TILES. Give the long axis whatever the short one leaves.
+        if (cols * rows > MAX_TILES) {
+            if (cols >= rows) {
+                cols = Math.floor(MAX_TILES / rows);
+                if (cols < 6) {
+                    cols = 6;
+                }
+            } else {
+                rows = Math.floor(MAX_TILES / cols);
+                if (rows < 4) {
+                    rows = 4;
+                }
+            }
+        }
     }
     return { cols: cols, rows: rows };
 };
@@ -143,6 +195,8 @@ export {
     tileGeometry,
     tileDelay,
     transitionReducer,
+    normalizePortalTransition,
+    PortalTransition,
     TilePhase,
     TransitionPhase,
     TransitionState,

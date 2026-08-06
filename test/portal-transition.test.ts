@@ -1,24 +1,62 @@
 import { describe, it, expect } from 'vitest';
 
-import { tileGrid, tileGeometry, tileDelay, transitionReducer, TransitionState } from '../src/portal-transition';
+import { tileGrid, tileGeometry, tileDelay, transitionReducer, normalizePortalTransition, TransitionState } from '../src/portal-transition';
 
 describe('tileGrid', () => {
-    it('produces roughly square tiles at a desktop aspect', () => {
+    it('produces roughly square 26px tiles at a desktop aspect', () => {
         const g = tileGrid(1600, 1000);
+        expect(g.cols).toBe(43);
+        expect(g.rows).toBe(27);
+    });
+
+    it('hits the 26px target exactly on a phone, where the cap does not bite', () => {
+        const g = tileGrid(390, 844);
         expect(g.cols).toBe(15);
-        expect(g.rows).toBe(9);
+        expect(g.rows).toBe(32);
+        expect(g.cols * g.rows).toBe(480);
+    });
+
+    it('keeps a small viewport on the 26px target', () => {
+        const g = tileGrid(320, 640);
+        expect(g.cols).toBe(12);
+        expect(g.rows).toBe(24);
     });
 
     it('clamps a very narrow viewport to the minimum columns', () => {
-        const g = tileGrid(320, 640);
+        const g = tileGrid(80, 200);
         expect(g.cols).toBe(6);
-        expect(g.rows).toBe(12);
+        expect(g.rows).toBe(15);
     });
 
-    it('clamps a very wide viewport to the maximum columns and rows', () => {
+    it('caps the total tile count on a large display', () => {
+        const g = tileGrid(2560, 1440);
+        expect(g.cols * g.rows).toBeLessThanOrEqual(1200);
+        expect(g.cols).toBe(46);
+        expect(g.rows).toBe(25);
+    });
+
+    it('keeps tiles roughly square when the cap bites', () => {
+        const g = tileGrid(1920, 1080);
+        expect(g.cols * g.rows).toBeLessThanOrEqual(1200);
+        const tileW = 1920 / g.cols;
+        const tileH = 1080 / g.rows;
+        expect(tileW / tileH).toBeGreaterThan(0.8);
+        expect(tileW / tileH).toBeLessThan(1.25);
+    });
+
+    it('caps an extreme aspect ratio too', () => {
         const g = tileGrid(6000, 400);
-        expect(g.cols).toBe(20);
-        expect(g.rows).toBe(4);
+        expect(g.cols * g.rows).toBeLessThanOrEqual(1200);
+        expect(g.rows).toBeGreaterThanOrEqual(4);
+    });
+
+    it('still caps when an axis is pinned to its minimum', () => {
+        // cols floors to 6 before the cap, so scaling it down and reclamping
+        // would re-inflate the product past MAX_TILES
+        const g = tileGrid(100, 5000);
+        expect(g.cols).toBe(6);
+        expect(g.rows).toBe(200);
+        expect(g.cols * g.rows).toBeLessThanOrEqual(1200);
     });
 
     it('falls back to a valid grid for degenerate sizes', () => {
@@ -130,5 +168,33 @@ describe('transitionReducer', () => {
             expect(r.state).toEqual({ phase: 'idle', target: null });
             expect(r.actions).toEqual({ cover: 'clear', dispatchTarget: null });
         });
+    });
+});
+
+describe('normalizePortalTransition', () => {
+    it('maps the legacy boolean onto the enum', () => {
+        expect(normalizePortalTransition(false)).toBe('none');
+        // legacy true meant "enabled", which now resolves to the default cover
+        expect(normalizePortalTransition(true)).toBe('defocus');
+    });
+
+    it('treats an absent value as the default cover, defocus', () => {
+        expect(normalizePortalTransition(undefined)).toBe('defocus');
+        expect(normalizePortalTransition(null)).toBe('defocus');
+    });
+
+    it('only an explicit "tiles" selects the tile cover', () => {
+        expect(normalizePortalTransition('tiles')).toBe('tiles');
+    });
+
+    it('passes the three enum values through', () => {
+        expect(normalizePortalTransition('none')).toBe('none');
+        expect(normalizePortalTransition('tiles')).toBe('tiles');
+        expect(normalizePortalTransition('defocus')).toBe('defocus');
+    });
+
+    it('falls back to the default cover for an unrecognised value', () => {
+        expect(normalizePortalTransition('shards')).toBe('defocus');
+        expect(normalizePortalTransition(7)).toBe('defocus');
     });
 });

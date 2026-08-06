@@ -278,37 +278,57 @@ describe('portal doc-index serialization', () => {
     });
 });
 
-describe('portal transition flag', () => {
-    it('portals.export carries the transition flag through', () => {
+describe('portal transition kind', () => {
+    it('portals.export carries the transition kind through', () => {
         const events = makeEvents();
         registerPortalsEvents(events);
-        events.fire('portals.insertRaw', portal({ id: 'portal_0', transition: false }));
-        events.fire('portals.insertRaw', portal({ id: 'portal_1' }));
+        events.fire('portals.insertRaw', portal({ id: 'portal_0', transition: 'none' }));
+        events.fire('portals.insertRaw', portal({ id: 'portal_1', transition: 'defocus' }));
+        events.fire('portals.insertRaw', portal({ id: 'portal_2' }));
         const out = events.invoke('portals.export');
-        expect(out[0].transition).toBe(false);
-        expect(out[1].transition).toBeUndefined();
+        expect(out[0].transition).toBe('none');
+        expect(out[1].transition).toBe('defocus');
+        expect(out[2].transition).toBeUndefined();
     });
 
-    it('docSerialize keeps an explicit false and omits an absent flag', () => {
+    it('docSerialize keeps an explicit kind and omits an absent one', () => {
         const events = makeEvents();
         registerPortalsEvents(events);
-        events.fire('portals.insertRaw', portal({ id: 'portal_0', transition: false }));
+        events.fire('portals.insertRaw', portal({ id: 'portal_0', transition: 'defocus' }));
         events.fire('portals.insertRaw', portal({ id: 'portal_1' }));
         const serialized = events.invoke('docSerialize.portals');
-        expect(serialized[0].transition).toBe(false);
+        expect(serialized[0].transition).toBe('defocus');
         expect(JSON.parse(JSON.stringify(serialized[1])).transition).toBeUndefined();
     });
 
-    it('docDeserialize restores an explicit false', () => {
+    it('docDeserialize restores an explicit kind', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.invoke('docDeserialize.portals', [
+            { id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, frontUid: 1, backUid: 2, transition: 'defocus' }
+        ]);
+        expect((events.invoke('portals.list') as PortalData[])[0].transition).toBe('defocus');
+    });
+
+    it('migrates a legacy transition:false document to none', () => {
         const events = makeEvents();
         registerPortalsEvents(events);
         events.invoke('docDeserialize.portals', [
             { id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, frontUid: 1, backUid: 2, transition: false }
         ]);
-        expect((events.invoke('portals.list') as PortalData[])[0].transition).toBe(false);
+        expect((events.invoke('portals.list') as PortalData[])[0].transition).toBe('none');
     });
 
-    it('a legacy document without the field loads as enabled (absent)', () => {
+    it('migrates a legacy transition:true document to the default cover', () => {
+        const events = makeEvents();
+        registerPortalsEvents(events);
+        events.invoke('docDeserialize.portals', [
+            { id: 'portal_0', position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, frontUid: 1, backUid: 2, transition: true }
+        ]);
+        expect((events.invoke('portals.list') as PortalData[])[0].transition).toBe('defocus');
+    });
+
+    it('a legacy document without the field stays absent, so re-saving does not dirty it', () => {
         const events = makeEvents();
         registerPortalsEvents(events);
         events.invoke('docDeserialize.portals', [

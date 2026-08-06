@@ -1,5 +1,6 @@
 import { Events } from './events';
 import { InfiniteEdges } from './portal-geom';
+import { normalizePortalTransition, PortalTransition } from './portal-transition';
 
 // Editor-internal portal record: a rectangle (width x height) centered at
 // `position`, oriented by `rotation` (quaternion [x,y,z,w]). The +Z side of the
@@ -14,18 +15,20 @@ type PortalData = {
     frontUid: number | null,
     backUid: number | null,
     infinite?: InfiniteEdges,
-    // Play the exported viewer's tile transition when this portal is crossed.
-    // ABSENT MEANS ENABLED - only an explicit false disables it, so existing
-    // documents need no migration.
-    transition?: boolean
+    // Which cover the exported viewer plays when this portal is crossed.
+    // ABSENT MEANS 'defocus' (the default) - documents written before the dropdown stored a
+    // boolean and are migrated on load, so no document needs rewriting.
+    transition?: PortalTransition
 };
 
 // On-disk portal record: PortalData plus stable splat references as indices
 // into the document's splat array (uids are session-scoped and NOT stable
 // across loads; the uid fields are kept only for rollback to older builds).
-type PortalDocData = PortalData & {
+type PortalDocData = Omit<PortalData, 'transition'> & {
     frontIndex?: number | null,
-    backIndex?: number | null
+    backIndex?: number | null,
+    // pre-dropdown documents stored a boolean here
+    transition?: PortalTransition | boolean
 };
 
 class AddPortalOp {
@@ -139,6 +142,13 @@ class UpdatePortalEntrypointOp {
         this.events = null;
     }
 }
+
+// Legacy documents stored a boolean; map it onto the enum at load. An absent
+// field stays absent so loading and re-saving a document that never touched the
+// feature does not write an explicit "tiles" into every portal record.
+const migrateDocTransition = (v: unknown): PortalTransition | undefined => {
+    return (v === undefined || v === null) ? undefined : normalizePortalTransition(v);
+};
 
 const registerPortalsEvents = (events: Events) => {
     const portals: PortalData[] = [];
@@ -340,7 +350,7 @@ const registerPortalsEvents = (events: Events) => {
                     frontUid: resolve(d.frontIndex, d.frontUid),
                     backUid: resolve(d.backIndex, d.backUid),
                     infinite: d.infinite,
-                    transition: d.transition
+                    transition: migrateDocTransition(d.transition)
                 });
                 const m = /^portal_(\d+)$/.exec(d.id ?? '');
                 if (m) {

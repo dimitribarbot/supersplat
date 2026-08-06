@@ -4,6 +4,7 @@ import { Entity, Quat, RotateGizmo, TranslateGizmo, Vec3 } from 'playcanvas';
 import { ElementType } from '../element';
 import { Events } from '../events';
 import { PortalShape } from '../portal-shape';
+import { normalizePortalTransition, PortalTransition } from '../portal-transition';
 import { AddPortalOp, RemovePortalOp, SetStartSplatOp, UpdatePortalEntrypointOp, UpdatePortalOp, PortalData } from '../portals';
 import { Scene } from '../scene';
 import { Splat } from '../splat';
@@ -60,8 +61,17 @@ class PortalTool {
         const glyphClass = ['select-toolbar-mode', 'select-toolbar-glyph'];
         const boundsButton = new Button({ text: '⤢', class: glyphClass });
         boundsButton.dom.title = i18n.t('portals.bounds.tooltip');
-        const transitionButton = new Button({ text: '⧉', class: glyphClass });
-        transitionButton.dom.title = i18n.t('portals.transition.tooltip');
+        const transitionLabel = new Label({ text: i18n.t('portals.transition') });
+        const transitionInput = new SelectInput({
+            type: 'string',
+            options: [
+                { v: 'none', t: i18n.t('portals.transition.none') },
+                { v: 'defocus', t: i18n.t('portals.transition.defocus') },
+                { v: 'tiles', t: i18n.t('portals.transition.tiles') }
+            ],
+            width: 140
+        });
+        transitionInput.dom.title = i18n.t('portals.transition.tooltip');
         const widthLabel = new Label({ text: i18n.t('portals.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
         const heightLabel = new Label({ text: i18n.t('portals.height') });
@@ -91,7 +101,7 @@ class PortalTool {
         bar.append(moveButton);
         bar.append(rotateButton);
         bar.append(boundsButton);
-        bar.append(transitionButton);
+        bar.append(group(transitionLabel, transitionInput));
         bar.append(group(widthLabel, widthInput));
         bar.append(group(heightLabel, heightInput));
         bar.append(group(frontLabel, frontInput));
@@ -164,20 +174,6 @@ class PortalTool {
             });
         });
 
-        // Per-portal transition toggle. Absent means enabled, so the first click
-        // on a fresh portal writes an explicit false; clicking again clears it
-        // back to undefined (enabled) rather than writing true, keeping the
-        // "absent means enabled" invariant in the document.
-        transitionButton.dom.addEventListener('pointerdown', (e) => {
-            e.stopPropagation();
-            const z = selected();
-            if (!z) {
-                return;
-            }
-            const next = (z.transition === false) ? undefined : false;
-            events.fire('edit.add', new UpdatePortalOp(events, z.id, { transition: z.transition }, { transition: next }));
-        });
-
         // --- selection helpers ---
         // Declared as a hoisted function so the deferred handlers above can
         // reference it before this point (no-use-before-define allows functions).
@@ -242,8 +238,10 @@ class PortalTool {
             const hasEp = selectedEntryUid != null && !!events.invoke('portals.entrypoint', selectedEntryUid);
             entryClearButton.enabled = hasEp;
             entrySetButton.enabled = selectedEntryUid != null;
-            transitionButton.enabled = !!z;
-            transitionButton.class[(z && z.transition !== false) ? 'add' : 'remove']('active');
+            transitionInput.enabled = !!z;
+            if (z) {
+                transitionInput.value = normalizePortalTransition(z.transition);
+            }
             refreshBoundsPopup();
             suppress = false;
             updateEntryGizmo();
@@ -289,6 +287,17 @@ class PortalTool {
             if (current !== v) {
                 events.fire('edit.add', new SetStartSplatOp(events, current, v));
             }
+        });
+
+        transitionInput.on('change', (v: PortalTransition) => {
+            if (suppress) {
+                return;
+            }
+            const z = selected();
+            if (!z || normalizePortalTransition(z.transition) === v) {
+                return;
+            }
+            events.fire('edit.add', new UpdatePortalOp(events, z.id, { transition: z.transition }, { transition: v }));
         });
 
         entrySceneInput.on('change', () => {

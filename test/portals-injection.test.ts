@@ -449,6 +449,92 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('ss-portal-tiles');
         expect(out).toContain('#0a0c10');
         expect(out).toContain('opacity: .7');
+        // the design's 0.75x playback: 150ms sweep + 100ms per tile, 67ms hold
+        expect(out).toContain('transition: opacity 100ms ease-out, transform 100ms cubic-bezier(.2,.75,.3,1)');
+        // absolute 1px bleed past each grid track: scale(1.02) alone leaves
+        // ~0.34px of overlap at a 26px target, under one device pixel, which
+        // lets the scene show through the fractional track boundaries
+        expect(out).toContain('margin: -1px;');
+        expect(out).toContain('var T_SWEEP = REDUCED_MOTION ? 0 : 150;');
+        expect(out).toContain('var T_HOLD = 67;');
+        // 26px tiles fly proportionally less far than the old 110px ones:
+        // 140 * (0.5 + 0.5 * 26/110) = 86.5. Assert the whole expression so the
+        // test cannot pass on an unrelated 86.5 elsewhere in the bundle.
+        expect(out).toContain("'translate(' + (t.ux * 86.5) + 'px,' + (t.uy * 86.5) + 'px) scale(.25) rotate('");
+        expect(out).not.toContain('t.ux * 140');
+    });
+
+    it('resolves the cover kind per portal and keeps the legacy-boolean branch in the runtime', () => {
+        const out = buildPortalsInjection({
+            portals: [
+                { position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1, transition: 'none' },
+                { position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 1, back: 0, transition: 'tiles' }
+            ],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            portalCollision: [],
+            portalEnvironments: ['indoor', 'indoor'],
+            portalSceneLodCounts: [[1000], [1000]]
+        });
+        // the kinds reach the viewer payload verbatim
+        expect(out).toContain('"transition":"none"');
+        expect(out).toContain('"transition":"tiles"');
+        // the runtime resolves them, and still honours the legacy boolean
+        expect(out).toContain('function transitionKind(');
+        expect(out).toContain("if (v === false || v === 'none') { return 'none'; }");
+        // Defocus is the default: only an explicit 'tiles' selects the tile
+        // cover, and everything else (absent, legacy true, junk) falls through
+        // to defocus. Asserted as one sequence so flipping the fallback back to
+        // tiles cannot pass.
+        expect(out).toContain("if (v === 'tiles') { return 'tiles'; }\n    return 'defocus';");
+        // the in-flight crossing's cover is captured, not re-derived
+        expect(out).toContain('var coverKind =');
+        expect(out).not.toContain('function transitionEnabled(');
+    });
+
+    it('ships the defocus cover with the design endpoints and curves', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1, transition: 'defocus' }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            portalCollision: [],
+            portalEnvironments: ['indoor', 'indoor'],
+            portalSceneLodCounts: [[1000], [1000]]
+        });
+        expect(out).toContain('"transition":"defocus"');
+        // CSS: one full-screen layer, blur + veil at the design's endpoints
+        expect(out).toContain('.ss-portal-defocus');
+        expect(out).toContain('blur(26px) saturate(.45)');
+        expect(out).toContain('rgba(7,10,14,.9)');
+        // both vendor prefixes ship, so Safari gets the effect
+        expect(out).toContain('-webkit-backdrop-filter: blur(26px) saturate(.45)');
+        // idle must be `none`, not blur(0px): a non-none backdrop-filter creates
+        // a permanent stacking context even at zero blur. Anchored to the
+        // preceding background-color line -- the bare filter string alone also
+        // matches the unrelated .reduced.armed rule further down the CSS.
+        expect(out).toContain('background-color: rgba(7,10,14,0);\n  -webkit-backdrop-filter: none; backdrop-filter: none;');
+        expect(out).toContain('backdrop-filter: blur(0px) saturate(1)');
+        // the defocus layer is actually mounted, not just constructed
+        expect(out).toContain('document.body.appendChild(defocusLayer)');
+        // Neither cover declares will-change anywhere in the injected viewer.
+        // Browsers promote a running transform/opacity or backdrop-filter
+        // transition on their own, and the tile grid is up to 1200 cells --
+        // hinting every one of them costs more than it buys. The CSS comments
+        // explaining the absence deliberately avoid the hyphenated token so
+        // this can stay an exact-token check.
+        expect(out).not.toContain('will-change');
+        // timing: 213ms cubicIn in, 373ms quintOut out
+        expect(out).toContain('var T_DEFOCUS_IN = REDUCED_MOTION ? 150 : 213;');
+        expect(out).toContain('var T_DEFOCUS_OUT = REDUCED_MOTION ? 150 : 373;');
+        // full constant lines, not bare curve strings: each curve also appears
+        // in the CSS base rule, so a bare toContain would pass even if both JS
+        // constants below were deleted
+        expect(out).toContain("var DEFOCUS_IN_EASE = REDUCED_MOTION ? 'linear' : 'cubic-bezier(.32,0,.67,0)';");
+        expect(out).toContain("var DEFOCUS_OUT_EASE = REDUCED_MOTION ? 'linear' : 'cubic-bezier(.22,1,.36,1)';");
+        // the dispatchers route to it
+        expect(out).toContain("if (coverKind === 'defocus') { startDefocusIn(); }");
+        expect(out).toContain("if (coverKind === 'defocus') { startDefocusOut(); }");
+        expect(out).toContain("if (coverKind === 'defocus') { clearDefocus(); }");
     });
 
     it('swaps collision at the start of the dismantle, not at the commit', () => {
