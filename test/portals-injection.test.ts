@@ -451,6 +451,29 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('opacity: .7');
     });
 
+    it('swaps collision at the start of the dismantle, not at the commit', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            portalCollision: ['scenes/0/scene.voxel.json', 'scenes/1/scene.voxel.json'],
+            portalEnvironments: ['indoor', 'indoor'],
+            portalSceneLodCounts: [[1000], [1000]]
+        });
+        // The crossing is detected the frame the camera passes the doorway, so
+        // the destination's voxel field must go live when the dismantle starts.
+        // Leaving it until the commit clamps the movers against a region the
+        // outgoing scene never carved (measured: 2.6 -> 0.7 m/s over the last
+        // ~250 ms of the sweep, recovering on the commit frame).
+        expect(out).toContain('function collisionScene()');
+        // one invariant re-asserted on every phase change: swap forward on the
+        // dismantle, restore on cancel / abort / a crossing abandoned blocked
+        expect(out).toContain('swapCollision(collisionScene());');
+        // A voxel fetch landing mid-dismantle must apply to the field that
+        // should be live now, not to the not-yet-switched active scene.
+        expect(out).toContain('if (idx === collisionScene()) swapCollision(idx);');
+    });
+
     it('keeps the runtime free of template-literal hazards', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],

@@ -469,6 +469,13 @@ const companionRuntime = `
     if (a.cover === 'dismantle') { startDismantle(); }
     else if (a.cover === 'reconstruct') { startReconstruct(); }
     else if (a.cover === 'clear') { clearCover(); }
+    // Re-assert the field the CAMERA is standing in on every phase change (see
+    // collisionScene). This single call covers the dismantle (swap forward, the
+    // fix), the cancel and abort paths (restore the outgoing scene) and a
+    // crossing abandoned while blocked (restore, even though its reconstruct
+    // still carries the target). swapCollision is a plain field re-assign, so
+    // the no-change case costs nothing and the commit's own call is a no-op.
+    swapCollision(collisionScene());
     if (a.dispatchTarget !== null) {
       var u = a.dispatchTarget;
       dispatch({ type: 'crossing', target: u, loaded: !!(entities[u] || sceneLoading[u]), ready: sceneReady(u) });
@@ -757,7 +764,7 @@ const companionRuntime = `
       voxelLoading[idx] = false;
       if (idx !== snapshotIdx && idx !== activeIndex && !sceneWanted(idx)) { return; }
       voxels[idx] = f;
-      if (idx === activeIndex) swapCollision(idx);
+      if (idx === collisionScene()) swapCollision(idx);
     }).catch(function (err) {
       voxelLoading[idx] = false;
       console.warn('portal collision ' + idx + ' failed:', err);
@@ -794,6 +801,29 @@ const companionRuntime = `
     // bring collision in sync with the visuals now.
     if (activeIndex !== snapshotIdx && voxels[activeIndex]) { swapCollision(activeIndex); }
     reconcileCollisions(adjacency ? residentScenes() : []);
+  }
+  // Which scene's voxel field SHOULD be live right now -- collision follows the
+  // CAMERA, not the visuals. Normally that is the active scene, but a crossing
+  // is detected the frame the camera passes the doorway, so for the whole
+  // deferred window ('dismantling', and 'covered' until switchTo runs or the
+  // crossing unblocks) the user is already standing in the destination room and
+  // the DESTINATION's field is the correct one.
+  //
+  // Leaving the outgoing scene's field live across that window clamps both
+  // movers (the walk capsule and the fly SphereMover) against a region that
+  // scene never carved as walkable. Measured house -> garden: a steady 2.6 m/s
+  // collapsing to 0.7 m/s over the last ~250 ms of the sweep, snapping back to
+  // full speed on the exact frame the commit ran swapCollision. It is
+  // direction-asymmetric because the outdoor scene's grid does cover the indoor
+  // one's entry, so only the indoor -> outdoor direction stalls.
+  //
+  // A voxel fetch that lands mid-dismantle must be applied against this too,
+  // not activeIndex, or it would put the outgoing scene's field back under the
+  // camera.
+  function collisionScene() {
+    var t = transState.target;
+    var deferred = (transState.phase === 'dismantling' || transState.phase === 'covered');
+    return (deferred && t !== null && t !== undefined) ? t : activeIndex;
   }
   function swapCollision(idx) {
     var live = liveCollision();
