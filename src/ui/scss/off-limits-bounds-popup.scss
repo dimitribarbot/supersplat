@@ -1,5 +1,14 @@
 @use 'colors.scss' as *;
 
+// The zone bar reuses .annotations-toolbar, so its message field inherits that
+// bar's 160px input width (annotation-overlay.scss). A zone message is a whole
+// sentence shown to the visitor, not a short label, so give it 20% more room.
+// Both classes are named so this outranks the shared rule whatever the @use
+// order in style.scss ends up being.
+.annotations-toolbar .annotations-toolbar-input.off-limits-message-input {
+    width: 192px;
+}
+
 .off-limits-bounds-popup {
     position: absolute;
     transform: translate(-50%, 0);

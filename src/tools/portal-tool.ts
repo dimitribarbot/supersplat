@@ -48,12 +48,19 @@ class PortalTool {
         const bar = new Container({ class: ['select-toolbar', 'annotations-toolbar'], hidden: true });
         bar.dom.addEventListener('pointerdown', e => e.stopPropagation());
 
-        const addButton = new Button({ text: i18n.t('portals.add'), class: 'select-toolbar-button' });
-        const moveButton = new Button({ text: i18n.t('portals.move'), class: 'select-toolbar-button' });
-        const rotateButton = new Button({ text: i18n.t('portals.rotate'), class: 'select-toolbar-button' });
-        const boundsButton = new Button({ text: '⤢', class: 'select-toolbar-button' });
+        // icon-only: the label moves to the tooltip. E120/E111/E113 are the pcui
+        // icon-font plus/move/rotate glyphs -- the same move/rotate the bottom
+        // toolbar and the sphere/box select toolbars use.
+        const addButton = new Button({ class: 'select-toolbar-mode', icon: 'E120' });
+        addButton.dom.title = i18n.t('portals.add');
+        const moveButton = new Button({ class: 'select-toolbar-mode', icon: 'E111' });
+        moveButton.dom.title = i18n.t('portals.move');
+        const rotateButton = new Button({ class: 'select-toolbar-mode', icon: 'E113' });
+        rotateButton.dom.title = i18n.t('portals.rotate');
+        const glyphClass = ['select-toolbar-mode', 'select-toolbar-glyph'];
+        const boundsButton = new Button({ text: '⤢', class: glyphClass });
         boundsButton.dom.title = i18n.t('portals.bounds.tooltip');
-        const transitionButton = new Button({ text: '⧉', class: 'select-toolbar-button' });
+        const transitionButton = new Button({ text: '⧉', class: glyphClass });
         transitionButton.dom.title = i18n.t('portals.transition.tooltip');
         const widthLabel = new Label({ text: i18n.t('portals.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
@@ -68,8 +75,12 @@ class PortalTool {
 
         const entryLabel = new Label({ text: i18n.t('portals.entrypoint') });
         const entrySceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
-        const entrySetButton = new Button({ text: i18n.t('portals.entrypoint.set'), class: 'select-toolbar-button' });
-        const entryClearButton = new Button({ text: i18n.t('portals.entrypoint.clear'), class: 'select-toolbar-button' });
+        // E212 is the pcui icon-font camera, E132 its cross -- icon-only like the
+        // rest of the bar's actions, with the label carried by the tooltip
+        const entrySetButton = new Button({ class: 'select-toolbar-mode', icon: 'E212' });
+        entrySetButton.dom.title = i18n.t('portals.entrypoint.set');
+        const entryClearButton = new Button({ class: 'select-toolbar-mode', icon: 'E132' });
+        entryClearButton.dom.title = i18n.t('portals.entrypoint.clear');
 
         const group = (...els: any[]) => {
             const c = new Container({ class: 'select-toolbar-group' });

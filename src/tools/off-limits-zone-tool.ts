@@ -41,17 +41,23 @@ class OffLimitsZoneTool {
         const bar = new Container({ class: ['select-toolbar', 'annotations-toolbar'], hidden: true });
         bar.dom.addEventListener('pointerdown', e => e.stopPropagation());
 
-        const addButton = new Button({ text: i18n.t('offLimitsZones.add'), class: 'select-toolbar-button' });
-        const moveButton = new Button({ text: i18n.t('offLimitsZones.move'), class: 'select-toolbar-button' });
-        const rotateButton = new Button({ text: i18n.t('offLimitsZones.rotate'), class: 'select-toolbar-button' });
-        const boundsButton = new Button({ text: '⤢', class: 'select-toolbar-button' });
+        // icon-only: the label moves to the tooltip. E120/E111/E113 are the pcui
+        // icon-font plus/move/rotate glyphs -- the same move/rotate the bottom
+        // toolbar and the sphere/box select toolbars use.
+        const addButton = new Button({ class: 'select-toolbar-mode', icon: 'E120' });
+        addButton.dom.title = i18n.t('offLimitsZones.add');
+        const moveButton = new Button({ class: 'select-toolbar-mode', icon: 'E111' });
+        moveButton.dom.title = i18n.t('offLimitsZones.move');
+        const rotateButton = new Button({ class: 'select-toolbar-mode', icon: 'E113' });
+        rotateButton.dom.title = i18n.t('offLimitsZones.rotate');
+        const boundsButton = new Button({ text: '⤢', class: ['select-toolbar-mode', 'select-toolbar-glyph'] });
         boundsButton.dom.title = i18n.t('offLimitsZones.bounds.tooltip');
         const widthLabel = new Label({ text: i18n.t('offLimitsZones.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
         const heightLabel = new Label({ text: i18n.t('offLimitsZones.height') });
         const heightInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
         const messageLabel = new Label({ text: i18n.t('offLimitsZones.message') });
-        const messageInput = new TextInput({ class: 'annotations-toolbar-input' });
+        const messageInput = new TextInput({ class: ['annotations-toolbar-input', 'off-limits-message-input'] });
 
         bar.append(addButton);
         bar.append(moveButton);

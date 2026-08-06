@@ -51,7 +51,7 @@ class AnnotationTool {
         const imagesButton = new Button({ class: 'annotations-toolbar-button' });
         const sceneLabel = new Label({ text: i18n.t('panel.annotations.scene') });
         const sceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
-        const glyphClass = ['select-toolbar-button', 'annotations-toolbar-glyph'];
+        const glyphClass = ['select-toolbar-mode', 'select-toolbar-glyph', 'annotations-toolbar-glyph'];
         const viewButton = new Button({ text: '⊙', class: glyphClass });
         viewButton.dom.title = i18n.t('panel.annotations.set-view');
         const upButton = new Button({ text: '↑', class: glyphClass });

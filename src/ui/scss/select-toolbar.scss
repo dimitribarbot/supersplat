@@ -59,6 +59,20 @@
         }
     }
 
+    // mode-button box holding a plain text glyph (⤢ ⧉) rather than a pcui
+    // icon-font character. A fallback font supplies those glyphs and puts their
+    // ink wherever its baseline metrics land, so the inherited line-height /
+    // text-align centring lines up the advance box, not the mark. Flex centring
+    // a square box puts the glyph in the middle whichever font ends up serving
+    // it. The explicit size matches the 16px the icon-font ::before is given.
+    .select-toolbar-mode.select-toolbar-glyph {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        font-size: 16px;
+    }
+
     .select-toolbar-separator {
         width: 2px;
         height: 38px;
