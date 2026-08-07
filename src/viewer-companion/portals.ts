@@ -2,6 +2,7 @@ import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolvePortalCrossing } from '../portal-geom';
 import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam } from '../portal-preload';
+import { markerRuntime, markerStyle } from './portal-markers';
 import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
 
@@ -597,6 +598,9 @@ const companionRuntime = `
     // still carries the target). swapCollision is a plain field re-assign, so
     // the no-change case costs nothing and the commit's own call is a no-op.
     swapCollision(collisionScene());
+    // Markers are suppressed for the whole cover, so every phase change
+    // (dismantle, covered, reconstruct, idle) has to re-evaluate them.
+    refreshPortalMarkers();
     if (a.dispatchTarget !== null) {
       var u = a.dispatchTarget;
       dispatch({ type: 'crossing', target: u, loaded: !!(entities[u] || sceneLoading[u]), ready: sceneReady(u) });
@@ -996,6 +1000,7 @@ const companionRuntime = `
     for (var i = 0; i < entities.length; i++) {
       if (entities[i]) entities[i].enabled = (i === activeIndex);
     }
+    refreshPortalMarkers();
     var app = getApp(window.__supersplatViewer);
     if (app) app.renderNextFrame = true;
   }
@@ -1100,6 +1105,13 @@ const companionRuntime = `
       // for the reset handler above. (value, prev) fires on every mode change.
       ev.on('cameraMode:changed', function (mode) {
         if (mode === 'walk' || mode === 'fly') { spawnScene = activeIndex; }
+        refreshPortalMarkers();
+      });
+      // Gaming controls flip the icons non-interactive (markerInteractive), and
+      // this is the ONLY event that fires on that transition -- without it a
+      // tooltip or hover tint opened before the user pressed G would survive it.
+      ev.on('gamingControls:changed', function () {
+        refreshPortalMarkers();
       });
       // The viewer's applyPerfSettings re-runs on this event: it reopens the
       // start component's lodRangeMin to 0 (wiping the budget clamp) AND
@@ -1133,6 +1145,7 @@ const companionRuntime = `
 
     noteVisit(activeIndex);
     applyActive();
+    buildPortalMarkers();
     reconcileFrontier();
     initCollisions();
     // Stuck-loading-bar field diagnostic: the bar completes (and the viewer
@@ -2178,6 +2191,8 @@ const companionRuntime = `
     pinWhenBudgetReady();
   }
 
+  ${markerRuntime}
+
   requestAnimationFrame(start);
 })();
 `;
@@ -2228,7 +2243,7 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
     .replace(/&/g, '\\u0026')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
-    return `<style>${companionStyle}</style>` +
+    return `<style>${companionStyle}${markerStyle}</style>` +
         `<script>window.__supersplatPortals = ${payloadJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };

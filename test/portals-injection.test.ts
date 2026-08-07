@@ -629,3 +629,75 @@ describe('buildPortalsInjection smoke', () => {
         expect(parsed.loadingDefaults.en).toBeTruthy();
     });
 });
+
+describe('portal marker icons', () => {
+    const payload = {
+        portals: [{ position: [1, 2, 3], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+        portalScenes: ['', 'scenes/1/scene.sog'],
+        portalStart: 0,
+        portalCollision: [],
+        portalEnvironments: ['indoor', 'indoor'],
+        portalSceneLodCounts: [[1000], [1000]]
+    };
+
+    it('ships the marker style and runtime', () => {
+        const out = buildPortalsInjection(payload);
+        expect(out).toContain('.ss-portal-markers');
+        expect(out).toContain('function buildPortalMarkers()');
+        expect(out).toContain('Portal to another scene');
+    });
+
+    it('ships nothing when there are no portals', () => {
+        expect(buildPortalsInjection({ portals: [] })).toBe('');
+    });
+
+    it('builds the markers once at startup, right after applyActive', () => {
+        const out = buildPortalsInjection(payload);
+        expect(out).toContain('applyActive();\n    buildPortalMarkers();');
+    });
+
+    it('refreshes the markers from every state-change site', () => {
+        const out = buildPortalsInjection(payload);
+        // applyActive, transDispatch, the cameraMode:changed listener, and the
+        // tail of buildPortalMarkers itself
+        const calls = out.split('refreshPortalMarkers();').length - 1;
+        expect(calls).toBeGreaterThanOrEqual(4);
+    });
+
+    it('refreshes right after the transition collision swap', () => {
+        const out = buildPortalsInjection(payload);
+        const swap = out.indexOf('swapCollision(collisionScene());');
+        expect(swap).toBeGreaterThan(-1);
+        expect(out.slice(swap, swap + 280)).toContain('refreshPortalMarkers();');
+    });
+
+    it('refreshes when the camera mode changes', () => {
+        const out = buildPortalsInjection(payload);
+        const mode = out.indexOf('spawnScene = activeIndex; }');
+        expect(mode).toBeGreaterThan(-1);
+        expect(out.slice(mode, mode + 120)).toContain('refreshPortalMarkers();');
+    });
+
+    it('refreshes when the gaming-controls state changes', () => {
+        const out = buildPortalsInjection(payload);
+        const gc = out.indexOf("ev.on('gamingControls:changed'");
+        expect(gc).toBeGreaterThan(-1);
+        expect(out.slice(gc, gc + 120)).toContain('refreshPortalMarkers();');
+    });
+
+    it('refreshes from applyActive, the site that enables the active scene', () => {
+        const out = buildPortalsInjection(payload);
+        const active = out.indexOf('function applyActive() {');
+        expect(active).toBeGreaterThan(-1);
+        expect(out.slice(active, active + 200)).toContain('refreshPortalMarkers();');
+    });
+
+    it('defines the marker runtime before start() runs', () => {
+        const out = buildPortalsInjection(payload);
+        // start() contains its own self-retry `requestAnimationFrame(start);`
+        // guards (fired while waiting for the viewer app/camera to exist), so
+        // indexOf would match one of those instead of the real bootstrap call
+        // at the tail of the IIFE. Only the LAST occurrence is the bootstrap.
+        expect(out.indexOf('function buildPortalMarkers()')).toBeLessThan(out.lastIndexOf('requestAnimationFrame(start);'));
+    });
+});

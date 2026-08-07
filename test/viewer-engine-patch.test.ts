@@ -28,13 +28,51 @@ const INITXR_SNIPPET =
     '        parent.setPosition(cameraPosition.x, 0, cameraPosition.z);\n' +
     '        parent.setEulerAngles(0, angles.y, 0);\n';
 
-const BUNDLE = CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET;
+// Tail of the bundle: the only thing it exports. The fork patch prepends a
+// window publish of the engine classes the portal-marker companion needs.
+const EXPORT_SNIPPET =
+    'console.log(`SuperSplat Viewer`);\n' +
+    '\n' +
+    'export { main };\n';
+
+// NavInteraction._onPointerUp, mouse click-to-navigate branch (fork patch: a
+// click on a portal icon shows its tooltip and must not also move the camera).
+// 12-/16-space indented. The inner `if` line alone occurs TWICE in the bundle
+// -- once here and once in _onMobileTap -- so the anchor needs the TAP_EPSILON
+// line above it to be unique.
+const POINTER_UP_SNIPPET =
+    '            if (this._mouseClickDelta < TAP_EPSILON) {\n' +
+    '                if (state.cameraMode === \'walk\' && !state.gamingControls) {\n';
+
+// NavInteraction._onMobileTap, touch click-to-navigate branch (same fork
+// patch, other input path). 8-space indented, anchored on the _suppressClick
+// early-return block above it.
+const MOBILE_TAP_SNIPPET =
+    '        if (this._suppressClick) {\n' +
+    '            this._suppressClick = false;\n' +
+    '            return;\n' +
+    '        }\n' +
+    '        if (state.cameraMode === \'walk\' && !state.gamingControls) {\n';
+
+// NavCursor.updateCursor, the walk-mode hover ring (fork patch: hide the ring
+// while the pointer is over a portal icon, so "ring gone" reads as "this click
+// opens a tooltip and will not move you"). 4-/8-space indented. The viewer's own
+// annotations get this for free from their DOM hotspot making the canvas fire
+// pointerleave; the markers have no DOM hit-target by design.
+const NAV_CURSOR_SNIPPET =
+    '    updateCursor(offsetX, offsetY) {\n' +
+    '        if (!this.hoverActive || this.navigating) {\n' +
+    '            this.hoverRing.hide();\n' +
+    '            return;\n' +
+    '        }\n';
+
+const BUNDLE = CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET + NAV_CURSOR_SNIPPET + EXPORT_SNIPPET;
 
 describe('patchViewerEngine', () => {
     it('applies the fork viewer feature patches to the baked bundle', () => {
         const { source, patched } = patchViewerEngine(BUNDLE);
         expect(patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
-        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(3);
+        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(7);
 
         // fork patch: spawn-preserving reseat() inserted next to snap(), using
         // goto() (re-seat only) instead of onEnter() (grounds + stores spawn)
@@ -65,6 +103,45 @@ describe('patchViewerEngine', () => {
         );
         // the original world-Y=0 rig pin is gone
         expect(source).not.toContain('parent.setPosition(cameraPosition.x, 0, cameraPosition.z);');
+
+        // fork patch: publish the engine classes the portal-marker companion
+        // needs, guarded so a renamed symbol degrades to "no icons" rather than
+        // a ReferenceError that kills the whole viewer module
+        expect(source).toContain('try { window.__ssPc = {');
+        expect(source).toContain('Entity: Entity');
+        expect(source).toContain('MeshInstance: MeshInstance');
+        expect(source).toContain('StandardMaterial: StandardMaterial');
+        expect(source).toContain('PlaneGeometry: PlaneGeometry');
+        expect(source).toContain('Quat: Quat');
+        expect(source).toContain('BLENDMODE_ONE_MINUS_SRC_ALPHA: BLENDMODE_ONE_MINUS_SRC_ALPHA');
+        // the original export is preserved after it
+        expect(source.indexOf('window.__ssPc')).toBeLessThan(source.indexOf('export { main };'));
+
+        // fork patch: a click that lands on a portal icon opens the marker
+        // tooltip and must not also drive the camera. Guarding the viewer's own
+        // two nav decision points covers walk, fly and orbit with one line
+        // each, and stores no state that could go stale.
+        const guard = 'if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(this._lastPointerOffsetX, this._lastPointerOffsetY)) return;';
+        expect(source).toContain(
+            '            if (this._mouseClickDelta < TAP_EPSILON) {\n' +
+            `                ${guard}\n`
+        );
+        expect(source).toContain(
+            '        }\n' +
+            `        ${guard}\n` +
+            '        if (state.cameraMode === \'walk\' && !state.gamingControls) {\n'
+        );
+        // both nav branches survive the insert
+        expect(source.split('if (state.cameraMode === \'walk\' && !state.gamingControls) {').length - 1).toBe(2);
+
+        // fork patch: the walk-mode nav hover ring hides while the pointer is
+        // over a portal icon. Same predicate the click guards use, so the ring
+        // vanishing is an honest preview of "this click will not move you".
+        expect(source).toContain(
+            '    updateCursor(offsetX, offsetY) {\n' +
+            '        if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(offsetX, offsetY)) { this.hoverRing.hide(); return; }\n' +
+            '        if (!this.hoverActive || this.navigating) {\n'
+        );
     });
 
     it('is idempotent (a second pass matches nothing)', () => {
@@ -88,5 +165,11 @@ describe('patchViewerEngine', () => {
         const { source, patched } = patchViewerEngine('const x = 1;');
         expect(patched).toBe(0);
         expect(source).toBe('const x = 1;');
+    });
+
+    it('does not publish engine classes into a bundle with no export tail', () => {
+        const { source, patched } = patchViewerEngine(CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET);
+        expect(patched).toBe(5);
+        expect(source).not.toContain('__ssPc');
     });
 });
