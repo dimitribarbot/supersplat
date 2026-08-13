@@ -1,6 +1,7 @@
-import { BooleanInput, Button, Container, Element, Label, SelectInput, VectorInput } from '@playcanvas/pcui';
+import { BooleanInput, Button, Container, Element, Label, NumericInput, SelectInput, VectorInput } from '@playcanvas/pcui';
 
 import { Events } from '../events';
+import { probeExportCapabilities } from '../export-server-client';
 import { buildVideoEncoderConfig, VideoCodecChoice, VideoSettings } from '../video-config';
 import { i18n } from './localization';
 import sceneExport from './svg/export.svg';
@@ -350,6 +351,40 @@ class VideoSettingsDialog extends Container {
         showDebugRow.append(showDebugLabel);
         showDebugRow.append(showDebugBoolean);
 
+        // compression (server-side, only when the export server reports ffmpeg)
+
+        const compressLabel = new Label({ class: 'label' });
+        i18n.bindText(compressLabel, 'popup.render-video.compress');
+        const compressBoolean = new BooleanInput({ class: 'boolean', value: false });
+        const compressRow = new Container({ class: 'row', hidden: true });
+        compressRow.append(compressLabel);
+        compressRow.append(compressBoolean);
+
+        const targetSizeLabel = new Label({ class: 'label' });
+        i18n.bindText(targetSizeLabel, 'popup.render-video.target-size');
+        const targetSizeInput = new NumericInput({
+            class: 'select',
+            value: 6,
+            min: 0.1,
+            precision: 1
+        });
+        const targetSizeRow = new Container({ class: 'row', hidden: true });
+        targetSizeRow.append(targetSizeLabel);
+        targetSizeRow.append(targetSizeInput);
+
+        // Reuses the compatibility message's styling, which already carries the
+        // `warning` and `error` modifiers this needs (settings-dialog.scss:103).
+        // That rule's `display: block` is id-scoped (`#dialog #content`) and so
+        // out-specifies pcui's `.pcui-element.pcui-hidden`, which means `hidden`
+        // cannot hide this label — drive `display` directly instead.
+        const compressHint = new Label({
+            class: 'video-compatibility-message'
+        });
+        const setCompressHintVisible = (visible: boolean) => {
+            compressHint.dom.style.display = visible ? '' : 'none';
+        };
+        setCompressHintVisible(false);
+
         // sync the ui to the selected projection: 360 renders are 2:1
         // equirectangular without portrait mode or debug overlays
         const syncProjection = () => {
@@ -375,6 +410,9 @@ class VideoSettingsDialog extends Container {
         content.append(levelHorizonRow);
         content.append(transparentBgRow);
         content.append(showDebugRow);
+        content.append(compressRow);
+        content.append(targetSizeRow);
+        content.append(compressHint);
 
         const compatibilityMessage = new Label({
             class: 'video-compatibility-message',
@@ -443,6 +481,81 @@ class VideoSettingsDialog extends Container {
             };
         };
 
+        // Server-reported ffmpeg support and upload ceiling; defaults until probed.
+        let compressAvailable = false;
+        let maxUpload = Infinity;
+        // Set by updateCompressUI, read by updateCompatibilityUI. Kept as a
+        // variable rather than read back from the hint's CSS classes so the
+        // button state never depends on styling.
+        let compressBlocked = false;
+
+        // Exact output frame count. Same formula as render.ts:734 so the two can
+        // never disagree — note `duration` uses the TIMELINE rate while the
+        // clip's real length uses the EXPORT rate, and only the latter is what
+        // ffmpeg sees.
+        const outputFrames = () => {
+            const range = frameRangeInput.value as number[];
+            const animFrameRate = events.invoke('timeline.frameRate');
+            const frameRate = frameRates[frameRateSelect.value];
+            const duration = (range[1] - range[0]) / animFrameRate;
+            return Math.floor(duration * frameRate) + 1;
+        };
+
+        const updateCompressUI = () => {
+            // 360 masters carry spherical metadata (render.ts) that a server
+            // re-encode to WebM/VP9 would silently drop, and their taggable
+            // mp4/mov masters materialize as a single in-memory ArrayBuffer
+            // rather than streaming from OPFS — never offer compression for
+            // them. This has to live here, not only in syncProjection, since
+            // updateCompressUI also runs on its own (e.g. after the async
+            // capability probe resolves) and would otherwise re-show the rows.
+            const is360 = projectionSelect.value === 'equirect';
+            compressRow.hidden = !compressAvailable || is360;
+            const on = !is360 && compressAvailable && compressBoolean.value;
+            targetSizeRow.hidden = !on;
+            setCompressHintVisible(on);
+            compressBlocked = false;
+            if (!on) {
+                compressHint.class.remove('warning', 'error');
+                return;
+            }
+
+            if (targetSizeInput.value <= 0) {
+                compressBlocked = true;
+            }
+
+            const frames = outputFrames();
+            const frameRate = frameRates[frameRateSelect.value];
+            const seconds = frames / frameRate;
+            const targetMB = targetSizeInput.value;
+            const kbps = Math.floor(targetMB * 8000 / seconds * 0.97);
+
+            const { bitrate } = encodingSettingsFor(resolutionSelect.value);
+            const uploadMB = bitrate / 8e6 * seconds;
+
+            compressHint.text = i18n.t('popup.render-video.compress-hint', {
+                codec: codecNames[codecSelect.value as VideoCodecChoice],
+                bitrate: i18n.t(`popup.render-video.bitrate-value.${bitrateSelect.value}`),
+                upload: Math.round(uploadMB),
+                kbps
+            });
+            compressHint.class.remove('warning', 'error');
+
+            if (uploadMB * 1e6 > maxUpload) {
+                // Catch this now: discovering it after a multi-minute render
+                // wastes the whole render.
+                compressHint.text = i18n.t('popup.render-video.compress-too-large', {
+                    upload: Math.round(uploadMB),
+                    limit: Math.round(maxUpload / 1e6)
+                });
+                compressHint.class.add('error');
+                compressBlocked = true;
+            } else if (kbps < 200) {
+                compressHint.text += ` ${i18n.t('popup.render-video.compress-low-bitrate')}`;
+                compressHint.class.add('warning');
+            }
+        };
+
         const formatResolution = (resolution: string) => {
             const { width, height } = dimensionsFor(resolution);
             return `${width}×${height}`;
@@ -478,6 +591,7 @@ class VideoSettingsDialog extends Container {
 
         const updateCompatibilityUI = () => {
             const options = activeResolutionOptions();
+            updateCompressUI();
             const selected = resolutionSelect.value;
             const disabledOptions: Record<string, string> = {};
 
@@ -523,7 +637,7 @@ class VideoSettingsDialog extends Container {
             }
 
             const selectedSupported = supportByResolution.get(selected) === true;
-            okButton.disabled = !selectedSupported;
+            okButton.disabled = !selectedSupported || compressBlocked;
 
             const unsupportedCount = options.filter(option => supportByResolution.get(option.v) === false).length;
             if (selectedSupported && unsupportedCount === 0) {
@@ -646,6 +760,10 @@ class VideoSettingsDialog extends Container {
         resolutionSelect.on('change', updateCompatibilityUI);
         i18n.onChange(updateCompatibilityUI, compatibilityMessage);
 
+        compressBoolean.on('change', updateCompatibilityUI);
+        targetSizeInput.on('change', updateCompatibilityUI);
+        frameRangeInput.on('change', updateCompatibilityUI);
+
         syncProjection();
 
         // handle key bindings for enter and escape
@@ -681,6 +799,14 @@ class VideoSettingsDialog extends Container {
             this.dom.focus();
             refreshEncoderSupport();
 
+            // Cached after the first call, so this is cheap on reopen.
+            probeExportCapabilities().then((caps) => {
+                if (this.hidden) return;
+                compressAvailable = !!caps?.video;
+                maxUpload = caps?.maxUpload ?? Infinity;
+                updateCompatibilityUI();
+            });
+
             return new Promise<VideoSettings | null>((resolve) => {
                 onCancel = () => {
                     resolve(null);
@@ -703,7 +829,10 @@ class VideoSettingsDialog extends Container {
                         showDebug: !is360 && showDebugBoolean.value,
                         format: formatSelect.value as 'mp4' | 'webm' | 'mov' | 'mkv',
                         projection: (is360 ? 'equirect' : 'standard') as 'standard' | 'equirect',
-                        levelHorizon: is360 && levelHorizonBoolean.value
+                        levelHorizon: is360 && levelHorizonBoolean.value,
+                        ...(!is360 && compressAvailable && compressBoolean.value ? {
+                            compress: { targetMB: targetSizeInput.value, frames: outputFrames() }
+                        } : {})
                     };
 
                     resolve(videoSettings);
@@ -722,6 +851,7 @@ class VideoSettingsDialog extends Container {
             supportByResolution = new Map();
             resolutionSelect.disabledOptions = {};
             setCompatibilityMessage('');
+            compressHint.class.remove('warning', 'error');
             this.hidden = true;
         };
 

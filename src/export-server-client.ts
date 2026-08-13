@@ -1,4 +1,4 @@
-type Capabilities = { enabled: boolean; gpu: boolean; formats: string[]; publish?: boolean };
+type Capabilities = { enabled: boolean; gpu: boolean; formats: string[]; publish?: boolean; video?: boolean; maxUpload?: number };
 
 let cached: Capabilities | null | undefined;
 
@@ -151,4 +151,73 @@ export const runServerPublish = async (
             reject(new Error('progress stream error'));
         };
     });
+};
+
+export type VideoCompressOptions = {
+    targetMB: number;
+    frameRate: number;
+    frames: number;
+};
+
+// POST the rendered master, follow SSE, then fetch the compressed result.
+// Reuses the export job's event and result routes verbatim — only the start
+// endpoint differs.
+export const runVideoCompress = async (
+    master: Blob,
+    options: VideoCompressOptions,
+    onProgress: (p: ServerProgress) => void,
+    signal?: AbortSignal
+): Promise<Blob> => {
+    const form = new FormData();
+    // options first so the server has them before the (large) file streams in
+    form.append('options', JSON.stringify(options));
+    form.append('master', master, 'master.bin');
+
+    const startRes = await fetch(`${location.origin}/api/video/compress`, { method: 'POST', body: form, signal });
+    if (!startRes.ok) throw new Error(`video compression failed to start (${startRes.status})`);
+    const { jobId } = await startRes.json();
+    if (!jobId) throw new Error('server did not return a job id');
+
+    await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new Error('cancelled'));
+            return;
+        }
+        const es = new EventSource(`${location.origin}/api/export/${jobId}/events`);
+        // Closing the stream is the cancel mechanism: the server's abandon
+        // timer kills the job when its last subscriber disappears.
+        const abort = () => {
+            es.close();
+            reject(new Error('cancelled'));
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+
+        es.onmessage = (ev) => {
+            let e;
+            try {
+                e = JSON.parse(ev.data);
+            } catch (err) {
+                es.close();
+                reject(new Error(`unexpected SSE data: ${ev.data}`));
+                return;
+            }
+            if (e.kind === 'progress') {
+                onProgress({ message: e.message, value: e.value, loc: e.loc });
+            } else if (e.kind === 'done') {
+                es.close();
+                resolve();
+            } else if (e.kind === 'error') {
+                es.close();
+                reject(new Error(e.message));
+            }
+        };
+        es.onerror = () => {
+            es.close();
+            reject(new Error('progress stream error'));
+        };
+    });
+
+    const resultRes = await fetch(`${location.origin}/api/export/${jobId}/result`);
+    if (!resultRes.ok) throw new Error(`compressed video unavailable (${resultRes.status})`);
+    return resultRes.blob();
 };

@@ -1,4 +1,8 @@
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
@@ -7,8 +11,9 @@ import { config as loadEnv } from 'dotenv';
 import Fastify from 'fastify';
 import type { RouteHandlerMethod } from 'fastify';
 import { safeAnnotationImageName } from './annotation-images.js';
+import { probeFfmpeg } from './ffmpeg.js';
 import { probeGpu } from './gpu.js';
-import { createJob, getJob, subscribe } from './jobs.js';
+import { createJob, createVideoJob, getJob, subscribe } from './jobs.js';
 import { isConfigured as s3IsConfigured, listPrefix } from './s3.js';
 
 loadEnv({ path: '.env.local' });
@@ -18,11 +23,11 @@ const ALL_FORMATS = ['ply', 'compressedPly', 'splat', 'sog', 'htmlViewer', 'pack
 const GPU_FORMATS = new Set(['sog', 'htmlViewer', 'packageViewer']);
 
 export const buildApp = async () => {
+    const maxUpload = Number(process.env.MAX_UPLOAD ?? 1024 * 1024 * 1024);
+
     const app = Fastify({ logger: true });
     await app.register(cors, { origin: true });
-    await app.register(multipart, {
-        limits: { fileSize: Number(process.env.MAX_UPLOAD ?? 1024 * 1024 * 1024) }
-    });
+    await app.register(multipart, { limits: { fileSize: maxUpload } });
 
     // Serve the built web app (repo-root `dist/`) so the API and the static site
     // share one origin — the client probes `${location.origin}/api/export/*`, so
@@ -37,10 +42,11 @@ export const buildApp = async () => {
     }
 
     const { gpu } = await probeGpu();
+    const video = await probeFfmpeg();
 
     app.get('/api/export/capabilities', async () => {
         const formats = ALL_FORMATS.filter(f => gpu || !GPU_FORMATS.has(f));
-        return { enabled: true, gpu, formats, publish: s3IsConfigured() };
+        return { enabled: true, gpu, formats, publish: s3IsConfigured(), video, maxUpload };
     });
 
     app.post('/api/export', async (req, reply) => {
@@ -89,6 +95,52 @@ export const buildApp = async () => {
             return reply.code(400).send({ error: 'invalid filename: use only letters, digits, dot, underscore, hyphen' });
         }
         const id = createJob(plyGz, options, undefined, extraPlyGz.length ? extraPlyGz : undefined);
+        return reply.code(202).send({ jobId: id });
+    });
+
+    app.post('/api/video/compress', async (req, reply) => {
+        // The master is 150 MB+, so it streams to disk. The splat routes use
+        // part.toBuffer() because their gzipped PLYs are far smaller; doing
+        // that here would hold the whole video in memory.
+        const dir = await mkdtemp(join(tmpdir(), 'ssvc-up-'));
+        let masterPath: string | null = null;
+        let options: any = null;
+
+        const fail = async (code: number, error: string) => {
+            await rm(dir, { recursive: true, force: true });
+            return reply.code(code).send({ error });
+        };
+
+        try {
+            for await (const part of req.parts()) {
+                if (part.type === 'file' && part.fieldname === 'master') {
+                    masterPath = join(dir, 'master');
+                    await pipeline(part.file, createWriteStream(masterPath));
+                } else if (part.type === 'field' && part.fieldname === 'options') {
+                    try {
+                        options = JSON.parse(part.value as string);
+                    } catch {
+                        return fail(400, 'options is not valid JSON');
+                    }
+                }
+            }
+        } catch (err: any) {
+            return fail(400, `upload failed: ${err?.message ?? err}`);
+        }
+
+        if (!masterPath) return fail(400, 'missing master file');
+        if (!options) return fail(400, 'missing options');
+
+        const { targetMB, frameRate, frames } = options;
+        const finite = (v: unknown, lo: number, hi: number) =>
+            typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+
+        if (!finite(targetMB, 0.05, 2000)) return fail(400, 'targetMB must be a number between 0.05 and 2000');
+        if (!finite(frameRate, 1, 240)) return fail(400, 'frameRate must be a number between 1 and 240');
+        if (!finite(frames, 1, 200000) || !Number.isInteger(frames)) return fail(400, 'frames must be an integer between 1 and 200000');
+
+        // The job owns the temp directory from here and removes it when done.
+        const id = createVideoJob(masterPath, { targetMB, frameRate, frames });
         return reply.code(202).send({ jobId: id });
     });
 

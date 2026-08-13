@@ -13,6 +13,10 @@ type VideoSettings = {
     codec: VideoCodecChoice;
     projection?: 'standard' | 'equirect';
     levelHorizon?: boolean;
+    // Present only when the user ticked Compress. `frames` is the exact output
+    // frame count, computed here so editor.ts and the server never re-derive
+    // (and never disagree with) render.ts:734.
+    compress?: { targetMB: number; frames: number };
 };
 
 type MuxerVideoCodec = 'avc' | 'hevc' | 'vp9' | 'av1';

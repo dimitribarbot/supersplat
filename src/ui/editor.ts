@@ -29,10 +29,21 @@ import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
 import { version } from '../../package.json';
-import { probeExportCapabilities } from '../export-server-client';
+import { probeExportCapabilities, runVideoCompress } from '../export-server-client';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
+
+// render.ts has an identical private helper; it is not exported, and that file
+// is upstream-owned so it must not be modified to export one.
+const downloadBlob = (blob: Blob, filename: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const el = document.createElement('a');
+    el.download = filename;
+    el.href = url;
+    el.click();
+    window.URL.revokeObjectURL(url);
+};
 
 class EditorUI {
     appContainer: Container;
@@ -319,8 +330,17 @@ class EditorUI {
                         'av1': 'AV1'
                     };
                     const codecName = codecNames[videoSettings.codec] || videoSettings.codec.toUpperCase();
+                    const compress = videoSettings.compress;
 
-                    if (videoSettings.format === 'webm') {
+                    if (compress) {
+                        // The saved file is always the compressed WebM; the
+                        // format/codec selects describe the master instead.
+                        fileExtension = '.webm';
+                        filePickerTypes = [{
+                            description: 'WebM Video (VP9)',
+                            accept: { 'video/webm': ['.webm'] }
+                        }];
+                    } else if (videoSettings.format === 'webm') {
                         fileExtension = '.webm';
                         filePickerTypes = [{
                             description: `WebM Video (${codecName})`,
@@ -358,14 +378,89 @@ class EditorUI {
                             suggestedName: suggested
                         });
 
-                        writable = await fileHandle.createWritable();
+                        // When compressing, the writable is created only once
+                        // the compressed bytes exist, so no write lock is held
+                        // across a multi-minute job. showSaveFilePicker itself
+                        // must still run here: it needs transient user
+                        // activation, which has long expired by the time the
+                        // job finishes.
+                        if (!compress) {
+                            writable = await fileHandle.createWritable();
+                        }
                     }
 
-                    const result = await events.invoke('render.video', videoSettings, writable);
+                    if (!compress) {
+                        const result = await events.invoke('render.video', videoSettings, writable);
 
-                    // if the render was cancelled, remove the empty file left on disk
-                    if (result === false && fileHandle?.remove) {
-                        await fileHandle.remove();
+                        // if the render was cancelled, remove the empty file left on disk
+                        if (result === false && fileHandle?.remove) {
+                            await fileHandle.remove();
+                        }
+                        return;
+                    }
+
+                    // Compression path: render the master into an OPFS temp
+                    // file rather than the user's file. render.video accepts
+                    // any FileSystemWritableFileStream, so the master streams
+                    // to disk through the existing code path and src/render.ts
+                    // stays untouched.
+                    const opfs = await navigator.storage.getDirectory();
+                    const tempName = `video-master-${Date.now()}`;
+                    const tempHandle = await opfs.getFileHandle(tempName, { create: true });
+
+                    try {
+                        const tempWritable = await tempHandle.createWritable();
+                        const rendered = await events.invoke('render.video', videoSettings, tempWritable);
+                        if (rendered === false) {
+                            if (fileHandle?.remove) {
+                                await fileHandle.remove();
+                            }
+                            return;
+                        }
+
+                        const master = await tempHandle.getFile();
+
+                        const controller = new AbortController();
+                        events.fire('progressStart', i18n.t('panel.render.compressing'), true);
+                        const cancelHandler = events.on('progressCancel', () => controller.abort());
+
+                        let output: Blob;
+                        try {
+                            output = await runVideoCompress(master, {
+                                targetMB: compress.targetMB,
+                                frameRate: videoSettings.frameRate,
+                                frames: compress.frames
+                            }, (p) => {
+                                events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
+                            }, controller.signal);
+                        } catch (error) {
+                            if (controller.signal.aborted) {
+                                if (fileHandle?.remove) {
+                                    await fileHandle.remove();
+                                }
+                                return;
+                            }
+                            if (fileHandle?.remove) {
+                                await fileHandle.remove();
+                            }
+                            throw error;
+                        } finally {
+                            cancelHandler.off();
+                            events.fire('progressEnd');
+                        }
+
+                        if (fileHandle) {
+                            const out = await fileHandle.createWritable();
+                            await out.write(await output.arrayBuffer());
+                            await out.close();
+                        } else {
+                            // No file picker (Brave disables the File System
+                            // Access API by default; Firefox has none), so the
+                            // browser's own download dialog handles it.
+                            downloadBlob(output, suggested);
+                        }
+                    } finally {
+                        await opfs.removeEntry(tempName).catch(() => {});
                     }
                 } catch (error) {
                     if (error instanceof DOMException && error.name === 'AbortError') {

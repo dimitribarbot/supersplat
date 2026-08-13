@@ -1,8 +1,11 @@
 import { randomBytes } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { runExportViaWorker } from './run-export-worker-host.js';
 import type { ExportOptions } from './run-export.js';
 import type { ProgressEvent } from './progress.js';
 import { publishZip, type PublishDest } from './s3.js';
+import { runVideoCompress, type VideoCompressOptions } from './video-compress.js';
 
 type Job = {
     id: string;
@@ -54,26 +57,33 @@ const push = (job: Job, e: ProgressEvent) => {
     for (const l of job.listeners) l(e);
 };
 
-export const createJob = (plyGz: Buffer, options: ExportOptions, publish?: PublishDest, extraPlyGz?: Buffer[]): string => {
+// What a job actually does. Returning `cancel` alongside the promise lets the
+// abandon timer terminate the underlying worker or child process.
+type JobRunner = (onProgress: (e: ProgressEvent) => void) => {
+    promise: Promise<{ files: { name: string; data: Uint8Array }[] }>;
+    cancel: () => void;
+};
+
+const enqueue = (run: JobRunner, publish?: PublishDest, discard?: () => Promise<void> | void): string => {
     const id = `job_${randomBytes(16).toString('hex')}`;
     const job: Job = { id, state: 'queued', listeners: [], buffered: [], createdAt: Date.now(), cancelled: false };
     jobs.set(id, job);
     chain = chain.then(async () => {
         if (job.cancelled) {   // abandoned while still queued -> never start
+            // The job never ran, so `run`'s own cleanup (e.g. runVideoCompress's
+            // `finally`) never exists to reclaim whatever it was handed. Guarded
+            // so a failing cleanup can't reject the shared chain and take down
+            // every job queued behind this one.
+            try {
+                await discard?.();
+            } catch (err) {
+                console.warn('jobs: discard cleanup failed for abandoned queued job:', err);
+            }
             jobs.delete(id);
             return;
         }
         job.state = 'running';
-        // The export runs in a worker thread so its heavy synchronous GPU/CPU work
-        // (and Dawn's busy-poll) never blocks this event loop — keeping SSE
-        // progress frames flushing in real time. The worker's device lives and
-        // dies with the worker, reinforcing the "no idle device" invariant.
-        const running = runExportViaWorker({
-            plyGz,
-            options,
-            onProgress: (e: ProgressEvent) => push(job, e),
-            extraPlyGz
-        });
+        const running = run((e: ProgressEvent) => push(job, e));
         job.cancel = running.cancel;
         try {
             const res = await running.promise;
@@ -100,6 +110,24 @@ export const createJob = (plyGz: Buffer, options: ExportOptions, publish?: Publi
         }
     });
     return id;
+};
+
+export const createJob = (plyGz: Buffer, options: ExportOptions, publish?: PublishDest, extraPlyGz?: Buffer[]): string => {
+    // The export runs in a worker thread so its heavy synchronous GPU/CPU work
+    // (and Dawn's busy-poll) never blocks this event loop — keeping SSE
+    // progress frames flushing in real time. The worker's device lives and
+    // dies with the worker, reinforcing the "no idle device" invariant.
+    return enqueue(onProgress => runExportViaWorker({ plyGz, options, onProgress, extraPlyGz }), publish);
+};
+
+// Video compression shares the one serial chain with splat exports on purpose:
+// ffmpeg saturating every core while Dawn busy-polls a GPU worker is a worse
+// failure than waiting for the queue.
+export const createVideoJob = (masterPath: string, opts: VideoCompressOptions): string => {
+    return enqueue((onProgress) => {
+        const { promise, cancel } = runVideoCompress(masterPath, opts, onProgress);
+        return { promise: promise.then(files => ({ files })), cancel };
+    }, undefined, () => rm(dirname(masterPath), { recursive: true, force: true }));
 };
 
 export const getJob = (id: string): Job | undefined => jobs.get(id);

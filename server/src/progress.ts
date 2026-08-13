@@ -10,6 +10,8 @@ export type ProgressLoc = {
 };
 
 export type ProgressEvent =
+    // `value` is a percentage, 0..100 (not a 0..1 fraction) — the editor
+    // (src/ui/progress.ts) interpolates it directly into a CSS gradient stop.
     | { kind: 'progress'; message?: string; value?: number; loc?: ProgressLoc }
     | { kind: 'done'; url?: string; prefix?: string }
     | { kind: 'error'; message: string };
