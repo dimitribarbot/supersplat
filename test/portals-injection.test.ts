@@ -630,6 +630,31 @@ describe('buildPortalsInjection smoke', () => {
     });
 });
 
+describe('portal resident ceiling is decoupled from the live splat budget', () => {
+    // Minimal two-scene streaming payload: buildPortalsInjection returns '' for
+    // fewer than two scenes, so the injection must be non-empty to assert on.
+    const payload = {
+        portals: [
+            { position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }
+        ],
+        portalScenes: ['', 'scenes/1/lod-meta.json'],
+        portalStart: 0,
+        portalSceneLodCounts: [[1000000, 250000], [800000, 200000]]
+    };
+
+    it('passes a constant reference budget, not getSplatBudget()', () => {
+        // HD (14M) must not inflate cross-scene residency: 3 x 14M = 42M on
+        // mobile (~0.9-1GB, near-certain OOM) and 12 x 14M = 168M on desktop,
+        // which would override the RAM-derived 128M cap. The reference is
+        // pinned to the Normal-mode budgets so today's ceilings are unchanged.
+        const out = buildPortalsInjection(payload);
+        expect(out).toContain('CEILING_REFERENCE_BUDGET');
+        expect(out).toContain('2000000');
+        expect(out).toContain('4000000');
+        expect(out).not.toContain('computeResidentCeiling(residentBudgetOverride, getSplatBudget()');
+    });
+});
+
 describe('portal marker icons', () => {
     const payload = {
         portals: [{ position: [1, 2, 3], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],

@@ -171,7 +171,10 @@ const companionRuntime = `
       return ((navigator.maxTouchPoints || 0) > 1 && /mac/i.test(navigator.platform || ''));
     } catch (e) { return false; }
   })();
-  // Render-budget multiple used by computeResidentCeiling: the whole ceiling
+  // Multiple used by computeResidentCeiling. It multiplies the FIXED
+  // CEILING_REFERENCE_BUDGET below, not the live engine render budget: the
+  // ceiling is deliberately decoupled from the active quality mode, so raising
+  // the render budget (HD) never raises residency. It is the whole ceiling
   // on mobile (conservative -- never-OOM outranks instant crossings there),
   // only a lower FLOOR on desktop, where the ceiling is project-aware (the
   // summed pyramid cost of ALL scenes, capped by a RAM-derived limit) so any
@@ -179,6 +182,17 @@ const companionRuntime = `
   // live via ?residentBudget=<n> (counts resident splats across ALL pinned
   // LOD levels, ~1.9x the finest-level splat total).
   var RESIDENT_BUDGET_MULT = IS_MOBILE ? 3 : 12;
+  // Reference render budget the resident ceiling is derived from -- a CONSTANT,
+  // deliberately not the live engine budget. The viewer now has three quality
+  // modes (see quality-tier.ts) and HD is 14M; deriving the ceiling from the
+  // live budget would put it at 3 x 14M = 42M on mobile (~0.9-1GB of GPU
+  // textures at ~20-25 bytes/splat -- near-certain OOM on a phone) and
+  // 12 x 14M = 168M on desktop, which overrides the RAM-derived cap entirely.
+  // Pinning it to the Normal-mode budgets keeps the ceiling bit-for-bit what it
+  // is today (6M mobile, 48M desktop floor), so HD raises only what the engine
+  // RENDERS per frame, never what stays resident across scenes. Device class is
+  // deliberately not consulted here either, for the same reason.
+  var CEILING_REFERENCE_BUDGET = IS_MOBILE ? 2000000 : 4000000;
   var residentBudgetOverride = (function () {
     // ?residentBudget=<n> overrides the ceiling for on-device tuning.
     // String ops only: this runtime is authored inside a template literal,
@@ -1295,10 +1309,12 @@ const companionRuntime = `
         // viewer never applied a splat budget and the engine streams
         // UNBOUNDED. Apply the user's ?budget= override if present (the viewer
         // only applies it via the ready-gated applyPerfSettings, so a stuck gate
-        // would otherwise silently drop it), else the viewer's own high-quality
-        // default so a phone can never OOM from an un-ready start
-        // (applyPerfSettings overwrites this with the same value once ready
-        // fires), and reconcile so pins pick up the now-real ceiling.
+        // would otherwise silently drop it), else the platform-split NORMAL-mode
+        // budget (2M mobile / 4M desktop) -- the MIDDLE of the three quality
+        // modes, not the top one -- so a phone can never OOM from an un-ready
+        // start (applyPerfSettings overwrites this with the active mode's real
+        // budget once ready fires), and reconcile so pins pick up the now-real
+        // ceiling.
         var bApp = getApp(window.__supersplatViewer);
         var gs = bApp && bApp.scene && bApp.scene.gsplat;
         if (gs && !gs.splatBudget) {
@@ -1527,16 +1543,16 @@ const companionRuntime = `
     return (typeof b === 'number' && b > 0) ? b : 0;
   }
   // Total resident splats we allow across all kept scenes (see
-  // computeResidentCeiling): mobile = MULT x render budget; desktop = the
-  // whole project's pyramid cost when a RAM-derived cap allows it. 0 until
-  // the budget is known.
+  // computeResidentCeiling): mobile = MULT x the CONSTANT reference budget
+  // (see CEILING_REFERENCE_BUDGET); desktop = the whole project's pyramid
+  // cost when a RAM-derived cap allows it.
   function getResidentCeiling() {
     var costs = sceneCosts();
     var total = 0;
     for (var i = 0; i < costs.length; i++) { total += (costs[i] || 0); }
     var mem = 0;
     try { mem = navigator.deviceMemory || 0; } catch (e) { mem = 0; }
-    return computeResidentCeiling(residentBudgetOverride, getSplatBudget(), RESIDENT_BUDGET_MULT, IS_MOBILE, total, mem);
+    return computeResidentCeiling(residentBudgetOverride, CEILING_REFERENCE_BUDGET, RESIDENT_BUDGET_MULT, IS_MOBILE, total, mem);
   }
   // Per-scene resident cost in splats: streaming = whole-scene count at the
   // device-finest level [deviceFinest..coarsest]; SOG = its single baked count.

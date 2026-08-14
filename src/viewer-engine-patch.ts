@@ -10,7 +10,7 @@
 // `hasFailed(url)` (PR #8998) and `inst.octree.destroyed` (PR #9011). The nine
 // engine backport patches are therefore obsolete and have been removed.
 //
-// What remains are seven fork-specific patches (NOT upstream backports) that
+// What remains are eight fork-specific patches (NOT upstream backports) that
 // add viewer-APP behaviour absent from any upstream engine version:
 //
 //   1. A spawn-preserving `reseat()` method on the viewer's CameraManager.
@@ -23,6 +23,9 @@
 //   7. The walk-mode nav hover ring hides while the pointer is over a marker
 //      icon (the viewer's own annotations get this from their DOM hotspot;
 //      the markers have none by design).
+//   8. The perf-settings budget table is chosen by the companion's device
+//      capability class instead of the mobile/desktop user-agent split, plus
+//      an HD tier reading a companion-published gaussian budget.
 //
 // These target the exported viewer app (4-/8-space indented), not the engine,
 // so they are unaffected by the engine bump; each search string was re-verified
@@ -255,6 +258,39 @@ const PATCHES: EnginePatch[] = [
             '    updateCursor(offsetX, offsetY) {\n' +
             '        if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(offsetX, offsetY)) { this.hoverRing.hide(); return; }\n' +
             '        if (!this.hoverActive || this.navigating) {\n'
+    },
+    // --- fork: budget table by device capability class, plus the HD tier ---
+    // applyPerfSettings' budget(). Two changes on two adjacent lines:
+    //
+    //   1. The table is chosen by the companion's device CLASS instead of the
+    //      mobile/desktop user-agent split. The stock objects are reused
+    //      verbatim -- budgets.mobile {low:1,high:2} IS the weak table and
+    //      budgets.desktop {low:2,high:4} IS the standard table -- so the table
+    //      literal itself is never patched and a recent phone gets 2M/4M while
+    //      a software-rendering desktop drops to 1M/2M.
+    //   2. An HD tier reading window.__ssHdBudget (6 on mobile and weak
+    //      desktops, 14 on standard desktops -- see src/quality-tier.ts).
+    //
+    // All policy lives in the companion's globals, so this patch carries no
+    // logic of its own and the decision rules stay in unit-tested TypeScript.
+    //
+    // Degrades safely with no companion present: undefined __ssQualityClass
+    // takes budgets.desktop and undefined __ssQualityMode takes the stock
+    // performanceMode branch -- i.e. exactly today's desktop behaviour. (A
+    // phone without the companion would get the desktop table, which cannot
+    // happen in practice: the companion is injected into every export.)
+    //
+    // `?budget=` still wins -- config.budget returns earlier in the same
+    // function and is untouched. Self-destructing (neither line survives the
+    // replacement), so no `applied` marker is needed. Verified to occur
+    // exactly once in the splat-transform 3.1.7 baked viewer.
+    {
+        search:
+            '                    const quality = platform.mobile ? budgets.mobile : budgets.desktop;\n' +
+            '                    return state.performanceMode ? quality.low : quality.high;\n',
+        replace:
+            '                    const quality = (window.__ssQualityClass === \'weak\') ? budgets.mobile : budgets.desktop;\n' +
+            '                    return (window.__ssQualityMode === \'hd\') ? (window.__ssHdBudget || 14) : (state.performanceMode ? quality.low : quality.high);\n'
     }
 ];
 

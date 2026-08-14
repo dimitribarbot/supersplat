@@ -28,6 +28,7 @@ import { buildIframeApiInjection } from './viewer-companion/iframe-api';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
+import { buildQualityModeInjection } from './viewer-companion/quality-mode';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
 
 // Apply the engine patches (#8998 loader stall + #9011 unload race, see
@@ -202,6 +203,17 @@ const injectDeviceFallback = (html: string): string => {
         return withHandle.replace('</body>', `${injection}</body>`);
     }
     return withHandle + injection;
+};
+
+// Inject the quality-mode companion into an HTML string before </body>.
+// ALWAYS injected: every export gets the three modes and the device heuristic,
+// and the engine patch's budget() reads globals this publishes. It needs no
+// viewer handle at parse time (it resolves the mode from localStorage and
+// device signals alone) but its UI and watchdog phase reaches for
+// window.__supersplatViewer, which injectDeviceFallback already publishes
+// unconditionally on every path.
+const injectQualityMode = (html: string): string => {
+    return insertBeforeBodyClose(html, buildQualityModeInjection());
 };
 
 // Inject the off-limits-zones companion into an HTML string before </body>.
@@ -849,7 +861,7 @@ const writeStreamingViewerCore = async (
     const withLinks = injectAnnotationLinks(withPoster, settingsWithLods);
     const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
-    const withApi = injectIframeApi(injectDeviceFallback(withPortals), settingsWithLods);
+    const withApi = injectIframeApi(injectQualityMode(injectDeviceFallback(withPortals)), settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(withApi, favicon, memFs)));
     patchEngineLoaderInMemFs(memFs);
     applyAnnotationImages(annotationImages, memFs);
@@ -953,7 +965,7 @@ const writeViewerCore = async (
             }
             // Single-file output: the poster is inlined as a data URI (no memFs).
             const withPoster = applyPoster(new TextDecoder().decode(raw), viewerSettingsJson, posterBytes, null);
-            const injected = injectIframeApi(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson)), viewerSettingsJson);
+            const injected = injectIframeApi(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), viewerSettingsJson);
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
@@ -999,7 +1011,7 @@ const writeViewerCore = async (
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectIframeApi(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings)), sogSettings);
+            const injected = injectIframeApi(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings))), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injected, favicon, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);

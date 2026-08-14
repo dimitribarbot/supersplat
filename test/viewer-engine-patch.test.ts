@@ -66,13 +66,20 @@ const NAV_CURSOR_SNIPPET =
     '            return;\n' +
     '        }\n';
 
-const BUNDLE = CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET + NAV_CURSOR_SNIPPET + EXPORT_SNIPPET;
+// applyPerfSettings' budget() (fork patch: pick the budget table from the
+// device capability class instead of the mobile/desktop UA split, and add the
+// HD tier). 20-space indented (viewer app code, inside a nested arrow).
+const BUDGET_SNIPPET =
+    '                    const quality = platform.mobile ? budgets.mobile : budgets.desktop;\n' +
+    '                    return state.performanceMode ? quality.low : quality.high;\n';
+
+const BUNDLE = CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET + NAV_CURSOR_SNIPPET + BUDGET_SNIPPET + EXPORT_SNIPPET;
 
 describe('patchViewerEngine', () => {
     it('applies the fork viewer feature patches to the baked bundle', () => {
         const { source, patched } = patchViewerEngine(BUNDLE);
         expect(patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
-        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(7);
+        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(8);
 
         // fork patch: spawn-preserving reseat() inserted next to snap(), using
         // goto() (re-seat only) instead of onEnter() (grounds + stores spawn)
@@ -171,5 +178,24 @@ describe('patchViewerEngine', () => {
         const { source, patched } = patchViewerEngine(CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET);
         expect(patched).toBe(5);
         expect(source).not.toContain('__ssPc');
+    });
+
+    it('routes the budget table through the quality class and adds the HD tier', () => {
+        const { source } = patchViewerEngine(BUNDLE);
+        expect(source).toContain(
+            '                    const quality = (window.__ssQualityClass === \'weak\') ? budgets.mobile : budgets.desktop;\n' +
+            '                    return (window.__ssQualityMode === \'hd\') ? (window.__ssHdBudget || 14) : (state.performanceMode ? quality.low : quality.high);\n'
+        );
+        // the stock table literal is never touched
+        expect(source).not.toContain('budgets.hd');
+    });
+
+    it('leaves budget selection at today behaviour when the globals are absent', () => {
+        // The patch must degrade safely: with no companion, __ssQualityClass is
+        // undefined -> budgets.desktop, and __ssQualityMode is undefined -> the
+        // stock performanceMode branch. Asserted structurally on the emitted text.
+        const { source } = patchViewerEngine(BUDGET_SNIPPET);
+        expect(source).toContain('(window.__ssQualityClass === \'weak\') ? budgets.mobile : budgets.desktop');
+        expect(source).toContain('(state.performanceMode ? quality.low : quality.high)');
     });
 });
