@@ -1,4 +1,4 @@
-import { unzipSync } from 'fflate';
+import { gzip, unzipSync } from 'fflate';
 import { ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { ProgressEvent } from './progress.js';
 
@@ -54,6 +54,28 @@ const contentType = (name: string): string => {
     return hasOwn(CONTENT_TYPES, ext) ? CONTENT_TYPES[ext] : 'application/octet-stream';
 };
 
+// Extensions uploaded gzip-compressed with a matching Content-Encoding.
+//
+// The CDN compresses text types (html/js/css/json) on the fly but serves
+// application/octet-stream as-is, so the collision binary is the one large
+// object that arrives uncompressed -- and the exported viewer cannot show its
+// loading bar until the whole file has landed, because loadVoxelCollision sits
+// inside the Promise.all the viewer gates its progress handler on. Measured on
+// a real published export: 3.68 MB -> 1.38 MB (2.7x). Covers the start scene's
+// index.voxel.bin and each portal scene's scenes/<n>/scene.voxel.bin.
+//
+// Publish-only by construction: a ZIP that is downloaded and served statically
+// has nothing to set the Content-Encoding header, so those bytes must stay raw.
+const GZIP_EXTS = new Set(['bin']);
+
+const shouldGzip = (name: string): boolean => GZIP_EXTS.has(name.slice(name.lastIndexOf('.') + 1).toLowerCase());
+
+// fflate's async gzip runs off the main thread, so a 39 MB collision binary does
+// not stall the job runner's progress stream while it compresses.
+const gzipAsync = (data: Uint8Array): Promise<Uint8Array> => new Promise((resolve, reject) => {
+    gzip(data, { level: 6 }, (err, out) => (err ? reject(err) : resolve(out)));
+});
+
 const publicUrl = (c: ReturnType<typeof cfg>, prefix: string): string => {
     const base = (c.publicBase ?? `${c.endpoint}/${c.bucket}`).replace(/\/+$/, '');
     return `${base}/${prefix}/index.html`;
@@ -88,11 +110,13 @@ export const publishZip = async (
     let done = 0;
     onProgress({ kind: 'progress', message: 'Uploading to Storage', value: 0 });
     for (const [name, data] of entries) {
+        const gzipped = shouldGzip(name);
         await client.send(new PutObjectCommand({
             Bucket: bucket,
             Key: `${dest.prefix}/${name}`,
-            Body: data,
+            Body: gzipped ? await gzipAsync(data) : data,
             ContentType: contentType(name),
+            ...(gzipped ? { ContentEncoding: 'gzip' as const } : {}),
             ...(dest.public ? { ACL: 'public-read' as const } : {})
         }));
         done++;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { zipSync } from 'fflate';
+import { gunzipSync, zipSync } from 'fflate';
 
 // Capture the commands sent to the mocked S3 client.
 const sent: any[] = [];
@@ -85,6 +85,44 @@ describe('publishZip', () => {
         await s3.publishZip(zip, { prefix: 'x', public: false }, () => {});
         const put = sent.find(c => c.__type === 'PutObject');
         expect(put.input.ContentType).toBe('application/octet-stream');
+    });
+
+    // The collision binary is the only large object the CDN will not compress on
+    // the fly (it is served as application/octet-stream), and the exported viewer
+    // cannot show its loading bar until the whole file has arrived -- see
+    // loadVoxelCollision, which the viewer's Promise.all gate waits on.
+    it('uploads .voxel.bin entries gzip-compressed with a gzip content-encoding', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        // Repetitive payload so gzip is meaningfully smaller than the original.
+        const original = new Uint8Array(64 * 1024).fill(7);
+        const zip = zipSync({
+            'index.voxel.bin': original,
+            'scenes/2/scene.voxel.bin': original
+        });
+        await s3.publishZip(zip, { prefix: 'x', public: false }, () => {});
+        const puts = sent.filter(c => c.__type === 'PutObject');
+        const byKey = Object.fromEntries(puts.map(p => [p.input.Key, p.input]));
+        for (const key of ['x/index.voxel.bin', 'x/scenes/2/scene.voxel.bin']) {
+            expect(byKey[key].ContentEncoding).toBe('gzip');
+            expect(byKey[key].Body.length).toBeLessThan(original.length);
+            expect(gunzipSync(byKey[key].Body)).toEqual(original);
+        }
+    });
+
+    it('leaves entries the CDN already compresses untouched and without a content-encoding', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        const json = new TextEncoder().encode('{"a":1}');
+        const webp = new Uint8Array([1, 2, 3]);
+        const zip = zipSync({ 'lod-meta.json': json, '0_0/0.webp': webp });
+        await s3.publishZip(zip, { prefix: 'x', public: false }, () => {});
+        const puts = sent.filter(c => c.__type === 'PutObject');
+        const byKey = Object.fromEntries(puts.map(p => [p.input.Key, p.input]));
+        expect(byKey['x/lod-meta.json'].ContentEncoding).toBeUndefined();
+        expect(byKey['x/lod-meta.json'].Body).toEqual(json);
+        expect(byKey['x/0_0/0.webp'].ContentEncoding).toBeUndefined();
+        expect(byKey['x/0_0/0.webp'].Body).toEqual(webp);
     });
 
     it('omits ACL and url when private; url falls back to endpoint/bucket when no public base', async () => {
