@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { gzipSync } from 'node:zlib';
-import { runExport } from '../src/run-export.js';
+import { runExport, buildExtraSceneDescriptors } from '../src/run-export.js';
 
 // A tiny valid binary PLY with 1 vertex (x,y,z) — enough for readFile to parse.
 const tinyPly = (): Buffer => {
@@ -36,5 +36,17 @@ describe('runExport portal extras (CPU plumbing)', () => {
             getDeviceCreator: noGpu,
             extraPlyGz: [gzipSync(tinyPly())]
         })).rejects.toBeTruthy();
+    });
+
+    it('carries per-scene radius and voxelSize into the extra scene descriptors', () => {
+        const scenes = buildExtraSceneDescriptors(
+            [
+                { seed: [0, 0, 0], environment: 'indoor', collisionUrl: 'scenes/1/scene.voxel.json', streaming: true, radius: 200, voxelSize: 0.2 },
+                { seed: [1, 0, 0], environment: 'outdoor', collisionUrl: 'scenes/2/scene.voxel.json', streaming: true, radius: 75, voxelSize: 0.1 }
+            ],
+            () => async () => ({}) as any
+        );
+        expect(scenes.map(s => s.radius)).toEqual([200, 75]);
+        expect(scenes.map(s => s.voxelSize)).toEqual([0.2, 0.1]);
     });
 });

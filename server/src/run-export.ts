@@ -20,7 +20,7 @@ export type ExportOptions = {
     sogIterations?: number;
     viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number }; poster?: Uint8Array; annotationImages?: { path: string; data: Uint8Array }[] };
     // per-extra-scene metadata for a portal walkthrough (index-aligned to extraPlyGz)
-    portalExtras?: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; collisionUrl: string | null; streaming: boolean }[];
+    portalExtras?: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number; collisionUrl: string | null; streaming: boolean }[];
 };
 
 export type RunResult = {
@@ -55,6 +55,70 @@ const READ_OPTS = {
     unbundled: false,
     lodChunkCount: 512,
     lodChunkExtent: 16
+};
+
+// Per-extra-scene metadata as it arrives in RunExportArgs.options.portalExtras.
+export type ExtraSceneMeta = {
+    seed: [number, number, number];
+    environment: 'indoor' | 'outdoor';
+    radius: number;
+    voxelSize: number;
+    collisionUrl: string | null;
+    streaming: boolean;
+};
+
+// Builds the ExtraPortalScene descriptors the shared export core expects, one
+// per uploaded extra scene, in upload order. loadTableFor(i) supplies the
+// (lazy) table loader for scene i, keeping this function free of the
+// gunzip/readFile/materialize plumbing so it can be unit-tested on its own.
+export const buildExtraSceneDescriptors = (metas: ExtraSceneMeta[], loadTableFor: (index: number) => () => Promise<any>) => metas.map((meta, i) => ({
+    loadDataTable: loadTableFor(i),
+    streaming: meta.streaming,
+    collisionUrl: meta.collisionUrl,
+    environment: meta.environment,
+    radius: meta.radius,
+    voxelSize: meta.voxelSize,
+    seed: meta.seed
+}));
+
+// Friendly per-file logging + collision-size reporting for the shared core's
+// exportFile events. Extracted to a factory (rather than a listener defined
+// inline in runExport) so it can be unit-tested without spinning up a GPU
+// export: sceneIndexOf is injected because collisionSceneIndex is loaded via a
+// runtime dynamic import (see collisionUrl below), not a static import.
+export const makeExportFileHandler = (sink: Sink, sceneIndexOf: (name: string) => number | null) => {
+    // Collapse the many files inside each streaming chunk folder (e.g.
+    // 0_0/meta.json + textures) into one summary line, and log top-level files
+    // individually. Chunk files arrive contiguously, so a change of chunk id / a
+    // non-chunk file / the final flush closes the current chunk.
+    let chunk: { id: string; count: number; bytes: number } | null = null;
+    const flushChunk = () => {
+        if (chunk) {
+            console.log(`Created streaming chunk ${chunk.id} (${chunk.count} file${chunk.count === 1 ? '' : 's'}, ${fmtSize(chunk.bytes)})`);
+            chunk = null;
+        }
+    };
+    const handler = ({ name, bytes }: { name: string; bytes: number }) => {
+        // Report collision binary sizes to the client so the export summary can
+        // show them. Only the ZIP loops fire exportFile, and collision is
+        // ZIP-only, so this covers every case that writes a voxel.
+        const sceneIndex = sceneIndexOf(name);
+        if (sceneIndex !== null) {
+            sink.emit({ kind: 'progress', collision: { index: sceneIndex, bytes } });
+        }
+        const m = /^(\d+_\d+)\//.exec(name);
+        if (m) {
+            if (chunk && chunk.id !== m[1]) flushChunk();
+            if (!chunk) chunk = { id: m[1], count: 0, bytes: 0 };
+            chunk.count++;
+            chunk.bytes += bytes;
+        } else {
+            flushChunk();
+            const label = /^(index\.(html|css|js)|settings\.json)$/.test(name) ? `viewer ${name}` : name;
+            console.log(`Created ${label} (${fmtSize(bytes)})`);
+        }
+    };
+    return { handler, flushChunk };
 };
 
 export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCancelled, extraPlyGz }: RunExportArgs): Promise<RunResult> => {
@@ -121,8 +185,12 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     const eventsUrl = pathToFileURL(
         resolve(dirname(fileURLToPath(import.meta.url)), '../../dist-shared/events.js')
     ).href;
+    const collisionUrl = pathToFileURL(
+        resolve(dirname(fileURLToPath(import.meta.url)), '../../dist-shared/collision-size-report.js')
+    ).href;
     const { writeSogCore, writeViewerCore } = await import(coreUrl);
     const { Events } = await import(eventsUrl);
+    const { collisionSceneIndex } = await import(collisionUrl);
     const createDevice = getDeviceCreator();
 
     // The shared core fires progress + per-file events on an Events instance (the
@@ -140,26 +208,8 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // chunk folder (e.g. 0_0/meta.json + textures) into one summary line, and log
     // top-level files individually. Chunk files arrive contiguously, so a change
     // of chunk id / a non-chunk file / the final flush closes the current chunk.
-    let chunk: { id: string; count: number; bytes: number } | null = null;
-    const flushChunk = () => {
-        if (chunk) {
-            console.log(`Created streaming chunk ${chunk.id} (${chunk.count} file${chunk.count === 1 ? '' : 's'}, ${fmtSize(chunk.bytes)})`);
-            chunk = null;
-        }
-    };
-    events.on('exportFile', ({ name, bytes }: { name: string; bytes: number }) => {
-        const m = /^(\d+_\d+)\//.exec(name);
-        if (m) {
-            if (chunk && chunk.id !== m[1]) flushChunk();
-            if (!chunk) chunk = { id: m[1], count: 0, bytes: 0 };
-            chunk.count++;
-            chunk.bytes += bytes;
-        } else {
-            flushChunk();
-            const label = /^(index\.(html|css|js)|settings\.json)$/.test(name) ? `viewer ${name}` : name;
-            console.log(`Created ${label} (${fmtSize(bytes)})`);
-        }
-    });
+    const { handler: exportFileHandler, flushChunk } = makeExportFileHandler(sink, collisionSceneIndex);
+    events.on('exportFile', exportFileHandler);
 
     // Drop splat-transform's raw "<name> (<size>)" per-file lines (now represented
     // by the summaries above); forward every other log message.
@@ -185,22 +235,16 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
         const metas = options.portalExtras ?? [];
         const plys = extraPlyGz ?? [];
         if (metas.length === 0 || plys.length === 0) return undefined;
-        return metas.map((meta, i) => ({
-            loadDataTable: async () => {
-                const raw = Buffer.from(gunzipSync(plys[i]));
-                const erfs = new MemoryReadFileSystem();
-                erfs.set('extra.ply', new Uint8Array(raw));
-                const esources = await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs });
-                const t = await materializeToDataTable(esources[0], chunkPool);
-                await esources[0].close();
-                (t as any).transform = Transform.PLY;
-                return t;
-            },
-            streaming: meta.streaming,
-            collisionUrl: meta.collisionUrl,
-            environment: meta.environment,
-            seed: meta.seed
-        }));
+        return buildExtraSceneDescriptors(metas, i => async () => {
+            const raw = Buffer.from(gunzipSync(plys[i]));
+            const erfs = new MemoryReadFileSystem();
+            erfs.set('extra.ply', new Uint8Array(raw));
+            const esources = await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs });
+            const t = await materializeToDataTable(esources[0], chunkPool);
+            await esources[0].close();
+            (t as any).transform = Transform.PLY;
+            return t;
+        });
     };
 
     // Poster bytes may arrive as a plain object after JSON/structured-clone

@@ -146,6 +146,8 @@ type ExperienceSettings = {
     portalStart?: number,
     portalCollision?: (string | null)[],
     portalEnvironments?: ('indoor' | 'outdoor')[],
+    portalRadii?: number[],
+    portalVoxelSizes?: number[],
     portalSceneLodCounts?: number[][],   // [sceneIndex][lodLevel] = splat count; index 0 = primary, level 0 = finest
     startMode: 'default' | 'animTrack' | 'annotation'
 };
@@ -157,7 +159,7 @@ type ViewerExportSettings = {
     collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number };   // undefined = disabled
     events?: Events;
     // resolved per-scene export inputs for a portal walkthrough (index 0 = primary, omitted)
-    portalScenes?: { splat: Splat; url: string; collisionUrl: string | null; environment: 'indoor' | 'outdoor'; seed: [number, number, number] }[];
+    portalScenes?: { splat: Splat; url: string; collisionUrl: string | null; environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number; seed: [number, number, number] }[];
     // export-time screenshot from the start camera (JPEG bytes); shown blurred
     // by the viewer's stock poster path until the coarse batch is streamed
     poster?: Uint8Array;
@@ -1494,6 +1496,8 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
         options.portalScenes?.map(entry => ({
             collisionUrl: entry.collisionUrl,
             environment: entry.environment,
+            radius: entry.radius,
+            voxelSize: entry.voxelSize,
             seed: entry.seed,
             streaming: options.streaming ?? false,
             // extractDataTable is synchronous; wrap rather than `async` so the

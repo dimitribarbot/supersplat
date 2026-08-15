@@ -12,5 +12,5 @@
     "resolveJsonModule": true,
     "declaration": false
   },
-  "include": ["src/events.ts", "src/splat-export-core.ts"]
+  "include": ["src/events.ts", "src/splat-export-core.ts", "src/collision-size-report.ts"]
 }

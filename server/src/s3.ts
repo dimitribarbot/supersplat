@@ -108,7 +108,16 @@ export const publishZip = async (
     const files = unzipSync(zipBytes);
     const entries = Object.entries(files).filter(([name]) => !name.endsWith('/'));
     let done = 0;
-    onProgress({ kind: 'progress', message: 'Uploading to Storage', value: 0 });
+    // `loc` is the structured form the editor localizes; `message` stays English
+    // for the server log and as a fallback. Same contract the shared export core
+    // and video-compress already use — without it these two lines were the only
+    // untranslated text in a publish.
+    onProgress({
+        kind: 'progress',
+        message: 'Uploading to Storage',
+        value: 0,
+        loc: { segments: [{ key: 'export.progress.uploading-storage' }] }
+    });
     for (const [name, data] of entries) {
         const gzipped = shouldGzip(name);
         await client.send(new PutObjectCommand({
@@ -120,7 +129,12 @@ export const publishZip = async (
             ...(dest.public ? { ACL: 'public-read' as const } : {})
         }));
         done++;
-        onProgress({ kind: 'progress', message: `Uploaded ${done}/${entries.length}`, value: 100 * done / entries.length });
+        onProgress({
+            kind: 'progress',
+            message: `Uploaded ${done}/${entries.length}`,
+            value: 100 * done / entries.length,
+            loc: { segments: [{ key: 'export.progress.uploaded' }], counter: { index: done, total: entries.length } }
+        });
     }
     return { url: dest.public ? publicUrl(c, dest.prefix) : undefined, prefix: dest.prefix };
 };

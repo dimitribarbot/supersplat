@@ -185,7 +185,8 @@ describe('resolvePortalExtras', () => {
     it('returns null when there is no valid bundle (<2 scenes)', () => {
         const r = resolvePortalExtras({
             portals: [ep(10, null)], startUid: 10, availableUids: [10],
-            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0], environments: []
+            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0], environments: [],
+            radii: [], voxelSizes: []
         });
         expect(r).toBeNull();
     });
@@ -194,7 +195,8 @@ describe('resolvePortalExtras', () => {
         const r = resolvePortalExtras({
             portals: [ep(10, 20)], startUid: 10, availableUids: [10, 20],
             streaming: false, collision: true, authored: { '20': [5, 6, 7] },
-            startSeed: [1, 1, 1], environments: ['indoor', 'outdoor']
+            startSeed: [1, 1, 1], environments: ['indoor', 'outdoor'],
+            radii: [50, 50], voxelSizes: [0.05, 0.05]
         })!;
         expect(r.bundle.sceneUids[0]).toBe(10);
         expect(r.extras).toHaveLength(1);
@@ -210,7 +212,8 @@ describe('resolvePortalExtras', () => {
     it('collisionUrl is null for every extra when collision is off', () => {
         const r = resolvePortalExtras({
             portals: [ep(10, 20)], startUid: 10, availableUids: [10, 20],
-            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0], environments: ['indoor', 'indoor']
+            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0], environments: ['indoor', 'indoor'],
+            radii: [50, 50], voxelSizes: [0.05, 0.05]
         })!;
         expect(r.extras[0].collisionUrl).toBeNull();
     });
@@ -218,7 +221,8 @@ describe('resolvePortalExtras', () => {
     it('streaming bundle yields lod-meta scene URLs (sanity: bundle reflects streaming flag)', () => {
         const r = resolvePortalExtras({
             portals: [ep(10, 20)], startUid: 10, availableUids: [10, 20],
-            streaming: true, collision: false, authored: {}, startSeed: [0, 0, 0], environments: ['indoor', 'indoor']
+            streaming: true, collision: false, authored: {}, startSeed: [0, 0, 0], environments: ['indoor', 'indoor'],
+            radii: [50, 50], voxelSizes: [0.05, 0.05]
         })!;
         expect(r.bundle.portalScenes[1]).toBe('scenes/1/lod-meta.json');
     });
@@ -226,9 +230,37 @@ describe('resolvePortalExtras', () => {
     it('missing environment defaults to indoor', () => {
         const r = resolvePortalExtras({
             portals: [ep(10, 20)], startUid: 10, availableUids: [10, 20],
-            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0], environments: []
+            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0], environments: [],
+            radii: [], voxelSizes: []
         })!;
         expect(r.extras[0].environment).toBe('indoor');
+    });
+});
+
+describe('resolvePortalExtras per-scene collision params', () => {
+    it('carries per-index radius and voxelSize onto each extra', () => {
+        const res = resolvePortalExtras({
+            portals: [ep(10, 20), ep(20, 30)], startUid: 10, availableUids: [10, 20, 30],
+            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0],
+            environments: ['indoor', 'outdoor', 'indoor'],
+            radii: [50, 200, 75],
+            voxelSizes: [0.05, 0.2, 0.1]
+        })!;
+        // extras excludes index 0 (the start scene)
+        expect(res.extras.map(e => e.radius)).toEqual([200, 75]);
+        expect(res.extras.map(e => e.voxelSize)).toEqual([0.2, 0.1]);
+    });
+
+    it('falls back to 50 / 0.05 when the arrays are shorter than the scene list', () => {
+        const res = resolvePortalExtras({
+            portals: [ep(10, 20), ep(20, 30)], startUid: 10, availableUids: [10, 20, 30],
+            streaming: false, collision: false, authored: {}, startSeed: [0, 0, 0],
+            environments: [],
+            radii: [],
+            voxelSizes: []
+        })!;
+        expect(res.extras.every(e => e.radius === 50)).toBe(true);
+        expect(res.extras.every(e => e.voxelSize === 0.05)).toBe(true);
     });
 });
 

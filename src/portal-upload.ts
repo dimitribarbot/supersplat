@@ -13,6 +13,8 @@ import { serializePly, SerializeSettings } from './splat-serialize';
 type PortalUploadMeta = {
     seed: [number, number, number];
     environment: 'indoor' | 'outdoor';
+    radius: number;
+    voxelSize: number;
     collisionUrl: string | null;
     streaming: boolean;
 };
@@ -26,7 +28,7 @@ const buildPortalUpload = async (args: {
     es: any;
     serializeSettings: SerializeSettings;
     streaming: boolean;
-}): Promise<{ startSplat: Splat; extraPlyGz: Blob[]; portalExtras: PortalUploadMeta[] } | null> => {
+}): Promise<{ startSplat: Splat; extraPlyGz: Blob[]; portalExtras: PortalUploadMeta[]; sceneNames: string[] } | null> => {
     const { events, es, serializeSettings, streaming } = args;
 
     if (!es?.portalScenes || es.portalScenes.length <= 1) return null;
@@ -41,7 +43,9 @@ const buildPortalUpload = async (args: {
         collision: !!es.portalCollision && es.portalCollision.length > 0,
         authored: events.invoke('portals.exportEntrypoints') ?? {},
         startSeed: collisionSeedTuple(es),
-        environments: es.portalEnvironments ?? []
+        environments: es.portalEnvironments ?? [],
+        radii: es.portalRadii ?? [],
+        voxelSizes: es.portalVoxelSizes ?? []
     });
     if (!resolved) return null;
 
@@ -60,10 +64,12 @@ const buildPortalUpload = async (args: {
         if (!bytes) throw new Error(`Portal export: scene uid ${ex.uid} produced no PLY.`);
         const gz = await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))).blob();
         extraPlyGz.push(gz);
-        portalExtras.push({ seed: ex.seed, environment: ex.environment, collisionUrl: ex.collisionUrl, streaming });
+        portalExtras.push({ seed: ex.seed, environment: ex.environment, radius: ex.radius, voxelSize: ex.voxelSize, collisionUrl: ex.collisionUrl, streaming });
     }
 
-    return { startSplat, extraPlyGz, portalExtras };
+    const sceneNames = resolved.bundle.sceneUids.map(uid => all.find(s => s.uid === uid)?.name ?? `#${uid}`);
+
+    return { startSplat, extraPlyGz, portalExtras, sceneNames };
 };
 
 export { buildPortalUpload, PortalUploadMeta };

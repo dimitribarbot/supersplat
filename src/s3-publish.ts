@@ -1,5 +1,6 @@
 import { MemoryFileSystem } from '@playcanvas/splat-transform';
 
+import { collisionRows } from './collision-size-report';
 import { Events } from './events';
 import { checkPublishExists, PublishExistsError, runServerPublish } from './export-server-client';
 import { buildPortalUpload } from './portal-upload';
@@ -75,22 +76,44 @@ const registerS3PublishEvents = (events: Events) => {
                 viewerExportSettings: { ...options.viewerExportSettings, annotationImages: undefined as { path: string; data: Uint8Array }[] | undefined },
                 ...(upload ? { portalExtras: upload.portalExtras } : {})
             };
+            const collisionSizes = new Map<number, number>();
             const result = await runServerPublish(
                 plyGz,
                 publishOptions,
-                p => events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc }),
+                (p) => {
+                    if (p.collision) collisionSizes.set(p.collision.index, p.collision.bytes);
+                    events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
+                },
                 upload?.extraPlyGz,
                 posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined,
                 (annotationImages ?? []).map(img => ({ name: img.path.replace(/^annotations\//, ''), data: img.data }))
             );
 
             events.fire('progressEnd');
-            await events.invoke('showPopup', {
-                type: 'info',
-                header: i18n.t('popup.publish.succeeded'),
-                message: result.url ? i18n.t('popup.publish.s3.public-message') : `${i18n.t('popup.publish.s3.private-message')} ${result.prefix}`,
-                link: result.url
-            });
+            const message = result.url ?
+                i18n.t('popup.publish.s3.public-message') :
+                `${i18n.t('popup.publish.s3.private-message')} ${result.prefix}`;
+            if (collisionSizes.size > 0) {
+                // `upload` is the buildPortalUpload result already in scope above;
+                // it returns sceneNames (Task 9 Step 6) so the bundle is resolved once.
+                const sceneNames = upload?.sceneNames ?? [splats[0]?.name ?? options.name];
+                await events.invoke('showExportSummary', {
+                    header: i18n.t('popup.publish.succeeded'),
+                    message,
+                    link: result.url,
+                    sizes: collisionRows(collisionSizes, sceneNames),
+                    // publish gzips .bin on upload (server/src/s3.ts GZIP_EXTS),
+                    // so the raw figures overstate what a visitor downloads
+                    sizeNote: i18n.t('popup.export.summary.uncompressed')
+                });
+            } else {
+                await events.invoke('showPopup', {
+                    type: 'info',
+                    header: i18n.t('popup.publish.succeeded'),
+                    message,
+                    link: result.url
+                });
+            }
         } catch (error) {
             events.fire('progressEnd');
             const message = error instanceof PublishExistsError ? i18n.t('popup.publish.s3.exists-message') : (error.message ?? String(error));

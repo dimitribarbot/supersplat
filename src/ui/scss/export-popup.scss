@@ -1,6 +1,6 @@
 @use 'colors.scss' as *;
 
-#export-popup, #s3-publish-dialog {
+#export-popup, #s3-publish-dialog, #export-summary-dialog {
     width: 100%;
     height: 100%;
 
@@ -46,17 +46,63 @@
 
         #content {
             min-height: 60px;
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
             padding: 12px;
 
-            // per-scene environment list (portals): a vertical stack of full
-            // `.row` children. Must NOT inherit `.row`'s fixed 24px height, or
-            // the stacked scene rows collapse into a single crushed strip.
-            .per-scene-env {
+            // per-scene collision cards (portals): a vertical stack of
+            // collapsible cards. Must NOT inherit `.row`'s fixed 24px height,
+            // or the stacked scene rows collapse into a single crushed strip.
+            .per-scene-collision {
                 padding-bottom: 8px;
 
                 &:not(.pcui-hidden) {
                     display: flex;
                     flex-direction: column;
+                }
+
+                .scene-card {
+                    border-top: 1px solid $bcg-darker;
+                    padding: 4px 0;
+                }
+
+                .scene-head {
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    // mirrors the caret glyph's own left side bearing so the
+                    // summary doesn't run flush to the card's right edge
+                    padding-right: 6px;
+                    height: 24px;
+                    line-height: 24px;
+                    cursor: pointer;
+
+                    .caret {
+                        flex: 0 0 auto;
+                        margin: 0;
+                        color: $text-secondary;
+                    }
+
+                    // the name owns the full dialog width here rather than
+                    // sharing a 180px label column with a control, which is
+                    // what used to ellipsise it after ~16 characters
+                    .scene-name {
+                        flex: 1 1 auto;
+                        margin: 0;
+                        overflow: hidden;
+                        white-space: nowrap;
+                        text-overflow: ellipsis;
+                    }
+
+                    .scene-summary {
+                        flex: 0 0 auto;
+                        margin: 0;
+                        color: $text-secondary;
+                    }
+                }
+
+                .scene-body {
+                    padding: 4px 0 0 12px;
                 }
 
                 .row:last-child {

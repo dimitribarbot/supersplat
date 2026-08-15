@@ -25,6 +25,7 @@ export type ServerProgress = {
     message?: string;
     value?: number;
     loc?: { segments?: { key: string; params?: Record<string, string | number> }[]; counter?: { index: number; total: number }; name?: string; nameKey?: string };
+    collision?: { index: number; bytes: number };
 };
 
 // POST gzipped ply + options, follow SSE, then fetch the result as a Blob.
@@ -59,7 +60,7 @@ export const runServerExport = async (
                 return;
             }
             if (e.kind === 'progress') {
-                onProgress({ message: e.message, value: e.value, loc: e.loc });
+                onProgress({ message: e.message, value: e.value, loc: e.loc, collision: e.collision });
             } else if (e.kind === 'done') {
                 es.close();
                 resolve();
@@ -137,7 +138,7 @@ export const runServerPublish = async (
                 return;
             }
             if (e.kind === 'progress') {
-                onProgress({ message: e.message, value: e.value, loc: e.loc });
+                onProgress({ message: e.message, value: e.value, loc: e.loc, collision: e.collision });
             } else if (e.kind === 'done') {
                 es.close();
                 resolve({ url: e.url, prefix: e.prefix });

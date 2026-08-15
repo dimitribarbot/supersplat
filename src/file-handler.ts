@@ -1,6 +1,7 @@
 import { MemoryFileSystem } from '@playcanvas/splat-transform';
 import { path, Quat, Vec3 } from 'playcanvas';
 
+import { collisionRows, collisionSceneIndex } from './collision-size-report';
 import { CreateDropHandler } from './drop-handler';
 import { ElementType } from './element';
 import { Events } from './events';
@@ -13,6 +14,26 @@ import { Scene } from './scene';
 import { Splat } from './splat';
 import { serializePly, SerializeSettings, serializeSog, serializeSpz, serializeViewer, serializeViewerSettings, SogSettings, SpzSettings, ViewerExportSettings, WebGPUUnavailableError, writeSplatFile } from './splat-serialize';
 import { i18n } from './ui/localization';
+
+// Collect per-scene collision binary sizes for the post-export summary. The
+// export core already broadcasts every written ZIP entry as `exportFile`, so
+// this only has to filter. Returns a detach function; always call it.
+const collectCollisionSizes = (events: Events, out: Map<number, number>) => {
+    const handler = ({ name, bytes }: { name: string; bytes: number }) => {
+        const idx = collisionSceneIndex(name);
+        if (idx !== null) out.set(idx, bytes);
+    };
+    events.on('exportFile', handler);
+    return () => events.off('exportFile', handler);
+};
+
+// Show the collision summary if anything was collected. Scene names come from
+// the bundle order the caller already resolved; index 0 is the start scene.
+const showCollisionSummary = async (events: Events, sizes: Map<number, number>, sceneNames: string[], header: string, message?: string, link?: string) => {
+    if (sizes.size === 0) return;
+    const rows = collisionRows(sizes, sceneNames);
+    await events.invoke('showExportSummary', { header, message, link, sizes: rows });
+};
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -679,9 +700,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             // block runs BEFORE the primary PLY extraction below so it can repoint
             // `splats` at the start scene.
             let extraPlyGz: Blob[] | undefined;
+            let upload: Awaited<ReturnType<typeof buildPortalUpload>>;
             if (fileType === 'htmlViewer' || fileType === 'packageViewer') {
                 const es = options.viewerExportSettings?.experienceSettings as any;
-                const upload = await buildPortalUpload({
+                upload = await buildPortalUpload({
                     events,
                     es,
                     serializeSettings,
@@ -707,7 +729,11 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                 new Blob([plyBytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
             ).blob();
 
+            const collisionSizes = new Map<number, number>();
             const result = await runServerExport(plyGz, wire, (p) => {
+                if (p.collision) {
+                    collisionSizes.set(p.collision.index, p.collision.bytes);
+                }
                 if (!useSpinner) {
                     events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
                 }
@@ -719,6 +745,20 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
             const writer = outFs.createWriter(filename);
             await writer.write(new Uint8Array(await result.arrayBuffer()));
             await writer.close();
+
+            // Fire the progress/spinner teardown before the summary dialog is
+            // shown, not after — otherwise the (pointer-events: all) progress
+            // card stays on screen for as long as the summary waits for OK,
+            // covering it. The `finally` below fires the same event again;
+            // that handler just sets `hidden = true`, so the repeat is a no-op.
+            if (useSpinner) {
+                events.fire('stopSpinner');
+            } else {
+                events.fire('progressEnd');
+            }
+
+            const sceneNames = upload?.sceneNames ?? [splats[0]?.name ?? ''];
+            await showCollisionSummary(events, collisionSizes, sceneNames, i18n.t('popup.export.summary.header'));
 
             return true;
         } catch (error) {
@@ -806,6 +846,7 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     // ALONE. Using all visible splats would merge every loaded scene into
                     // the primary AND re-emit the others as scenes/N/ (duplication + bloat).
                     let primarySplats = splats;
+                    let sceneNames: string[] = [(primarySplats[0]?.name) ?? ''];
                     if (es.portalScenes && es.portalScenes.length > 1) {
                         const all = events.invoke('scene.allSplats') as Splat[];
                         const byUid = (uid: number) => all.find(s => s.uid === uid) ?? null;
@@ -818,13 +859,16 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                             collision: !!es.portalCollision && es.portalCollision.length > 0,
                             authored: events.invoke('portals.exportEntrypoints') ?? {},
                             startSeed: collisionSeedTuple(es),
-                            environments: es.portalEnvironments ?? []
+                            environments: es.portalEnvironments ?? [],
+                            radii: es.portalRadii ?? [],
+                            voxelSizes: es.portalVoxelSizes ?? []
                         });
                         if (resolved) {
                             const startUid = resolved.bundle.sceneUids[0];
                             const startSplat = byUid(startUid);
                             if (!startSplat) throw new Error(`Portal export: start scene uid ${startUid} not found among loaded splats.`);
                             primarySplats = [startSplat];
+                            sceneNames = resolved.bundle.sceneUids.map(uid => byUid(uid)?.name ?? `#${uid}`);
                             portalScenes = resolved.extras.map((ex) => {
                                 if (ex.estimated && ex.environment === 'indoor') {
                                     events.fire('progressUpdate', { text: i18n.t('export.progress.estimated-entrypoint', { scene: ex.index }) });
@@ -837,12 +881,21 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                                     url: es.portalScenes![ex.index] ?? '',
                                     collisionUrl: ex.collisionUrl,
                                     environment: ex.environment,
+                                    radius: ex.radius,
+                                    voxelSize: ex.voxelSize,
                                     seed: ex.seed
                                 };
                             });
                         }
                     }
-                    await serializeViewer(primarySplats, serializeSettings, { ...viewerExportSettings!, events, portalScenes }, fs);
+                    const collisionSizes = new Map<number, number>();
+                    const detach = collectCollisionSizes(events, collisionSizes);
+                    try {
+                        await serializeViewer(primarySplats, serializeSettings, { ...viewerExportSettings!, events, portalScenes }, fs);
+                    } finally {
+                        detach();
+                    }
+                    await showCollisionSummary(events, collisionSizes, sceneNames, i18n.t('popup.export.summary.header'));
                     break;
                 }
                 case 'viewerSettings':

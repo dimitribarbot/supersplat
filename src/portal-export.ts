@@ -182,6 +182,8 @@ type PortalExtra = {
     uid: number,
     collisionUrl: string | null,
     environment: 'indoor' | 'outdoor',
+    radius: number,
+    voxelSize: number,
     seed: Vec3,
     estimated: boolean
 };
@@ -200,9 +202,11 @@ const resolvePortalExtras = (args: {
     authored: Record<string, Vec3>,
     startSeed: Vec3,
     environments: ('indoor' | 'outdoor')[],
+    radii: number[],
+    voxelSizes: number[],
     preferredStartUid?: number | null
 }): { bundle: PortalBundle, extras: PortalExtra[] } | null => {
-    const { portals, startUid, availableUids, streaming, collision, authored, startSeed, environments, preferredStartUid } = args;
+    const { portals, startUid, availableUids, streaming, collision, authored, startSeed, environments, radii, voxelSizes, preferredStartUid } = args;
     const bundle = buildPortalBundle({ portals, startUid, availableUids, streaming, collision, preferredStartUid });
     if (!bundle) return null;
 
@@ -214,6 +218,8 @@ const resolvePortalExtras = (args: {
             uid,
             collisionUrl: collision ? (bundle.portalCollision[index] ?? null) : null,
             environment: environments[index] ?? 'indoor',
+            radius: radii[index] ?? 50,
+            voxelSize: voxelSizes[index] ?? 0.05,
             seed,
             estimated
         };

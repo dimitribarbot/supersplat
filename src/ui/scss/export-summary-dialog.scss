@@ -1,0 +1,127 @@
+@use 'colors.scss' as *;
+
+#export-summary-dialog {
+    #content {
+        // :not(.pcui-hidden) or this id-scoped rule (#export-summary-dialog
+        // #content .summary-*, two IDs) outranks PCUI's
+        // .pcui-element.pcui-hidden { display: none } (two classes), and
+        // `hidden` would have no visible effect — the element, and any stale
+        // text/link left over from a previous show(), would stay on screen.
+        .summary-message:not(.pcui-hidden),
+        .summary-size-note:not(.pcui-hidden),
+        .summary-oversize:not(.pcui-hidden) {
+            display: block;
+            margin: 0 0 8px;
+            white-space: normal;
+            overflow: visible;
+            text-overflow: clip;
+        }
+
+        // Same specificity guard as above, but a flex row: the published URL is
+        // long and has no break opportunities, so it is ellipsised rather than
+        // allowed to widen #content into a horizontal scrollbar.
+        .summary-link:not(.pcui-hidden) {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 0 0 8px;
+        }
+
+        .summary-link {
+            color: $clr-icon-hilight;
+
+            // min-width:0 defeats the flex item's automatic minimum size, which
+            // would otherwise refuse to shrink below the URL's full width and
+            // reintroduce the overflow. overflow:hidden does the same job per
+            // spec; both are set so neither alone is load-bearing.
+            .summary-link-text {
+                flex: 1 1 auto;
+                min-width: 0;
+                overflow: hidden;
+            }
+
+            a {
+                display: block;
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+                color: inherit;
+                text-decoration-line: none;
+                cursor: pointer;
+            }
+
+            // PCUI's .pcui-button carries `padding: 0 8px` with border-box
+            // sizing, which inside a 24px square leaves ~6px of content box for
+            // a ~12px glyph and pushes it off-centre. Zero the padding and
+            // centre with flex, which is immune to the line-height and
+            // vertical-align interplay the default inline-block layout relies on.
+            .summary-link-copy {
+                flex: 0 0 auto;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 24px;
+                height: 24px;
+                padding: 0;
+                margin: 0;
+                font-family: 'pc-icon';
+                cursor: pointer;
+
+                &::before {
+                    margin: 0;
+                }
+            }
+        }
+
+        .summary-section {
+            display: block;
+            margin: 4px 0;
+            font-weight: bold;
+        }
+
+        .summary-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            height: 20px;
+            line-height: 20px;
+
+            .summary-scene {
+                flex: 0 0 auto;
+                margin: 0;
+                color: $text-secondary;
+            }
+
+            .summary-name {
+                flex: 1 1 auto;
+                margin: 0;
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+            }
+
+            .summary-bytes {
+                flex: 0 0 auto;
+                margin: 0;
+            }
+
+            .summary-warn {
+                flex: 0 0 auto;
+                margin: 0;
+                color: #e0a030;
+            }
+        }
+
+        .summary-oversize {
+            color: #e0a030;
+            font-size: 11px;
+        }
+
+        // informational, not a warning — dimmed rather than amber
+        .summary-size-note {
+            margin-top: 4px;
+            color: $text-secondary;
+            font-size: 11px;
+        }
+    }
+}

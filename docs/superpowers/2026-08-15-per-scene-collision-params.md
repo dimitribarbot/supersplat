@@ -1,9 +1,19 @@
 # (2) Per-scene collision voxel size + radius, and a scene-aware default
 
-Status: NOT STARTED 2026-08-15. Design decision still OPEN (see "The open
-decision"). Architectural path — needs questions → approaches → spec → plan.
+Status: IMPLEMENTED 2026-08-15 on branch `feat/per-scene-collision-params`
+(12 commits, `44b729f`..`f4af2d5`). **Manual E2E still owed — see Task 11 of
+`docs/superpowers/plans/2026-08-15-per-scene-collision-params.md`.** Not merged.
+
+The open decisions below were resolved by the user and are recorded in
+`docs/superpowers/specs/2026-08-15-per-scene-collision-params-design.md`.
+In short, and reversing this memo's own recommendation: **no adaptive
+voxel-size default** (field evidence — 0.10 m at a 100 m radius walks
+noticeably worse than 0.05 m, so the comfort/size trade-off stays a human
+judgement) and **no in-dialog size estimate** (not honestly derivable). The
+answer shipped instead is per-scene sliders in collapsible cards plus a
+post-export dialog reporting each scene's *actual* collision binary size.
+
 Prerequisite reading: `docs/superpowers/2026-08-15-viewer-load-critical-path-findings.md`.
-Suggested order: do `2026-08-15-early-lod-clamp.md` (4) first.
 
 ## Problem
 

@@ -9,6 +9,7 @@ import { BottomToolbar } from './bottom-toolbar';
 import { CameraInfoOverlay } from './camera-info-overlay';
 import { ColorPanel } from './color-panel';
 import { ExportPopup } from './export-popup';
+import { ExportSummaryDialog } from './export-summary-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { i18n } from './localization';
 import { Menu } from './menu';
@@ -173,6 +174,9 @@ class EditorUI {
         // S3 publish dialog
         const s3PublishDialog = new S3PublishDialog(events);
 
+        // export summary
+        const exportSummaryDialog = new ExportSummaryDialog(events, tooltips);
+
         // image settings
         const imageSettingsDialog = new ImageSettingsDialog(events);
 
@@ -189,6 +193,7 @@ class EditorUI {
         topContainer.append(exportPopup);
         topContainer.append(publishSettingsDialog);
         topContainer.append(s3PublishDialog);
+        topContainer.append(exportSummaryDialog);
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
         topContainer.append(annotationImagesDialog);

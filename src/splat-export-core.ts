@@ -656,8 +656,6 @@ const writePortalScene = async (
     index: number,
     scene: ExtraPortalScene,
     createDevice: DeviceCreator,
-    radius: number,
-    voxelSize: number,
     onPhase?: (info: PhaseInfo, counted: boolean) => void,
     onExtract?: () => void
 ): Promise<number[]> => {
@@ -684,7 +682,11 @@ const writePortalScene = async (
         // Synthesise a minimal settings object that places the seed at cameras[0].initial.position
         // so collisionSeedFromSettings picks it up for the per-scene voxel.
         const fakeSettings = { cameras: [{ initial: { position: scene.seed } }] };
-        await writeCollisionVoxel(sub, dataTable, fakeSettings, createDevice, { environment: scene.environment, radius, voxelSize });
+        await writeCollisionVoxel(sub, dataTable, fakeSettings, createDevice, {
+            environment: scene.environment,
+            radius: scene.radius,
+            voxelSize: scene.voxelSize
+        });
         // writeCollisionVoxel emits index.voxel.json / index.voxel.bin — rename to scene.voxel.*
         for (const name of ['index.voxel.json', 'index.voxel.bin']) {
             const data = sub.results.get(name);
@@ -827,13 +829,10 @@ const writeStreamingViewerCore = async (
     // Write each extra portal scene's streaming bundle (lod-meta.json + chunk
     // folders) + per-scene voxel into the SAME memFs under scenes/N/, before the
     // HTML injection so the per-LOD counts are available for the payload. Mirrors
-    // the package branch; uses the shared collision radius / voxel size (defaulting
-    // when collision is off but a scene still carries a collision URL —
-    // writePortalScene guards on it).
+    // the package branch; each scene carries its own collision radius / voxel size;
+    // writePortalScene guards on collisionUrl.
     const extraLodCounts: number[][] = [];
     if (extraScenes && extraScenes.length > 0) {
-        const collRadius = collision?.radius ?? 50;
-        const collVoxelSize = collision?.voxelSize ?? 0.05;
         // Hoisted out of the loop (no-loop-func); sceneRef is refreshed each
         // iteration before the awaited call, so the callback reads the right value.
         let sceneRef: { index: number; total: number } | undefined;
@@ -843,7 +842,7 @@ const writeStreamingViewerCore = async (
         };
         for (let i = 0; i < extraScenes.length; i++) {
             sceneRef = { index: i + 2, total: extraScenes.length + 1 };
-            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, collRadius, collVoxelSize, onSceneProgress, () => fireExtracting(events, i + 2, total, 'Exporting streaming viewer', 'export.progress.exporting-streaming')));
+            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, onSceneProgress, () => fireExtracting(events, i + 2, total, 'Exporting streaming viewer', 'export.progress.exporting-streaming')));
         }
     }
 
@@ -918,6 +917,8 @@ type ExtraPortalScene = {
     streaming: boolean;
     collisionUrl: string | null;
     environment: 'indoor' | 'outdoor';
+    radius: number;
+    voxelSize: number;
     seed: [number, number, number];
 };
 
@@ -1009,13 +1010,11 @@ const writeViewerCore = async (
             // only scenes/<N>/ keys, so they cannot collide with index.html.
             const extraCounts: number[][] = [];
             if (hasPortalScenes) {
-                const collRadius = collision?.radius ?? 50;
-                const collVoxelSize = collision?.voxelSize ?? 0.05;
                 for (let i = 0; i < extraScenes!.length; i++) {
                     const index = i + 1;
                     scenePrefix = { en: `Scene ${index + 1}/${total}`, scene: { index: index + 1, total } };
                     extraCounts.push(await writePortalScene(
-                        memFs, index, extraScenes![i], createDevice, collRadius, collVoxelSize,
+                        memFs, index, extraScenes![i], createDevice,
                         undefined, () => fireExtracting(events, index + 1, total, 'Exporting HTML', 'export.progress.exporting-html')
                     ));
                 }

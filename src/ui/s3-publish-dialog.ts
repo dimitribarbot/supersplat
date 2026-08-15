@@ -2,6 +2,7 @@ import { BooleanInput, Button, ColorPicker, Container, Label, SelectInput, Slide
 
 import { collectAnnotationImages } from '../annotation-images';
 import { Pose } from '../camera-poses';
+import { PerSceneCollisionPanel } from './collision-params';
 import { i18n } from './localization';
 import { Events } from '../events';
 import { buildPortalBundle } from '../portal-export';
@@ -92,52 +93,12 @@ class S3PublishDialog extends Container {
         const nameRow = row('popup.publish.s3.name', name);
         const publicRow = row('popup.publish.s3.public', isPublic);
 
-        // per-scene environment selectors (portals only); one Interior/Exterior
-        // select per portal-referenced scene, replacing the single environment row.
-        const perSceneEnvRow = new Container({ class: 'per-scene-env', flex: true, flexDirection: 'column' });
-        const perSceneEnvSelects = new Map<number, SelectInput>();
-        // Chosen environment per scene uid, persisted across rebuildPerSceneEnv()
-        // calls (the Streaming/Collision toggles rebuild the rows) so user choices
-        // survive. Cleared on show() so each fresh publish starts at the default.
-        const perSceneEnvValues = new Map<number, 'indoor' | 'outdoor'>();  // sceneUid -> environment
-
-        const rebuildPerSceneEnv = () => {
-            perSceneEnvRow.clear();
-            perSceneEnvSelects.clear();
-            const portalsRaw = events.invoke('portals.export') ?? [];
-            const startUid = events.invoke('portals.startSplat') ?? null;
-            const allSplats = events.invoke('scene.allSplats') ?? [];
-            const availableUids = allSplats.map((s: any) => s.uid);
-            const preferredStartUid = events.invoke('selection')?.uid ?? null;
-            const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
-                buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: true, preferredStartUid }) :
-                null;
-            if (!bundle) {
-                perSceneEnvRow.hidden = true; return;
-            }
-            perSceneEnvRow.hidden = false;
-            bundle.sceneUids.forEach((uid, index) => {
-                const splat = allSplats.find((s: any) => s.uid === uid);
-                const label = splat ? `${uid}: ${(splat.name ?? splat.asset?.file?.filename ?? uid)}` : `Scene ${index}`;
-                const r = new Container({ class: 'row' });
-                r.append(new Label({ class: 'label', text: label }));
-                const sel = new SelectInput({
-                    class: 'select',
-                    defaultValue: perSceneEnvValues.get(uid) ?? 'indoor',
-                    options: [
-                        { v: 'indoor', t: i18n.t('popup.export.environment.indoor') },
-                        { v: 'outdoor', t: i18n.t('popup.export.environment.outdoor') }
-                    ]
-                });
-                sel.on('change', () => perSceneEnvValues.set(uid, sel.value as 'indoor' | 'outdoor'));
-                r.append(sel);
-                perSceneEnvRow.append(r);
-                perSceneEnvSelects.set(index, sel);
-            });
-        };
+        // per-scene collision params (portals only); one collapsible card per
+        // portal-referenced scene, replacing the shared environment/radius/voxel rows.
+        const perSceneCollision = new PerSceneCollisionPanel(events);
 
         [streamingRow, collisionRow, environmentRow].forEach(r => content.append(r.c));
-        content.append(perSceneEnvRow);
+        content.append(perSceneCollision);
         [radiusRow, voxelRow, animationRow, loopRow, colorRow, fovRow, bandsRow, subfolderRow, nameRow, publicRow]
         .forEach(r => content.append(r.c));
 
@@ -159,16 +120,16 @@ class S3PublishDialog extends Container {
 
         const updateCollisionVisibility = () => {
             const hide = !collision.value;
-            const hasPortals = (events.invoke('portals.count') ?? 0) > 0;
-            // with portals, the single environment row is replaced by per-scene selectors
-            environmentRow.c.hidden = hide || hasPortals;
-            radiusRow.c.hidden = hide;
-            voxelRow.c.hidden = hide;
-            rebuildPerSceneEnv();
-            perSceneEnvRow.hidden = perSceneEnvRow.hidden || hide;
+            perSceneCollision.rebuild(streaming.value);
+            const hasCards = !perSceneCollision.hidden && perSceneCollision.sceneCount() > 0;
+            // with portals, the shared rows are replaced by the per-scene cards
+            environmentRow.c.hidden = hide || hasCards;
+            radiusRow.c.hidden = hide || hasCards;
+            voxelRow.c.hidden = hide || hasCards;
+            perSceneCollision.hidden = perSceneCollision.hidden || hide;
         };
         collision.on('change', updateCollisionVisibility);
-        streaming.on('change', rebuildPerSceneEnv);
+        streaming.on('change', updateCollisionVisibility);
         animation.on('change', (v: boolean) => {
             loop.enabled = v;
         });
@@ -191,7 +152,7 @@ class S3PublishDialog extends Container {
             streaming.value = true;
             collision.value = true;
             environment.value = 'indoor';
-            perSceneEnvValues.clear();
+            perSceneCollision.reset();
             radius.value = 50;
             voxelSize.value = 0.05;
             updateCollisionVisibility();
@@ -256,7 +217,9 @@ class S3PublishDialog extends Container {
                         portalScenes: bundle.portalScenes,
                         portalStart: bundle.portalStart,
                         portalCollision: bundle.portalCollision,
-                        portalEnvironments: bundle.sceneUids.map((_, i) => (perSceneEnvSelects.get(i)?.value ?? 'indoor') as 'indoor' | 'outdoor')
+                        portalEnvironments: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).environment),
+                        portalRadii: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).radius),
+                        portalVoxelSizes: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).voxelSize)
                     } : {}),
                     startMode: animation.value ? 'animTrack' : 'default'
                 };
@@ -269,10 +232,18 @@ class S3PublishDialog extends Container {
                         type: 'zip',
                         streaming: streaming.value,
                         // For a portal publish the start scene (index 0) is hidden from the
-                        // global environment select and chosen via its per-scene selector, so
+                        // global environment select and chosen via its per-scene card, so
                         // source its environment from there (portalEnvironments[0]); fall back
                         // to the global select for a non-portal publish.
-                        collision: collision.value ? { environment: (bundle ? (perSceneEnvSelects.get(0)?.value ?? 'indoor') : environment.value) as 'indoor' | 'outdoor', radius: radius.value, voxelSize: voxelSize.value } : undefined,
+                        collision: collision.value ? (bundle ? {
+                            environment: perSceneCollision.valuesAt(0).environment,
+                            radius: perSceneCollision.valuesAt(0).radius,
+                            voxelSize: perSceneCollision.valuesAt(0).voxelSize
+                        } : {
+                            environment: environment.value as 'indoor' | 'outdoor',
+                            radius: radius.value,
+                            voxelSize: voxelSize.value
+                        }) : undefined,
                         experienceSettings,
                         annotationImages: collectAnnotationImages(events)
                     }
