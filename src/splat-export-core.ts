@@ -23,6 +23,7 @@ import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subse
 import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
+import { buildEarlyLodClampInjection } from './viewer-companion/early-lod-clamp';
 import { injectFaviconLink } from './viewer-companion/favicon';
 import { buildIframeApiInjection } from './viewer-companion/iframe-api';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
@@ -214,6 +215,18 @@ const injectDeviceFallback = (html: string): string => {
 // unconditionally on every path.
 const injectQualityMode = (html: string): string => {
     return insertBeforeBodyClose(html, buildQualityModeInjection());
+};
+
+// Inject the early-LOD-clamp companion into an HTML string before </body>.
+// STREAMING EXPORTS ONLY: it exists to stop the engine requesting the whole LOD
+// pyramid before the viewer's own coarse-only clamp lands (which waits behind
+// the collision binary), and only a streaming export has an octree at all --
+// SOG/PLY package and single-file HTML exports have no LOD levels for it to act
+// on. Like the quality-mode injector it needs no viewer handle at parse time:
+// it polls for window.__supersplatViewer, which injectDeviceFallback publishes
+// unconditionally on every path, so chain position does not matter.
+const injectEarlyLodClamp = (html: string): string => {
+    return insertBeforeBodyClose(html, buildEarlyLodClampInjection());
 };
 
 // Inject the off-limits-zones companion into an HTML string before </body>.
@@ -861,7 +874,7 @@ const writeStreamingViewerCore = async (
     const withLinks = injectAnnotationLinks(withPoster, settingsWithLods);
     const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
-    const withApi = injectIframeApi(injectQualityMode(injectDeviceFallback(withPortals)), settingsWithLods);
+    const withApi = injectIframeApi(injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals))), settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(withApi, favicon, memFs)));
     patchEngineLoaderInMemFs(memFs);
     applyAnnotationImages(annotationImages, memFs);

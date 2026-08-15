@@ -3,7 +3,8 @@
 Status: DIAGNOSIS COMPLETE 2026-08-15. Shared prerequisite reading for three
 follow-up tasks, each with its own memo:
 
-- `2026-08-15-early-lod-clamp.md` — (4) biggest win, do first
+- `2026-08-15-early-lod-clamp.md` — (4) biggest win, do first — **IMPLEMENTED
+  2026-08-15**, runtime E2E still owed; re-measure (2) and (3) against it
 - `2026-08-15-per-scene-collision-params.md` — (2) architectural
 - `2026-08-15-companion-driven-loading-bar.md` — (3) do last, re-measure first
 

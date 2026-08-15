@@ -1,10 +1,63 @@
 # (4) Clamp the start scene's LOD range before the first frame
 
-Status: FEASIBILITY ANSWERED 2026-08-15 (spike, static analysis only — no code
-written, nothing verified at runtime). NOT IMPLEMENTED.
+Status: IMPLEMENTED 2026-08-15 — `src/viewer-companion/early-lod-clamp.ts`,
+injected on the streaming export path only (`injectEarlyLodClamp` in
+`src/splat-export-core.ts`). 12 unit tests run the emitted runtime against a
+fake that reproduces the engine frame order. **RUNTIME E2E STILL OWED** (release
+build, cold cache, desktop + real phone) — see "Verification" below.
 Prerequisite reading: `docs/superpowers/2026-08-15-viewer-load-critical-path-findings.md`.
 Do this one FIRST — it is the largest win of the three and it changes the
 measurements the other two are judged against.
+
+## Static analysis confirmed against the shipped bundle (implementing session)
+
+Every load-bearing claim below was re-checked in the extracted
+`@playcanvas/splat-transform` 3.1.7 viewer, not taken on trust:
+
+- `App.tick` fires `frameupdate` → `update()` → `framerender` (viewer.js:50177/50184),
+  and `GSplatComponentSystem`'s constructor hooks `framerender` →
+  `gsplatDirector.updateStreaming()` (65045/65048). No other synchronous path
+  reaches `updateStreaming`.
+- `main()` never awaits `gsplatLoad`: it kicks off the three loads and returns
+  `new Viewer(global, …)` synchronously (89823), and `Viewer`'s constructor
+  assigns `this.global = global` as its first statement (88253). So
+  `window.__supersplatViewer.global.app` is published a microtask after main()
+  resolves, long before the octree lands.
+- The gsplat entity is built inside `asset.on('load')` (89587-89596) — a
+  macrotask, so always between ticks.
+- `comp.resource.octree.lodLevels` is the right path (`GSplatOctreeResource`
+  58034-58041), and the `lodRangeMin/Max` setters propagate to `_placement`
+  (62608-62622), which `_onGSplatAssetLoad` has already created (62887).
+- `GSplatManager.update()` calls `updateStreaming()` *before*
+  `fireFrameReadyEvent()` (62126-62170), so the range reopen at the ready gate
+  always queues its blocks before `frame:ready` reports `loading`. No premature
+  reveal is possible from the reopen transient.
+- Detaching from inside the handler is safe: PlayCanvas `EventHandler.off`
+  copies the active callback list when called during `fire`.
+- `portals.ts`: `start()` waits on `viewer.cameraManager` (1026), `pinDesired`
+  is `pinReady`-gated on `firstFrame` (1963), `applyStartFloor` only runs from
+  `pinDesired` (2065) and `scheduleRefine` only on crossings (317). All strictly
+  after this companion has detached — re-read as the memo asked, still holds.
+
+## What was built beyond the sketch
+
+- Both hooks, not one: the parse-time rAF poll is registered before
+  `app.start()`, so it runs ahead of `App.tick` within a frame — one notch
+  earlier than `frameupdate`. Both call the same idempotent one-shot.
+- `comp.resource === null` means "asset not resolved yet", not "no octree", so
+  it keeps waiting instead of detaching and forfeiting the clamp.
+- Bounded in FRAMES (18000, ~5 min), not wall-clock: a backgrounded tab fires
+  no rAF, so a time cap could expire while nothing was being selected and then
+  hand the unclamped pyramid to the first frame after the user returns.
+- `?fullload` stands the companion down entirely — that flag exists to reveal
+  only once full quality has loaded, which is the one thing a coarse-only clamp
+  must not fight. It returns before registering anything, so it is a silent
+  no-op, not an error path. The param is read exactly as `index.html` reads it
+  (`new URL(location.href).searchParams.has('fullload')`), not by substring: a
+  `?content=fullload.json` would otherwise switch the clamp off and quietly
+  restore the slow load.
+- Injected on the streaming path only: SOG/PLY package and single-file HTML
+  exports have no octree for it to act on.
 
 ## Problem
 
