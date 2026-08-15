@@ -1,122 +1,181 @@
 # (3) Make the exported viewer's loading bar appear immediately and never regress
 
-Status: NOT STARTED 2026-08-15. Design agreed in outline, not implemented.
-Prerequisite reading: `docs/superpowers/2026-08-15-viewer-load-critical-path-findings.md`.
-**Do this LAST, and re-measure before starting** — the gzip fix has already
-landed and (4) `2026-08-15-early-lod-clamp.md` will move the numbers again. The
-user's stated reason for ordering it last is to be able to see the time savings
-from the earlier fixes.
+Status: **DONE 2026-08-16** — implemented, code-reviewed, and field-confirmed
+working by the user. Prerequisite reading:
+`docs/superpowers/2026-08-15-viewer-load-critical-path-findings.md`.
 
-## Problem
+Shipped as `src/viewer-companion/loading-bar.ts` +
+`injectLoadingBar`/`collisionBinaryBytes` in `src/splat-export-core.ts`, injected
+on **all three** HTML export paths. 24 tests in `test/loading-bar.test.ts`.
 
-Two separate defects, same surface:
+## Re-measurement that set the scope
 
-1. **The bar appears late.** It has exactly one data source — `readyHandler`,
-   registered inside the `Promise.all([gsplatLoad, skyboxLoad, collisionLoad])`
-   handler — so nothing can paint it until the collision binary has downloaded.
-   Measured before the gzip fix: ~3 s desktop / ~5 s mobile on lauterbrunnen.
-   On top of that the first `frame:ready` always computes `0`, and `observe()`
-   only fires `progress:changed` on a *change*, so even that tick is swallowed:
-   the bar needs progress ≥ 1 to become visible at all.
-2. **The bar goes backwards.** The gauge is drain-from-peak
-   (`(watermark - loading) / watermark`), not loaded/total, so any work queued
-   after the peak drops the percentage. Reported in the field on mobile as
-   "80% → 60% → 100%".
+Re-measured before starting, as this memo required. With gzip (`a951a4d`) and
+the early LOD clamp (`5447039`) both live, lauterbrunnen still takes **~3 s on
+mobile** from poster to bar; the backwards-stepping bar is no longer reproducible
+in the field. That killed the memo's original plan on the spot: the remaining
+wait is now almost entirely **the 11.2 MB gzipped collision binary**, and
+`world.pendingLoadCount` counts gsplat blocks only — so the "optional third step"
+as designed would have filled the bar during the small coarse-level download and
+then parked it for most of the wait.
 
-Both are in upstream viewer code, which the user does not want to modify. Both
-are fixable from a fork-side companion injection.
+The user chose the collision-aware option explicitly, and signed off on the fetch
+wrapper on the condition that it be a strict pass-through.
 
-## Design
+## What shipped, vs. what this memo originally designed
 
-### Paint at 0% immediately
+**Kept:** the CSS instant-0% paint (verbatim, including the no-`!important`
+reasoning and the `:empty::after` self-clearing placeholder), and the
+running-maximum clamp.
 
-`#loadingWrap` is in the DOM from the first byte, but `#loadingBar` has no
-`background-image` in the stock `index.css` and `#loadingText` is empty, so it
-renders nothing. A `<style>` injected into `<head>` fixes that with no JS:
+**Changed, and why:**
 
-```css
-#loadingWrap > #loadingBar {
-    background-image: linear-gradient(90deg, white 0%, white 100%);
-}
-#loadingWrap > #loadingText:empty::after {
-    content: '0%';
-}
-```
+1. **`app.systems.gsplat.on('frame:ready')`, not a walk through
+   `gsplatDirector.camerasMap -> layersMap -> gsplatManager.world`.**
+   `GSplatManager.fireFrameReadyEvent()` fires `frame:ready` on
+   `app.systems.gsplat` **every frame from the first one** — the viewer just does
+   not register its listener until the ready gate. So the companion needs no
+   traversal at all: it subscribes to the same event the viewer eventually uses
+   and receives `(camera, layer, ready, loading)` directly. The traversal in
+   `portals.ts` is unnecessary here.
 
-Two properties make this safe:
+2. **Drives `global.state.progress`, not the DOM.** `state` is the `observe()`
+   Proxy, so a single write repaints the bar through the viewer's own painter
+   **and** advances the poster's progressive unblur (`initPoster`'s
+   `blur = (100 - progress) * 0.4px`). Both are otherwise frozen until the gate.
+   This is a strictly better perceived-speed result than DOM-poking for the same
+   work, and it keeps one painter. Verified `state.progress` has exactly two
+   consumers (poster blur, loading bar) and no reader in the reveal logic, so
+   driving it cannot perturb the gate.
 
-- the viewer writes `dom.loadingBar.style.backgroundImage` — an **inline**
-  style, which outranks any injected author rule. So no `!important` (which
-  would freeze the bar at 0% forever), and JS updates take over cleanly.
-- `:empty` stops matching the moment JS sets `textContent`, so the placeholder
-  clears itself with no teardown code.
+3. **A collision term, fed by a parse-time `window.fetch` wrapper.** The exporter
+   bakes the **raw** byte length of `index.voxel.bin` into the companion
+   (`collisionBinaryBytes(memFs)`); the wrapper tees the response with `clone()`
+   and counts decompressed stream bytes against it.
+   **The total cannot come from `Content-Length`:** the publish path gzips
+   `.voxel.bin`, so that header reports the compressed size while the stream the
+   browser hands back is already decompressed — a 3.53x skew.
 
-Match the stock selector specificity (`#loadingWrap > #loadingBar`, two IDs) so
-this stays a pure addition rather than a specificity fight.
+4. **50/50 blend, and the whole display capped at 99 until the reveal.** Two
+   independent downloads gate the reveal and only one has a knowable byte total,
+   so the range is split evenly rather than inventing a weighting; which term
+   dominates is scene-dependent (collision on an outdoor scan, roughly the
+   reverse indoors).
 
-This subsumes any separate "don't swallow the first tick" fix: once the bar
-already shows 0%, the swallowed 0% tick is a visual no-op.
+   The cap applies to **incoming upstream values too**, not just the companion's
+   own gauge — see the correction below. It costs nothing, because
+   `#loadingWrap` is hidden the instant `loaded` flips, so the bar never needs
+   to display 100 at all.
 
-### Clamp the displayed value to its running maximum
+5. **Stands down entirely under `?noui`.** initUI hides all UI on that path; a 0%
+   bar flashing before that runs would be a regression on chrome-less embeds.
+   Read via `searchParams.has`, never a substring (the `?fullload` trap from the
+   (4) memo). `?fullload` is deliberately NOT stood down for — the gauge is still
+   correct there.
 
-```js
-const g = window.__supersplatViewer && window.__supersplatViewer.global;
-if (g && g.events) {
-    let seen = 0;
-    const text = document.getElementById('loadingText');
-    const bar  = document.getElementById('loadingBar');
-    g.events.on('progress:changed', (p) => {
-        if (p >= seen) { seen = p; return; }   // rising: the viewer already painted it
-        if (text) text.textContent = seen + '%';
-        if (bar)  bar.style.backgroundImage =
-            'linear-gradient(90deg, #F60 0%, #F60 ' + seen + '%, white ' + seen + '%, white 100%)';
-    });
-}
-```
+## Correction: "the bar has exactly one data source" is STREAMING-ONLY
 
-`EventHandler` fires listeners in registration order, and the viewer registers
-its own handler in `initUI()` *inside* `main()`, while
-`window.__supersplatViewer` is only published after `main()` returns. So a
-companion listener is always later and gets the last word on the DOM. On a
-rising tick we do nothing; on a falling one we repaint at the high-water mark.
+The original diagnosis (and the first version of this memo) said the bar's only
+data source is `readyHandler`. That holds on the **streaming** path only, because
+`GSplatOctreeParser.load` calls `http.get` without `progress: asset` and the
+engine gates asset progress events on that option.
 
-Keep the gradient string in sync with the viewer's own (`#F60` fill, white
-remainder) — if upstream restyles the bar this is the line that drifts.
+On **SOG / package / single-file** exports there is a second writer:
+`downloadArrayBuffer` fires `asset.fire('progress', received, total)` per chunk,
+`loadGsplat`'s handler turns that into `state.progress`, and it reaches 100 as
+soon as the content bundle lands — while the collision binary may still have
+seconds to run. On a single-file export `content-length` is 0, so
+`Math.min(1, received / 0)` is 1 and it hits 100 immediately.
 
-### Optional third step, only if still needed after (4)
+Consequence, caught in review: a running-maximum clamp that let 100 through would
+**pin the bar at a finished-looking 100% for the whole collision download**, which
+reads as a hang. Hence the cap now applies to incoming values as well, lifting to
+100 only at `loaded:changed`. Verified against the engine
+(`playcanvas.dbg.mjs` `downloadArrayBuffer`) and the baked viewer
+(`loadGsplat`), not inferred.
 
-Drive the bar from `world.pendingLoadCount` directly, from the first frame,
-instead of waiting for `readyHandler`. The traversal already exists in
-`src/viewer-companion/portals.ts` (`unstickInstances` walks
-`app.renderer.gsplatDirector.camerasMap → layersMap → gsplatManager.world`), and
-`window.__supersplatViewer.global.app` is reachable early (see the (4) memo —
-**not** `getApp()`, which is gated behind the same `Promise.all`).
+## The fetch wrapper, in detail
 
-Judge this on fresh measurements. With gzip landed and (4) done, the gate may
-fire early enough that steps 1 and 2 are the whole fix and this is unnecessary
-complexity.
+The one genuinely risky part, so the constraints it holds to:
 
-## Risks / must-handle
+- **Installed only when the export actually has collision** (`COLLISION_BYTES > 0`)
+  and no `?collision=`/`?voxel=` override is present — an override points at a
+  file whose size the exporter cannot know, so the collision term is dropped and
+  the gsplat blocks own the whole range.
+- **Strict pass-through**: returns `originalFetch.apply(this, arguments)`
+  untouched. `this` is passed through rather than forced to `window`; WebIDL
+  substitutes the global for a null/undefined receiver, so a bare `fetch(url)`
+  (which is what `loadVoxelCollision` does) works, and any other receiver fails
+  exactly as it would have without the wrapper.
+- **Counts on a `clone()`**, never on the response the viewer consumes.
+- **Counting is registered SYNCHRONOUSLY**, before the wrapper returns, so it
+  runs ahead of `loadVoxelCollision`'s own `await` continuation and the body is
+  still undisturbed when `clone()` is called. This ordering is load-bearing:
+  deferring it would make `clone()` throw (swallowed, silently killing the
+  collision term), and reading `response.body` instead of the clone would
+  disturb the body the viewer is about to read — rejecting `collisionLoad` and
+  the gating `Promise.all`, so **the scene would never reveal at all**.
+  `test/loading-bar.test.ts` models the browser's disturbed-body rules and fails
+  on exactly that mutation (verified by making it).
+- **Uninstalls at the earliest possible moment** — synchronously, the instant a
+  `.voxel.bin` request is seen — and again on `loaded:changed`, and again on a
+  bounded frame countdown that keeps running after attach. That last path exists
+  because a collision JSON that 404s makes `loadVoxelCollision` throw *before* it
+  requests the `.bin`, so neither of the first two would ever fire.
+- Accepts a string, a `Request` (`.url`), or a `URL` (stringified).
+- Everything is wrapped in try/catch: a failure anywhere costs progress
+  reporting and nothing else.
 
-- The bar will sit at a static `0%` for the whole pre-gate window. That is
-  honest — zero blocks are resident — but it is static, not moving. If a moving
-  indicator is wanted, that needs the optional third step or an engine patch.
-- Companion bodies are template literals: **no backslash escapes** (cooked away
-  at build time). The CSS above is escape-free; keep it that way.
-- Injection goes through `insertBeforeBodyClose` in `src/splat-export-core.ts` —
-  never `String.replace` with the injection as the replacement (`$` sequences in
-  the payload get substituted; this has corrupted exports before).
-- Release-build E2E, desktop and a real phone.
+**Tee memory, checked:** `clone()` tees the decompressed body (39 MB raw for
+lauterbrunnen), but the counting reader pumps on a microtask chain and discards
+each chunk immediately, so the tee's lag buffer stays small; the viewer's
+`arrayBuffer()` allocates the full buffer either way. The only pathological case
+would be the pump stalling mid-stream, which cannot happen — its only exits are
+`done` and a rejected read. Worth recording given this repo's history with mobile
+memory.
+
+Portal scenes' `.voxel.bin` loads are unaffected: the wrapper is gone long before
+the portals companion (firstFrame-gated) fetches them.
+
+## Verification
+
+- 33 tests in `test/loading-bar.test.ts`, run against the exact emitted string.
+  The host registers a **viewer painter on `progress:changed` before the
+  companion attaches**, mirroring `initUI` running inside `main()` while
+  `window.__supersplatViewer` is published only after `main()` resolves — so the
+  tests assert on what the user actually sees, and a companion that registered
+  its clamp too early would fail.
+- Full suite 890 pass, `tsc --noEmit` clean, lint 0, release build 0 TS-plugin
+  errors, server suite 128 pass (parity guarantee intact).
+- Runtime confirmed baked verbatim into `dist/index.js` and compiled into
+  `dist-shared/viewer-companion/loading-bar.js` for the export server. The 155
+  backslashes in the bundled segment are all `\n` — the bundler re-emitting the
+  runtime's newlines, not cooked escapes.
+
+## E2E
+
+Field-confirmed working by the user 2026-08-16. Note the baked collision size
+only reaches already-published scenes on **re-publish**.
+
+Kept as the regression checklist for future changes here:
+
+1. The bar is visible at 0% essentially with the poster.
+2. It climbs steadily through the collision download rather than parking.
+3. The poster unblurs progressively along with it.
+4. It never steps backwards, including across the ready gate.
+
+Two more cases worth one pass each:
+
+5. **A package (ZIP) export with collision**, which is the path where the second
+   upstream progress writer exists. Confirm the bar does not park at 99 for the
+   whole collision download either — if it does, the 50/50 blend is the wrong
+   shape for that path and the SOG term should feed the gauge instead.
+6. **A scene that used to load instantly.** Every export now briefly shows a
+   white bar and "0%" where previously nothing rendered at all. Expected, but
+   it is a new visible artifact worth eyeballing once.
 
 ## Known upstream quirk, deliberately not fixed
 
-The same `readyHandler` skips its update whenever `loading` happens to equal the
-loaded count (`if (loading !== current)`), so the bar can occasionally skip a
-step. Cosmetic, inside upstream code, and the running-max clamp does not make it
-worse.
-
-## Classification for the implementing session
-
-Bounded — one new small companion module plus its injection call, following
-`src/viewer-companion/poster.ts` (which already injects both a `<style>`-writing
-script and a default value) as the closest existing model.
+`readyHandler` skips its update whenever `loading` happens to equal the loaded
+count (`if (loading !== current)`), so the bar can occasionally skip a step.
+Cosmetic, inside upstream code, and the running-max clamp does not make it worse.

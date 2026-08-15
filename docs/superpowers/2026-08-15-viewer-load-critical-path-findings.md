@@ -5,8 +5,14 @@ follow-up tasks, each with its own memo:
 
 - `2026-08-15-early-lod-clamp.md` — (4) biggest win, do first — **IMPLEMENTED
   2026-08-15**, runtime E2E still owed; re-measure (2) and (3) against it
-- `2026-08-15-per-scene-collision-params.md` — (2) architectural
-- `2026-08-15-companion-driven-loading-bar.md` — (3) do last, re-measure first
+- `2026-08-15-per-scene-collision-params.md` — (2) architectural — **DONE**
+  (`ee4766c`, GPU E2E passed)
+- `2026-08-15-companion-driven-loading-bar.md` — (3) — **DONE 2026-08-16**,
+  field-confirmed. Re-measurement changed its scope: with
+  gzip and the early clamp live, the remaining ~3 s mobile wait on lauterbrunnen
+  is almost entirely the collision binary, so the bar is driven by a blend of
+  `frame:ready` and the observed `.voxel.bin` download rather than by
+  `pendingLoadCount` alone.
 
 One fix already landed from this diagnosis: gzip of `.voxel.bin` on S3 publish
 (`server/src/s3.ts`), see "Already fixed" below.

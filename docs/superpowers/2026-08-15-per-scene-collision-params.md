@@ -1,8 +1,19 @@
 # (2) Per-scene collision voxel size + radius, and a scene-aware default
 
-Status: IMPLEMENTED 2026-08-15 on branch `feat/per-scene-collision-params`
-(12 commits, `44b729f`..`f4af2d5`). **Manual E2E still owed — see Task 11 of
-`docs/superpowers/plans/2026-08-15-per-scene-collision-params.md`.** Not merged.
+Status: **DONE 2026-08-15.** Squashed to `ee4766c` on `main` and pushed.
+
+Manual GPU E2E passed: a multi-scene export with deliberately different
+per-scene voxel sizes produced visibly different collision voxels in the
+exported viewer. That closes the one thing no automated gate could reach —
+the voxelisation path has no test coverage, so nothing before this confirmed a
+per-scene `voxelSize` survived to `writeVoxel` rather than being dropped at an
+`any`-typed boundary (the server's dynamic-import boundary in particular).
+
+Field-exercised alongside it, via real publishes: the summary dialog's
+per-scene sizes, the published link, and the per-scene cards. Not separately
+confirmed and low-risk: the progress/summary overlap fix on the *server export
+to file* path (distinct from publish), the localized S3 upload progress lines,
+and the "sizes are uncompressed" note — all three landed after that testing.
 
 The open decisions below were resolved by the user and are recorded in
 `docs/superpowers/specs/2026-08-15-per-scene-collision-params-design.md`.

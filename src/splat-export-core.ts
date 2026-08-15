@@ -26,6 +26,7 @@ import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback
 import { buildEarlyLodClampInjection } from './viewer-companion/early-lod-clamp';
 import { injectFaviconLink } from './viewer-companion/favicon';
 import { buildIframeApiInjection } from './viewer-companion/iframe-api';
+import { buildLoadingBarInjection } from './viewer-companion/loading-bar';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
@@ -227,6 +228,25 @@ const injectQualityMode = (html: string): string => {
 // unconditionally on every path, so chain position does not matter.
 const injectEarlyLodClamp = (html: string): string => {
     return insertBeforeBodyClose(html, buildEarlyLodClampInjection());
+};
+
+// Raw byte length of the start scene's collision binary, or 0 when the export
+// has none. The loading-bar companion turns this download into progress, and it
+// needs the RAW length: the publish path gzips .voxel.bin (server/src/s3.ts), so
+// the browser's Content-Length reports the compressed size while the stream it
+// hands back is already decompressed.
+const collisionBinaryBytes = (memFs: MemoryFileSystem | null): number => {
+    return memFs?.results.get('index.voxel.bin')?.length ?? 0;
+};
+
+// Inject the loading-bar companion into an HTML string before </body>. ALWAYS
+// injected: the instant-0% paint and the never-goes-backwards clamp apply to
+// every export, and the collision term simply drops out when collisionBytes is
+// 0. Like the quality-mode injector it needs no viewer handle at parse time --
+// it polls for window.__supersplatViewer, which injectDeviceFallback publishes
+// unconditionally on every path -- so chain position does not matter.
+const injectLoadingBar = (html: string, collisionBytes: number): string => {
+    return insertBeforeBodyClose(html, buildLoadingBarInjection(collisionBytes));
 };
 
 // Inject the off-limits-zones companion into an HTML string before </body>.
@@ -873,7 +893,11 @@ const writeStreamingViewerCore = async (
     const withLinks = injectAnnotationLinks(withPoster, settingsWithLods);
     const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
-    const withApi = injectIframeApi(injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals))), settingsWithLods);
+    const withCompanions = injectLoadingBar(
+        injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals))),
+        collisionBinaryBytes(memFs)
+    );
+    const withApi = injectIframeApi(withCompanions, settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(withApi, favicon, memFs)));
     patchEngineLoaderInMemFs(memFs);
     applyAnnotationImages(annotationImages, memFs);
@@ -979,7 +1003,10 @@ const writeViewerCore = async (
             }
             // Single-file output: the poster is inlined as a data URI (no memFs).
             const withPoster = applyPoster(new TextDecoder().decode(raw), viewerSettingsJson, posterBytes, null);
-            const injected = injectIframeApi(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), viewerSettingsJson);
+            // Single-file HTML: no collision file exists on this path, so the
+            // companion's collision term drops out and the gsplat blocks own
+            // the whole range.
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), 0), viewerSettingsJson);
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
@@ -1023,7 +1050,7 @@ const writeViewerCore = async (
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectIframeApi(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings))), sogSettings);
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings))), collisionBinaryBytes(memFs)), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injected, favicon, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);
