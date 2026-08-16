@@ -1,7 +1,7 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolvePortalCrossing } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam } from '../portal-preload';
 import { markerRuntime, markerStyle } from './portal-markers';
 import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
@@ -133,6 +133,7 @@ const companionRuntime = `
   var pinBatchAllowed = ${pinBatchAllowed.toString()};
   var parseBudgetParam = ${parseBudgetParam.toString()};
   var computeRevealLevel = ${computeRevealLevel.toString()};
+  var sceneRenderFloor = ${sceneRenderFloor.toString()};
   var resolvePortalCrossing = ${resolvePortalCrossing.toString()};
   var beginTeleportGuard = ${beginTeleportGuard.toString()};
   var tickTeleportGuard = ${tickTeleportGuard.toString()};
@@ -341,13 +342,12 @@ const companionRuntime = `
   // depth by the crossing). Cover both with a backdrop+spinner+label until
   // the scene is resident at the depth it will actually be shown at.
   //
-  // Readiness = per-DESTINATION residency at the scene's pin/reveal depth
+  // Readiness = per-DESTINATION residency at the scene's reveal depth
   // (octree introspection, same handles the pin pump uses): every octree file
-  // at levels [sceneMinLevel .. coarsest] has a resident resource. That is the
-  // scene's final quality on THIS device (scheduleRefine floors lodRangeMin at
-  // the same depth, and the depth is budget-degraded on mobile), so the reveal
-  // shows a uniformly sharp scene with nothing left to pop in. Coarse-only
-  // gating revealed earlier but with visibly mixed LOD regions; a global
+  // at levels [revealLevel .. coarsest] has a resident resource -- today the
+  // coarsest level alone (REVEAL_MARGIN 0). The reveal is uniform, not mixed,
+  // because the held-floor descent renders the scene at the finest FULLY
+  // resident level and steps finer as levels complete; a global
   // renderer-splat-count threshold before that was invalidated by
   // budget-bounded multi-scene residency (field case: black regions after a
   // crossing). An absolute frame cap remains purely as an anti-stick bound
@@ -626,16 +626,19 @@ const companionRuntime = `
   }
 
   // The LOD level a crossing's loading overlay waits for -- the "coarsest
-  // acceptable" quality: normally the finest level THIS device loads
-  // (deviceFinest, clamped to the scene coarsest), or REVEAL_MARGIN levels
-  // above the scene's coarsest before deviceFinest is known. On desktop the
-  // pin depth is the FULL pyramid (deviceFinest=0), which takes minutes on a
-  // slow network; the overlay instead reveals at the same near-coarse
-  // quality the viewer's own initial loading bar accepts for the start
-  // scene, and the engine refines in view afterwards (the final pin depth
-  // is unchanged; only the overlay gate and the temporary streaming floor
-  // below read this).
-  var REVEAL_MARGIN = 2;   // reveal at most this many levels finer than coarsest
+  // acceptable" quality. With REVEAL_MARGIN 0 that is the scene's COARSEST
+  // level: the one batch the pin pump completes first (it pins level-major,
+  // coarsest-first across scenes), so the gate matches what actually arrives
+  // first instead of holding for two further, progressively larger levels.
+  // Uniform quality at the reveal is guaranteed by the held-floor descent, not
+  // by this margin: scheduleRefine/pumpFloor clamp lodRangeMin to the finest
+  // FULLY resident level and step it finer as levels complete, so a scene
+  // revealed at coarsest renders whole-scene blurry (never mixed regions,
+  // never blob fallbacks) and sharpens in view. The final pin depth is
+  // unchanged; only the overlay gate and the temporary streaming floor below
+  // read this. Raise the margin to trade a longer overlay for a sharper first
+  // frame.
+  var REVEAL_MARGIN = 0;   // reveal at most this many levels finer than coarsest
   function revealLevel(idx) {
     var oc = octrees[idx];
     var coarse = (oc && oc.lodLevels) ? oc.lodLevels - 1 : 0;
@@ -701,11 +704,14 @@ const companionRuntime = `
     }
     return oc.lodLevels - 1;
   }
-  function applySceneFloor(idx) {
+  // fineHint: the caller's already-computed finestFullLevel(idx), so the
+  // per-frame descent does not pay for a second O(files) scan. Omit it and the
+  // scan runs here (pinDesired's per-reconcile path, which is infrequent).
+  function applySceneFloor(idx, fineHint) {
     var comp = comps[idx];
     if (!comp) { return; }
-    var canon = canonicalFloor(idx);
-    comp.lodRangeMin = (heldFloor[idx] != null) ? Math.max(canon, heldFloor[idx]) : canon;
+    var fine = (fineHint === undefined) ? finestFullLevel(idx) : fineHint;
+    comp.lodRangeMin = sceneRenderFloor(canonicalFloor(idx), heldFloor[idx], fine);
   }
   // Descend the held floor as levels complete; exits when fully open, when
   // the scene stops being active, or when a newer generation supersedes it.
@@ -725,9 +731,10 @@ const companionRuntime = `
       // Re-assert every step (not only on change): the viewer's
       // applyPerfSettings (ready / performance-mode) and applyStartFloor
       // write scene 0's floor directly and would otherwise reopen a held
-      // floor mid-descent.
-      applySceneFloor(idx);
-      if (heldFloor[idx] <= canon) { heldFloor[idx] = null; applySceneFloor(idx); return; }
+      // floor mid-descent. Pass the scan we just did rather than paying for
+      // a second one per frame.
+      applySceneFloor(idx, fine);
+      if (heldFloor[idx] <= canon) { heldFloor[idx] = null; applySceneFloor(idx, fine); return; }
       requestAnimationFrame(step);
     })();
   }
@@ -1710,9 +1717,9 @@ const companionRuntime = `
   // (files never enter the unload cooldown), then enqueue the batch on the
   // scene's pin pump, which loads it wave-by-wave (see pumpPins). markReady:
   // set readyScenes[idx] once THIS batch is resident -- the caller passes it on
-  // the finest pinned batch (the reveal-depth floor), so a crossing holds the
-  // loading overlay until the scene is showable at device-final quality
-  // everywhere. Records the pinned file indices for later
+  // the finest pinned batch. Only SOG scenes read that flag for readiness;
+  // octree scenes probe live residency at revealLevel (see sceneReady).
+  // Records the pinned file indices for later
   // reclaim. SOG scenes (no octree) are a no-op. Idempotent-ish: files already
   // pinned are re-polled by the pump but not re-pinned.
   function pinSceneToLevel(asset, idx, minLevel, maxLevel, markReady) {
@@ -2052,11 +2059,24 @@ const companionRuntime = `
       }
       if (idx !== 0) {
         // Extra scenes: the component floor IS the pin depth.
-        // applySceneFloor respects a pump-held floor (a scene mid-descent
-        // must not reopen to the final depth before its finer levels are
-        // fully resident).
         sceneMinLevel[idx] = min;
-        applySceneFloor(idx);
+        if (idx === active) {
+          // This reconcile just moved the ACTIVE scene's canonical floor, and a
+          // promotion (neighbour -> active) moves it FINER. scheduleRefine
+          // re-derives the held floor against the NEW depth and restarts the
+          // descent; a bare applySceneFloor would hand the engine a floor finer
+          // than anything resident whenever scheduleRefine had already released
+          // the hold (it does so when the fresh floor merely EQUALS the stale
+          // canonical one -- a neighbour pinned at its coarsest, i.e. every
+          // budget-degraded mobile crossing). sceneRenderFloor keeps that from
+          // showing blobs; this keeps the scene from then STAYING coarse with
+          // no pump running to reopen it.
+          scheduleRefine(idx);
+        } else {
+          // Not on screen: no descent to run, and applySceneFloor respects a
+          // pump-held floor if one is still in flight.
+          applySceneFloor(idx);
+        }
       } else {
         // Scene 0's floor is viewer-owned unless the budget degraded its pin
         // depth below the device's observed finest (see applyStartFloor).
@@ -2072,10 +2092,10 @@ const companionRuntime = `
     // Pin LEVEL-MAJOR, coarsest level first ACROSS scenes: every resident
     // scene's coarse (small, whole-scene) levels download before any scene's
     // fine levels, so no scene monopolises the bandwidth. A scene is marked
-    // ready only when its FINEST pinned batch (the reveal-depth floor, lv ===
-    // pmin) is resident: revealing on coarse alone showed visibly mixed LOD
-    // regions right after a crossing, and the preference is to hold the
-    // loading overlay until the scene shows at device-final quality.
+    // ready only when its FINEST pinned batch (lv === pmin) is resident: that
+    // flag is the readiness truth for SOG scenes only -- octree scenes probe
+    // LIVE residency at revealLevel instead (sceneReady), which is why the
+    // overlay can clear on the coarsest batch while the deeper pins continue.
     for (var lv = maxCoarse; lv >= 0; lv--) {
       for (var w = 0; w < want.length; w++) {
         var ps = want[w];

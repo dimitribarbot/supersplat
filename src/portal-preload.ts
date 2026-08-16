@@ -653,6 +653,37 @@ const computeRevealLevel = (
     return Math.max(acceptable, target);
 };
 
+// The lodRangeMin a crossed-into scene must render at (0 = finest .. N = coarsest,
+// so a LARGER number is coarser and "never finer than X" means ">= X"):
+//   canonical  - the scene's own floor (its pin depth; viewer-owned for scene 0)
+//   held       - the floor pumpFloor is holding mid-descent, or null when released
+//   finestFullyResident - the finest level whose whole [level..coarsest] span is
+//                resident, or null when the octree cannot be probed
+// The residency term is a BACKSTOP, not a preference: it only ever raises the
+// floor (coarsens), never lowers it, so a descent keeps its own pace.
+// Why it exists: `canonical` can move FINER at any time. A neighbour pinned at
+// its coarsest is promoted to active by pinDesired and immediately reassigned
+// the device-finest depth, while scheduleRefine may already have RELEASED the
+// hold (it drops it when the fresh floor merely equals the stale canonical one).
+// Rendering at that new floor with only the coarsest level resident makes the
+// engine select missing blocks and draw scaled-up parent blobs that fill in
+// region by region (field case: mobile, first crossing, budget-degraded pins).
+// Enforcing the invariant here means no future reordering of the promotion and
+// the refine can reopen that hole. Pure and self-contained (only args + Math) so
+// it can be stringified verbatim into the exported viewer runtime via
+// Function.toString().
+const sceneRenderFloor = (
+    canonical: number,
+    held: number | null | undefined,
+    finestFullyResident: number | null | undefined
+): number => {
+    let floor = (held !== null && held !== undefined) ? Math.max(canonical, held) : canonical;
+    if (finestFullyResident !== null && finestFullyResident !== undefined && finestFullyResident > floor) {
+        floor = finestFullyResident;
+    }
+    return floor;
+};
+
 // Parse the stock viewer's ?budget=<n> URL override into a splat count, matching
 // the viewer's own semantics (splatBudget = Number(param) * 1_000_000, used only
 // when > 0). Returns 0 when the param is absent or invalid so callers fall back
@@ -685,4 +716,4 @@ const parseBudgetParam = (search: string): number => {
     }
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

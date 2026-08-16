@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, parseBudgetParam } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -623,6 +623,47 @@ describe('computeRevealLevel', () => {
     });
     it('null pin on a non-active scene: just the device target', () => {
         expect(computeRevealLevel(3, 2, 0, false, true, null)).toBe(1);
+    });
+});
+
+describe('sceneRenderFloor', () => {
+    // Levels: 0 = finest .. N = coarsest. The floor is a lodRangeMin, so a
+    // LARGER number is coarser and "never finer than X" means ">= X".
+    it('THE REGRESSION: a scene promoted to active must not render finer than what is resident', () => {
+        // Field case (mobile, first crossing into a budget-degraded neighbour):
+        // scheduleRefine computed heldFloor === canonicalFloor (both coarsest 5)
+        // and therefore RELEASED the hold; pinDesired then promoted the scene to
+        // active and moved the canonical floor to the device finest (0). With
+        // only the coarsest level resident the engine selected missing fine
+        // blocks and drew giant blob fallbacks that filled in region by region.
+        expect(sceneRenderFloor(0, null, 5)).toBe(5);
+    });
+
+    it('held floor governs mid-descent (canon finer, hold coarser)', () => {
+        expect(sceneRenderFloor(0, 3, 3)).toBe(3);
+    });
+
+    it('never goes finer than the hold even if more is resident than the hold admits', () => {
+        // the descent is stepwise and owns its own pace; the backstop only raises
+        expect(sceneRenderFloor(0, 4, 2)).toBe(4);
+    });
+
+    it('fully resident at the canonical depth: the canonical floor wins (no clamp)', () => {
+        expect(sceneRenderFloor(0, null, 0)).toBe(0);
+    });
+
+    it('canonical floor coarser than both hold and residency', () => {
+        expect(sceneRenderFloor(5, 3, 3)).toBe(5);
+    });
+
+    it('unknown octree (residency unmeasurable): falls back to canon/hold, never clamps', () => {
+        expect(sceneRenderFloor(2, null, null)).toBe(2);
+        expect(sceneRenderFloor(2, 4, null)).toBe(4);
+        expect(sceneRenderFloor(2, null, undefined as any)).toBe(2);
+    });
+
+    it('an array hole reads as no hold (undefined), not as level 0', () => {
+        expect(sceneRenderFloor(1, undefined as any, 4)).toBe(4);
     });
 });
 

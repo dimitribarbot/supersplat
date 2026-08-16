@@ -321,14 +321,15 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('LOADING_ABS_MAX_FRAMES');
     });
 
-    it('reveals at a near-coarse acceptable level and aligns the streaming floor with it', () => {
+    it('reveals at the scene coarsest level and aligns the streaming floor with it', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
             portalScenes: ['', 'scenes/1/lod-meta.json'],
             portalStart: 0
         });
-        // the overlay gate never waits finer than REVEAL_MARGIN levels above coarsest
-        expect(out).toContain('REVEAL_MARGIN');
+        // margin 0: the gate is the coarsest level -- the batch the pin pump
+        // completes first -- not two further, progressively larger levels
+        expect(out).toContain('var REVEAL_MARGIN = 0;');
         expect(out).toContain('revealLevel');
         // while loading, the destination renders at the finest fully-resident
         // level (held floor), so bandwidth and rendering track the gate
@@ -344,6 +345,24 @@ describe('buildPortalsInjection', () => {
         // whether an unassigned pin may raise the gate above the margin is now
         // computeRevealLevel's own, separately unit-tested contract
         expect(out).toContain('computeRevealLevel(coarse, REVEAL_MARGIN, deviceFinest, idx === activeIndex, pinReady, pinDepth[idx])');
+    });
+
+    it('the render floor is never finer than what is resident, and a promotion re-arms the descent', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // the floor decision is delegated to the pure, separately unit-tested
+        // sceneRenderFloor -- never assigned raw, so no path can hand the engine
+        // a floor finer than the finest fully-resident level (blob fallbacks)
+        expect(out).toContain('var sceneRenderFloor =');
+        expect(out).toContain('comp.lodRangeMin = sceneRenderFloor(canonicalFloor(idx), heldFloor[idx], fine);');
+        // pinDesired moves the ACTIVE scene's canonical floor FINER on promotion,
+        // so it must re-derive the held floor (and restart the descent) rather
+        // than apply the new depth over a released hold
+        expect(out).toContain('if (idx === active) {');
+        expect(out).toContain('scheduleRefine(idx);');
     });
 
     it('a crossed-into scene renders at the finest FULLY resident level, opening as levels complete', () => {
