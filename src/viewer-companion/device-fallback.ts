@@ -78,14 +78,19 @@ const companionRuntime = `
   // Literal UTF-8 only -- unicode escapes are forbidden in this template.
   function restartText() {
     var t = {
-      en: ['3D graphics needs a restart', 'Tap to restart', 'If nothing happens, reload the page with the reload button in your browser menu.'],
-      fr: ['L’affichage 3D doit redémarrer', 'Appuyez pour redémarrer', 'Si rien ne se passe, rechargez la page avec le bouton Actualiser du menu de votre navigateur.'],
-      de: ['Die 3D-Grafik muss neu gestartet werden', 'Zum Neustarten tippen', 'Wenn nichts passiert, laden Sie die Seite über die Schaltfläche „Neu laden“ im Browsermenü neu.'],
-      es: ['Los gráficos 3D deben reiniciarse', 'Toca para reiniciar', 'Si no pasa nada, recarga la página con el botón Recargar del menú del navegador.']
+      en: ['3D graphics needs a restart', 'Tap to restart', 'If nothing happens, wait a few minutes, then reload the page with the reload button in your browser menu. Reloading right away might not work.'],
+      fr: ['L’affichage 3D doit redémarrer', 'Appuyez pour redémarrer', 'Si rien ne se passe, patientez quelques minutes, puis rechargez la page avec le bouton Actualiser du menu de votre navigateur. Recharger immédiatement risque de ne pas fonctionner.'],
+      de: ['Die 3D-Grafik muss neu gestartet werden', 'Zum Neustarten tippen', 'Wenn nichts passiert, warten Sie einige Minuten und laden Sie die Seite dann über die Schaltfläche „Neu laden“ im Browsermenü neu. Ein sofortiges Neuladen funktioniert möglicherweise nicht.'],
+      es: ['Los gráficos 3D deben reiniciarse', 'Toca para reiniciar', 'Si no pasa nada, espera unos minutos y luego recarga la página con el botón Recargar del menú del navegador. Recargar de inmediato puede no funcionar.']
     };
     // en hint intentionally says 'browser menu': field-tested on Android --
     // a tap-driven JS reload does NOT clear the 3D-API block and the viewer
     // canvas suppresses pull-to-refresh, so the browser menu is the path.
+    // It also asks for a wait before that reload: field-observed that an
+    // immediate browser reload still lands on a blocked/unavailable GPU and
+    // burns the user's one good gesture, while the same reload a few minutes
+    // later works. Deliberately vague ('a few minutes', 'might not work') --
+    // no Chromium source we have pins the block to a fixed duration.
     var l = (navigator.language || 'en').toLowerCase().split('-')[0];
     return t[l] || t.en;
   }

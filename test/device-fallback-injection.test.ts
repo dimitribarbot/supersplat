@@ -39,6 +39,12 @@ describe('buildDeviceFallbackInjection', () => {
         expect(out).toContain('Tap to restart');
         expect(out).toContain('Appuyez pour redémarrer');
         expect(out).toContain('browser menu');
+        // ...and to wait before that reload: an immediate one still lands on a
+        // blocked GPU and burns the user's one good gesture
+        expect(out).toContain('wait a few minutes');
+        expect(out).toContain('patientez quelques minutes');
+        expect(out).toContain('warten Sie einige Minuten');
+        expect(out).toContain('espera unos minutos');
         // the poisoning in-page probe loop must not come back
         expect(out).not.toContain('bootTimer');
         expect(out).not.toContain('webglReady() || waited');
