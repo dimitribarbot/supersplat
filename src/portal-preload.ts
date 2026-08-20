@@ -716,4 +716,26 @@ const parseBudgetParam = (search: string): number => {
     }
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+// How many distance-2 cache-warming fetches may be in flight, or 0 to skip
+// warming entirely this pass. Warming is OPTIONAL traffic: it buys a faster
+// future crossing, and its only cost when skipped is that the crossing shows
+// the loading overlay. So it yields the moment the device is ALREADY dropping
+// loads (net::ERR_FAILED with xhr.status 0) -- more optional bytes make that
+// worse, and a dropped block texture costs a black region, a strictly worse
+// outcome than a cold crossing.
+//
+// Device class is deliberately NOT an input. Throttling a healthy phone was
+// tried, on the theory that our own warming created the pressure behind a field
+// report of dropped block webps. A ?loaddiag measurement disproved it: on the
+// reporting device (Redmi Note 9S) an undebugged session warming four at a time
+// dropped nothing at all, and the drops only appeared with a remote inspector
+// attached -- reproducibly, and on upstream builds too.
+//
+// A missing/invalid count reads as healthy (warming is the default). Pure and
+// self-contained (no imports, no sibling-function calls) so it can be
+// stringified verbatim into the exported viewer runtime via Function.toString().
+const warmConcurrency = (loadFailures: number): number => {
+    return (typeof loadFailures === 'number' && loadFailures > 0) ? 0 : 4;
+};
+
+export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam, warmConcurrency, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };

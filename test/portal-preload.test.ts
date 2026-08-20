@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam } from '../src/portal-preload';
+import { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam, warmConcurrency } from '../src/portal-preload';
 
 describe('collectLodFileUrls', () => {
     it('returns the coarsest-level files resolved against the meta directory (no minLevel)', () => {
@@ -693,5 +693,27 @@ describe('parseBudgetParam', () => {
 
     it('does not match a key that merely ends in budget', () => {
         expect(parseBudgetParam('?maxbudget=5')).toBe(0);
+    });
+});
+
+describe('warmConcurrency', () => {
+    it('warms four at a time while the device is healthy', () => {
+        // Device class is NOT an input. Throttling phones was tried and a field
+        // measurement (Redmi Note 9S, ?loaddiag) disproved its premise: an
+        // undebugged phone warming at four drops nothing at all.
+        expect(warmConcurrency(0)).toBe(4);
+    });
+
+    it('stops warming once the device has dropped a load', () => {
+        // Warming is optional traffic. A device already failing loads must not
+        // be handed more of it -- a dropped block texture costs a black region,
+        // a cold crossing only costs the loading overlay.
+        expect(warmConcurrency(1)).toBe(0);
+        expect(warmConcurrency(37)).toBe(0);
+    });
+
+    it('treats a missing failure count as healthy', () => {
+        expect(warmConcurrency(null as any)).toBe(4);
+        expect(warmConcurrency(undefined as any)).toBe(4);
     });
 });

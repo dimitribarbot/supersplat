@@ -1,7 +1,7 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolvePortalCrossing } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam } from '../portal-preload';
+import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam, warmConcurrency } from '../portal-preload';
 import { markerRuntime, markerStyle } from './portal-markers';
 import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
@@ -51,6 +51,16 @@ const companionStyle = `
   margin-top: 16px; color: #fff; font-family: sans-serif; font-size: 15px;
 }
 @keyframes ss-portal-spin { to { transform: rotate(360deg); } }
+/* ?loaddiag badge: a dropped-load readout for field diagnosis on a phone with
+   no inspector attached. Above the loading backdrop (z-index 2000) so it stays
+   readable during a crossing. Only ever mounted when the param is present. */
+.ss-portal-loaddiag {
+  position: fixed; left: 8px; bottom: 8px; z-index: 2100; pointer-events: none;
+  padding: 4px 8px; border-radius: 4px;
+  background: rgba(0,0,0,0.65); color: #fff;
+  font-family: monospace; font-size: 12px; line-height: 1.3;
+}
+.ss-portal-loaddiag.hit { background: rgba(150,0,0,0.85); }
 .ss-portal-tiles {
   position: fixed; inset: 0; z-index: 1999; pointer-events: none;
   display: grid; visibility: hidden; opacity: .7;
@@ -132,6 +142,7 @@ const companionRuntime = `
   var startSceneLodFloor = ${startSceneLodFloor.toString()};
   var pinBatchAllowed = ${pinBatchAllowed.toString()};
   var parseBudgetParam = ${parseBudgetParam.toString()};
+  var warmConcurrency = ${warmConcurrency.toString()};
   var computeRevealLevel = ${computeRevealLevel.toString()};
   var sceneRenderFloor = ${sceneRenderFloor.toString()};
   var resolvePortalCrossing = ${resolvePortalCrossing.toString()};
@@ -379,6 +390,59 @@ const companionRuntime = `
   if (document.body) mountLoading(); else document.addEventListener('DOMContentLoaded', mountLoading);
   function showLoading() { lBackdrop.classList.add('active'); }
   function hideLoading() { lBackdrop.classList.remove('active'); }
+
+  // --- dropped-load counter ----------------------------------------------
+  // A load the browser drops (net::ERR_FAILED / xhr.status 0) is otherwise
+  // INVISIBLE here. The engine retries a block texture up to 5 times and then
+  // GSplatSogParser.loadTextures -- which awaits Promise.allSettled and never
+  // inspects the results -- builds the block from undefined textures and reports
+  // a SUCCESSFUL load. So the only symptom a field user ever sees is a black
+  // region, with nothing to correlate it to. That is an upstream bug, left to
+  // upstream; this counter is how you find out whether you are hitting it.
+  //
+  // Fed by the asset registry's 'error' event, so it needs no engine patch and
+  // works against a stock bundle. It counts dropped texture loads, NOT ruined
+  // blocks: a block ruined by this bug never reports an error at all, so the
+  // texture count is the closest honest proxy. Non-zero means "this session is
+  // dropping loads and some region may be black", not "N regions are black".
+  //
+  // Field result (Redmi Note 9S, 2026-08-20): 0 with no inspector attached, 8
+  // with the Brave remote inspector attached. Attaching DevTools is the trigger
+  // -- reproducible on upstream builds too -- so a non-zero count in an
+  // undebugged session would be new information worth chasing.
+  //
+  // No backticks anywhere below: this runtime is authored inside a template
+  // literal, so one would terminate it (see the same note on ?residentBudget).
+  //
+  // Published on window so a host page embedding the viewer can read it too.
+  var LOAD_DIAG = (function () {
+    try { return new URLSearchParams(location.search || '').has('loaddiag'); } catch (e) { return false; }
+  })();
+  var loadDiagEl = null;
+  function renderLoadDiag() {
+    if (!loadDiagEl) { return; }
+    loadDiagEl.textContent = 'drops ' + loadFailures.total;
+    if (loadFailures.total > 0) { loadDiagEl.classList.add('hit'); }
+  }
+  var loadFailures = {
+    total: 0,
+    lastUrl: '',
+    note: function (url) {
+      loadFailures.total++;
+      loadFailures.lastUrl = url || '';
+      renderLoadDiag();
+    }
+  };
+  window.__ssLoadFailures = loadFailures;
+  function mountLoadDiag() { if (loadDiagEl && document.body) { document.body.appendChild(loadDiagEl); } }
+  if (LOAD_DIAG) {
+    loadDiagEl = document.createElement('div');
+    loadDiagEl.className = 'ss-portal-loaddiag';
+    // Render at zero immediately: a badge that only appears on failure cannot
+    // be told apart from a param that never took effect.
+    renderLoadDiag();
+    if (document.body) { mountLoadDiag(); } else { document.addEventListener('DOMContentLoaded', mountLoadDiag); }
+  }
 
   // --- portal transition cover -------------------------------------------
   // A grid of translucent tiles above the canvas (below the loading overlay).
@@ -1153,6 +1217,16 @@ const companionRuntime = `
     }
 
     liveApp = app;
+    // Count dropped loads at the registry, which fires 'error' with (err, asset)
+    // for every asset that gave up. Textures only: those are the block webps
+    // whose loss shows up as a black region.
+    if (app.assets && app.assets.on) {
+      app.assets.on('error', function (err, asset) {
+        if (asset && asset.type === 'texture') {
+          loadFailures.note((asset.file && asset.file.url) || asset.name || '');
+        }
+      });
+    }
     startEntityRef = startEntity;
     EntityCtor = Entity;
     // Streaming scenes load eagerly: the asset is only the small lod-meta.json
@@ -1528,7 +1602,10 @@ const companionRuntime = `
   // Warm a flat list of URLs with a small concurrency cap so we don't starve
   // the start scene's own stream.
   function warmUrls(urls) {
-    var CONCURRENCY = 4;
+    // Re-read the policy per call: warmScene is async, so a drop can land
+    // between warmFrontier's gate and this point.
+    var CONCURRENCY = warmConcurrency(loadFailures.total);
+    if (!CONCURRENCY) { return; }
     var total = urls.length, active = 0, idx = 0;
     function next() {
       while (active < CONCURRENCY && idx < total) {
@@ -1627,6 +1704,11 @@ const companionRuntime = `
   }
   function warmFrontier(want) {
     if (!adjacency || deviceDead) return;
+    // Gate the WHOLE pass, not just warmUrls: warmScene walks lod-meta ->
+    // block-metas before it reaches the webps, and those fetches are optional
+    // traffic too. Returning here also leaves warmedScenes unmarked, so the
+    // scene is still eligible if the device recovers.
+    if (!warmConcurrency(loadFailures.total)) return;
     var warmSet = computeWarmSet(activeIndex, adjacency, want);
     for (var i = 0; i < warmSet.length; i++) {
       var idx = warmSet[i];

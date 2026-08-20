@@ -121,6 +121,36 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('sampleDeviceFinest');
     });
 
+    it('counts dropped asset loads and publishes them for a field user', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // the counter itself, readable from a host page embedding the viewer
+        expect(out).toContain('window.__ssLoadFailures');
+        // fed by the asset registry, which fires 'error' with (err, asset) --
+        // no engine patch involved, so it works against a stock bundle
+        expect(out).toContain('assets.on(\'error\'');
+        // ...and surfaced on screen behind ?loaddiag, so the failure is visible
+        // on a phone with no inspector attached
+        expect(out).toContain('loaddiag');
+        expect(out).toContain('ss-portal-loaddiag');
+    });
+
+    it('backs the optional warm pass off a device that is dropping loads', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        // the pure policy is stringified in and actually drives warmUrls
+        expect(out).toContain('warmConcurrency');
+        expect(out).toContain('warmConcurrency(loadFailures.total)');
+        // ...and the fixed 4-at-a-time cap it replaces is gone
+        expect(out).not.toContain('var CONCURRENCY = 4;');
+    });
+
     it('drives residency from a device budget (selectResidentScenes wired in)', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
