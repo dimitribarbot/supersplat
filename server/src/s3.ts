@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { Transform } from 'node:stream';
+import { crc32 } from 'node:zlib';
 import { gzip, unzipSync } from 'fflate';
 import { HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { ProgressEvent } from './progress.js';
@@ -21,12 +22,11 @@ const cfg = () => ({
 
 // A fresh client per call keeps the module env-driven and test-friendly; the
 // publish path is low-frequency so there is no pooling concern.
-const makeClient = (c: ReturnType<typeof cfg>, overrides: Record<string, unknown> = {}) => new S3Client({
+const makeClient = (c: ReturnType<typeof cfg>) => new S3Client({
     endpoint: c.endpoint,
     region: c.region,
     forcePathStyle: c.forcePathStyle,
-    credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey },
-    ...overrides
+    credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }
 });
 
 // Keep in sync with the favicon allow-list in favicon.ts: a published viewer's
@@ -108,6 +108,19 @@ export const listPrefix = async (prefix: string): Promise<{ count: number }> => 
     return { count: res.KeyCount ?? 0 };
 };
 
+// CRC32 of a file, base64-encoded big-endian — the form S3 expects in
+// `x-amz-checksum-crc32`. Folded chunk by chunk so a multi-hundred-MB render is
+// never held in memory just to be hashed.
+const crc32Base64 = async (filePath: string): Promise<string> => {
+    let crc = 0;
+    for await (const chunk of createReadStream(filePath)) {
+        crc = crc32(chunk as Buffer, crc);
+    }
+    const out = Buffer.alloc(4);
+    out.writeUInt32BE(crc >>> 0);
+    return out.toString('base64');
+};
+
 // Whether one exact object already exists. A rendered image or video is a
 // single object rather than a folder of them, so the overwrite check is a
 // HeadObject on the exact key -- listPrefix would also match `shot.png.bak`
@@ -146,18 +159,24 @@ export const uploadFile = async (
     onProgress?: (percent: number) => void
 ): Promise<UploadResult> => {
     const c = cfg();
-    // WHEN_REQUIRED is what makes the progress below mean anything. The SDK's
-    // default (WHEN_SUPPORTED) computes a request checksum, which forces it to
-    // drain the whole stream body BEFORE sending — so the counter would measure
-    // buffering, not upload. Measured against a deliberately slow endpoint with
-    // a 21 MB body: default drained the body at 37 ms while the receiver only
-    // finished at 970 ms (bar hits 100% in 4% of the transfer, then stalls);
-    // with WHEN_REQUIRED, 920 ms vs 966 ms.
-    //
-    // Scoped to this call — publishZip sends in-memory buffers, has no stream to
-    // pace and no progress derived from one, so its behaviour is left alone.
-    const client = makeClient(c, { requestChecksumCalculation: 'WHEN_REQUIRED' });
+    const client = makeClient(c);
     const { size } = await stat(filePath);
+
+    // Hand the SDK a precomputed checksum rather than letting it derive one.
+    //
+    // The SDK buffers a stream body ONLY so it can checksum it, and that
+    // buffering is what made the progress below meaningless: against a slow
+    // endpoint with a 21 MB body it drained the body at 37 ms while the receiver
+    // only finished at 970 ms, so the bar hit 100% in 4% of the transfer and
+    // then stalled. Supplying the value leaves nothing to compute — measured
+    // 905 ms vs 946 ms, i.e. the read tracks the network — while S3 still
+    // verifies what it received and rejects a corrupted PUT with BadDigest
+    // instead of storing it.
+    //
+    // Costs one extra sequential read of the (local) file. It cannot share the
+    // progress pass below: the checksum travels as a request header, so it has
+    // to be known before the first byte goes out.
+    const checksum = await crc32Base64(filePath);
 
     // Count through a Transform, not a 'data' listener on the read stream:
     // attaching one would switch the stream to flowing mode and drain the body
@@ -181,6 +200,7 @@ export const uploadFile = async (
         Body: body,
         ContentLength: size,
         ContentType: contentType(key),
+        ChecksumCRC32: checksum,
         ...(isPublic ? { ACL: 'public-read' as const } : {})
     }));
     return { url: isPublic ? objectUrl(c, key) : undefined, key };

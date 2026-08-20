@@ -222,23 +222,36 @@ describe('uploadFile', () => {
         });
     });
 
-    // The SDK's DEFAULT request-checksum calculation buffers the whole stream
-    // body before sending, which makes byte-counting the read stream measure
-    // buffering rather than upload. Measured against a deliberately slow
-    // endpoint with a 21 MB body: the body was drained at 37 ms while the
-    // receiver only finished at 970 ms. With WHEN_REQUIRED the same run drained
-    // at 920 ms vs 966 ms -- i.e. the read tracks the network.
+    // The SDK buffers a stream body ONLY to compute a checksum from it, which is
+    // what made byte-counting the read stream measure buffering instead of
+    // upload. Supplying the value up front means there is nothing to compute:
+    // the body streams AND S3 still validates what it received, rejecting a
+    // corrupted PUT with BadDigest rather than storing it.
     //
-    // Scoped to uploadFile: publishZip sends in-memory Uint8Arrays, so it has
-    // nothing to stream and no progress derived from one. Leave that path's
-    // integrity behaviour exactly as it was.
-    it('disables up-front checksum buffering so store progress is real', async () => {
+    // Measured against a deliberately slow endpoint, 21 MB body: SDK-computed
+    // checksum drained the body at 37 ms while the receiver finished at 970 ms;
+    // precomputed, 905 ms vs 946 ms.
+    it('sends a precomputed CRC32 so S3 validates the bytes it received', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        // 0xCBF43926 is the standard CRC-32 check value for "123456789", so this
+        // pins the encoding (big-endian, base64) against a known constant rather
+        // than against another call to the same hash function
+        await withTempFile(new TextEncoder().encode('123456789'), async (path) => {
+            await s3.uploadFile(path, 'clip.mp4', false);
+            expect(sent.find(c => c.__type === 'PutObject').input.ChecksumCRC32).toBe('y/Q5Jg==');
+        });
+    });
+
+    // No client-level override any more: we hand over the value instead of
+    // switching the SDK's checksumming off.
+    it('leaves the SDK checksum configuration at its default', async () => {
         setEnv();
         const s3 = await import('../src/s3.js');
         await withTempFile(new Uint8Array([1]), async (path) => {
             await s3.uploadFile(path, 'clip.mp4', false);
         });
-        expect(clientConfigs.at(-1).requestChecksumCalculation).toBe('WHEN_REQUIRED');
+        expect(clientConfigs.at(-1).requestChecksumCalculation).toBeUndefined();
     });
 
     it('leaves the publish path\'s checksum behaviour untouched', async () => {
