@@ -58,32 +58,32 @@ class ScenePanel extends Container {
         });
         walkthroughToggle.dom.appendChild(createSvg(portalSvg));
 
-        soloToggle.on('click', () => {
-            soloActive = !soloActive;
-            if (soloActive) {
-                soloToggle.class.add('active');
-            } else {
-                soloToggle.class.remove('active');
+        const setSolo = (on: boolean) => {
+            if (on === soloActive) {
+                return;
             }
+            soloActive = on;
+            soloToggle.class[soloActive ? 'add' : 'remove']('active');
             if (soloActive && walkthroughActive) {
                 walkthroughActive = false;
                 walkthroughToggle.class.remove('active');
                 events.fire('portals.walkthrough', false);
             }
             events.fire('scene.solo', soloActive);
-        });
-
-        const refreshWalkthroughEnabled = () => {
-            const count = events.invoke('portals.count') as number;
-            walkthroughToggle.class[count > 0 ? 'remove' : 'add']('disabled');
         };
 
-        walkthroughToggle.on('click', () => {
-            const count = events.invoke('portals.count') as number;
-            if (count === 0) {
-                return; // disabled until at least one portal exists
+        const setWalkthrough = (on: boolean) => {
+            if (on === walkthroughActive) {
+                return;
             }
-            walkthroughActive = !walkthroughActive;
+            // guarded on the way IN only: with no portals there is nothing to
+            // walk through, but a walkthrough already running must always be
+            // switchable off — including by the video render's restore, which
+            // would otherwise leave the toggle stuck on
+            if (on && (events.invoke('portals.count') as number) === 0) {
+                return;
+            }
+            walkthroughActive = on;
             walkthroughToggle.class[walkthroughActive ? 'add' : 'remove']('active');
             if (walkthroughActive && soloActive) {
                 soloActive = false;
@@ -91,7 +91,25 @@ class ScenePanel extends Container {
                 events.fire('scene.solo', false);
             }
             events.fire('portals.walkthrough', walkthroughActive);
-        });
+        };
+
+        soloToggle.on('click', () => setSolo(!soloActive));
+        walkthroughToggle.on('click', () => setWalkthrough(!walkthroughActive));
+
+        // Programmatic control of the two toggles. A video render forces
+        // walkthrough on so the animated camera swaps scenes at portals instead
+        // of rendering every scene superimposed, then puts both toggles back as
+        // it found them (src/render-walkthrough.ts). Routed through the same
+        // setters so the buttons keep reflecting the real state.
+        events.on('scene.solo.set', setSolo);
+        events.on('portals.walkthrough.set', setWalkthrough);
+        events.function('scene.solo.active', () => soloActive);
+        events.function('portals.walkthrough.active', () => walkthroughActive);
+
+        const refreshWalkthroughEnabled = () => {
+            const count = events.invoke('portals.count') as number;
+            walkthroughToggle.class[count > 0 ? 'remove' : 'add']('disabled');
+        };
 
         events.on('portals.changed', refreshWalkthroughEnabled);
         refreshWalkthroughEnabled();

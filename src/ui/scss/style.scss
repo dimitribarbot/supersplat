@@ -283,3 +283,25 @@ body {
     font-weight: bold;
     font-style: normal;
 }
+
+// Still frame that stands in for the live view while a video renders. The
+// render disables the camera's final pass, so the canvas would otherwise sit
+// black for the whole job. Opaque, and it covers the HUD too (it is the last
+// child of #canvas-container, whose children stack in DOM order) so the
+// walkthrough/solo swap is hidden as well. pointer-events swallow clicks on a
+// view that is not live.
+.view-cover {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: $bcg-dark;
+    pointer-events: all;
+
+    canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+    }
+}

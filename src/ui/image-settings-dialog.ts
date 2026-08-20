@@ -1,9 +1,23 @@
 import { BooleanInput, Button, Container, Element, Label, NumericInput, SelectInput, SliderInput, VectorInput } from '@playcanvas/pcui';
 
 import { Events } from '../events';
+import { probeExportCapabilities } from '../export-server-client';
 import { ImageSettings } from '../render';
+import { RenderUploadTarget } from '../render-upload';
 import { i18n } from './localization';
+import { createRenderS3Rows } from './render-s3-rows';
 import sceneExport from './svg/export.svg';
+
+// The dialog resolves the render settings plus, when "Publish to S3" is on, the
+// destination the caller uploads to instead of saving locally.
+type ImageDialogResult = ImageSettings & { s3?: RenderUploadTarget };
+
+// File extension each format produces; also what the S3 object key ends in.
+const formatExtensions: Record<string, string> = {
+    png: 'png',
+    jpeg: 'jpg',
+    webp: 'webp'
+};
 
 const createSvg = (svgString: string, args = {}) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -14,7 +28,7 @@ const createSvg = (svgString: string, args = {}) => {
 };
 
 class ImageSettingsDialog extends Container {
-    show: () => Promise<ImageSettings | null>;
+    show: () => Promise<ImageDialogResult | null>;
     hide: () => void;
     destroy: () => void;
 
@@ -171,6 +185,10 @@ class ImageSettingsDialog extends Container {
         showDebugRow.append(showDebugLabel);
         showDebugRow.append(showDebugBoolean);
 
+        // publish to s3 (only when the server reports an S3 configuration)
+
+        const s3Rows = createRenderS3Rows();
+
         // content
 
         const content = new Container({ id: 'content' });
@@ -182,6 +200,7 @@ class ImageSettingsDialog extends Container {
         content.append(transparentBgRow);
         content.append(showDebugRow);
         content.append(levelHorizonRow);
+        s3Rows.rows.forEach(r => content.append(r));
 
         // footer
 
@@ -271,6 +290,7 @@ class ImageSettingsDialog extends Container {
             const isJpeg = formatSelect.value === 'jpeg';
             transparentBgRow.hidden = isJpeg;
             qualityRow.hidden = !isJpeg;
+            s3Rows.setExtension(formatExtensions[formatSelect.value]);
         });
 
         // handle key bindings for enter and escape
@@ -292,6 +312,8 @@ class ImageSettingsDialog extends Container {
         // reset UI and configure for current state
         const reset = () => {
             updateResolution();
+            s3Rows.reset(events.invoke('render.baseFilename'));
+            s3Rows.setExtension(formatExtensions[formatSelect.value]);
         };
 
         // function implementations
@@ -305,12 +327,22 @@ class ImageSettingsDialog extends Container {
             document.addEventListener('keydown', keydown);
             this.dom.focus();
 
-            return new Promise<ImageSettings | null>((resolve) => {
+            // Cached after the first call, so this is cheap on reopen. Mirrors
+            // the video dialog's capability probe.
+            probeExportCapabilities().then((caps) => {
+                if (this.hidden) return;
+                s3Rows.setAvailable(!!caps?.publish);
+            });
+
+            return new Promise<ImageDialogResult | null>((resolve) => {
                 onCancel = () => {
                     resolve(null);
                 };
 
                 onOK = () => {
+                    // an S3 destination with no name has nowhere to go
+                    if (!s3Rows.isValid()) return;
+
                     const [width, height] = resolutionValue.value;
                     const is360 = projectionSelect.value === 'equirect';
                     const format = formatSelect.value as 'png' | 'jpeg' | 'webp';
@@ -323,7 +355,8 @@ class ImageSettingsDialog extends Container {
                         format,
                         quality: format === 'jpeg' ? qualitySlider.value / 100 : undefined,
                         projection: (is360 ? 'equirect' : 'standard') as 'standard' | 'equirect',
-                        levelHorizon: is360 && levelHorizonBoolean.value
+                        levelHorizon: is360 && levelHorizonBoolean.value,
+                        s3: s3Rows.target() ?? undefined
                     };
 
                     resolve(imageSettings);

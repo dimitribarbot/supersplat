@@ -52,6 +52,15 @@ self.addEventListener('activate', () => {
 });
 
 self.addEventListener('fetch', (event) => {
+    // Only GET requests can ever be served from the cache, so claiming anything
+    // else gains nothing -- and costs a lot. A request answered via
+    // respondWith() is re-issued by the service worker's own fetch(), which
+    // makes the browser report NO XMLHttpRequest upload progress events on the
+    // page (neither `progress` nor `load` on xhr.upload). That pinned the
+    // render upload's progress bar at 0% for the whole transfer, and it also
+    // proxies every multi-hundred-MB export upload for no reason.
+    if (event.request.method !== 'GET') return;
+
     event.respondWith(
         caches.match(event.request)
         .then(response => response ?? fetch(event.request))

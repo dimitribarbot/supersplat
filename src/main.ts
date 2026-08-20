@@ -19,6 +19,7 @@ import { registerPortalsRuntime } from './portals-runtime';
 import { registerPreferences } from './preferences';
 import { registerPublishEvents } from './publish';
 import { registerRenderEvents } from './render';
+import { registerRenderUploadEvents } from './render-upload';
 import { registerS3PublishEvents } from './s3-publish';
 import { Scene } from './scene';
 import { getSceneConfig } from './scene-config';
@@ -132,6 +133,7 @@ const main = async () => {
     registerTransformHandlerEvents(events);
     registerPublishEvents(events);
     registerS3PublishEvents(events);
+    registerRenderUploadEvents(events);
     registerIframeApi(events);
 
     // initialize shortcuts

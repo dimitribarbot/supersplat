@@ -1,19 +1,44 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { gunzipSync, zipSync } from 'fflate';
 
 // Capture the commands sent to the mocked S3 client.
 const sent: any[] = [];
+const clientConfigs: any[] = [];
 vi.mock('@aws-sdk/client-s3', () => {
     class S3Client {
+        constructor(config: any) {
+            clientConfigs.push(config);
+        }
+
         async send(cmd: any) {
             sent.push(cmd);
+            // uploadFile streams its body from disk; drain it the way the real
+            // SDK would so the byte-counting progress wrapper actually runs.
+            if (cmd.__type === 'PutObject' && typeof cmd.input.Body?.[Symbol.asyncIterator] === 'function') {
+                for await (const _chunk of cmd.input.Body) { /* drain */ }
+            }
             if (cmd.__type === 'ListObjectsV2') return { KeyCount: cmd.input.Prefix.includes('exists') ? 1 : 0 };
+            if (cmd.__type === 'HeadObject') {
+                if (cmd.input.Key.includes('exists')) return {};
+                // shape of a real S3 404 from HeadObject (no body, name NotFound)
+                const err: any = new Error('NotFound');
+                err.name = 'NotFound';
+                err.$metadata = { httpStatusCode: 404 };
+                throw err;
+            }
             return {};
         }
     }
-    class PutObjectCommand { __type = 'PutObject'; constructor(public input: any) {} }
+    class PutObjectCommand {
+        __type = 'PutObject';
+        constructor(public input: any) {}
+    }
     class ListObjectsV2Command { __type = 'ListObjectsV2'; constructor(public input: any) {} }
-    return { S3Client, PutObjectCommand, ListObjectsV2Command };
+    class HeadObjectCommand { __type = 'HeadObject'; constructor(public input: any) {} }
+    return { S3Client, PutObjectCommand, ListObjectsV2Command, HeadObjectCommand };
 });
 
 const ENV = {
@@ -31,7 +56,7 @@ const clearEnv = () => {
     for (const k of [...Object.keys(ENV), 'S3_PUBLIC_BASE_URL', 'S3_FORCE_PATH_STYLE']) delete process.env[k];
 };
 
-beforeEach(() => { sent.length = 0; clearEnv(); vi.resetModules(); });
+beforeEach(() => { sent.length = 0; clientConfigs.length = 0; clearEnv(); vi.resetModules(); });
 afterEach(() => { clearEnv(); });
 
 describe('s3 config', () => {
@@ -146,5 +171,116 @@ describe('listPrefix', () => {
         const list = sent.find(c => c.__type === 'ListObjectsV2');
         expect(list.input.MaxKeys).toBe(1);
         expect(list.input.Prefix).toBe('exists/x/');
+    });
+});
+
+describe('objectExists', () => {
+    // A rendered image/video is a single object, not a folder of them, so the
+    // overwrite check is an exact-key HeadObject -- a prefix listing would also
+    // match `shot.png.bak` and report a collision that isn't one.
+    it('is true for a present key and false on a 404', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        expect(await s3.objectExists('shots/exists.png')).toBe(true);
+        expect(await s3.objectExists('shots/fresh.png')).toBe(false);
+        const head = sent.find(c => c.__type === 'HeadObject');
+        expect(head.input.Key).toBe('shots/exists.png');
+    });
+});
+
+describe('uploadFile', () => {
+    const withTempFile = async (bytes: Uint8Array, fn: (path: string) => Promise<void>) => {
+        const dir = await mkdtemp(join(tmpdir(), 'ss-upload-test-'));
+        const file = join(dir, 'render.bin');
+        await writeFile(file, bytes);
+        try { await fn(file); } finally { await rm(dir, { recursive: true, force: true }); }
+    };
+
+    it('puts the file at the key with its media type, a public ACL and the object url', async () => {
+        setEnv({ S3_PUBLIC_BASE_URL: 'https://cdn.example.com' });
+        const s3 = await import('../src/s3.js');
+        await withTempFile(new Uint8Array([1, 2, 3, 4]), async (path) => {
+            const res = await s3.uploadFile(path, 'shots/2026/my-render.mp4', true);
+            const put = sent.find(c => c.__type === 'PutObject');
+            expect(put.input.Key).toBe('shots/2026/my-render.mp4');
+            expect(put.input.ContentType).toBe('video/mp4');
+            expect(put.input.ContentLength).toBe(4);
+            expect(put.input.ACL).toBe('public-read');
+            expect(res).toEqual({ url: 'https://cdn.example.com/shots/2026/my-render.mp4', key: 'shots/2026/my-render.mp4' });
+        });
+    });
+
+    it('omits ACL and url when private', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        await withTempFile(new Uint8Array([1]), async (path) => {
+            const res = await s3.uploadFile(path, 'my-render.png', false);
+            const put = sent.find(c => c.__type === 'PutObject');
+            expect(put.input.ContentType).toBe('image/png');
+            expect(put.input.ACL).toBeUndefined();
+            expect(res).toEqual({ url: undefined, key: 'my-render.png' });
+        });
+    });
+
+    // The SDK's DEFAULT request-checksum calculation buffers the whole stream
+    // body before sending, which makes byte-counting the read stream measure
+    // buffering rather than upload. Measured against a deliberately slow
+    // endpoint with a 21 MB body: the body was drained at 37 ms while the
+    // receiver only finished at 970 ms. With WHEN_REQUIRED the same run drained
+    // at 920 ms vs 966 ms -- i.e. the read tracks the network.
+    //
+    // Scoped to uploadFile: publishZip sends in-memory Uint8Arrays, so it has
+    // nothing to stream and no progress derived from one. Leave that path's
+    // integrity behaviour exactly as it was.
+    it('disables up-front checksum buffering so store progress is real', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        await withTempFile(new Uint8Array([1]), async (path) => {
+            await s3.uploadFile(path, 'clip.mp4', false);
+        });
+        expect(clientConfigs.at(-1).requestChecksumCalculation).toBe('WHEN_REQUIRED');
+    });
+
+    it('leaves the publish path\'s checksum behaviour untouched', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        await s3.publishZip(zipSync({ 'index.html': new TextEncoder().encode('x') }), { prefix: 'p', public: false }, () => {});
+        expect(clientConfigs.at(-1).requestChecksumCalculation).toBeUndefined();
+    });
+
+    // The client's xhr.upload progress ends when the last byte reaches the
+    // server; the PutObject that follows is invisible to it. Reporting bytes as
+    // the body is read off disk is what makes that phase observable.
+    it('reports store progress as the body is read, ending at 100', async () => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        // larger than the 64 KB default read chunk, so progress arrives in steps
+        await withTempFile(new Uint8Array(200 * 1024).fill(3), async (path) => {
+            const seen: number[] = [];
+            await s3.uploadFile(path, 'clip.mp4', false, pct => seen.push(pct));
+            expect(seen.length).toBeGreaterThan(1);
+            expect(seen[seen.length - 1]).toBe(100);
+            // monotonic and within range
+            expect(seen).toEqual([...seen].sort((a, b) => a - b));
+            expect(Math.min(...seen)).toBeGreaterThan(0);
+            expect(Math.max(...seen)).toBeLessThanOrEqual(100);
+        });
+    });
+
+    // Render output types the publish path never produced. Without these a
+    // browser opening the public url downloads the file instead of playing it.
+    it.each([
+        ['clip.webm', 'video/webm'],
+        ['clip.mov', 'video/quicktime'],
+        ['clip.mkv', 'video/x-matroska'],
+        ['shot.jpg', 'image/jpeg'],
+        ['shot.webp', 'image/webp']
+    ])('serves %s as %s', async (name, expected) => {
+        setEnv();
+        const s3 = await import('../src/s3.js');
+        await withTempFile(new Uint8Array([1]), async (path) => {
+            await s3.uploadFile(path, name, false);
+            expect(sent.find(c => c.__type === 'PutObject').input.ContentType).toBe(expected);
+        });
     });
 });

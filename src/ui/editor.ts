@@ -31,6 +31,7 @@ import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
 import { version } from '../../package.json';
 import { probeExportCapabilities, runVideoCompress } from '../export-server-client';
+import { withVideoRenderState } from '../video-render-state';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -44,6 +45,35 @@ const downloadBlob = (blob: Blob, filename: string) => {
     el.href = url;
     el.click();
     window.URL.revokeObjectURL(url);
+};
+
+// Render into an OPFS scratch file and hand the finished bytes back.
+//
+// Used by the "Publish to S3" path, where there is no local file to write and
+// therefore no save picker: render.image / render.video already accept any
+// FileSystemWritableFileStream, so staging through OPFS keeps the render output
+// off the heap and leaves the upstream-owned src/render.ts untouched. Same
+// trick the video compression path uses to stage its master.
+//
+// `use` is skipped when the render failed or was cancelled — both already
+// report themselves to the user, so callers just stop. The scratch entry is
+// removed only after `use` returns: a File read from a deleted OPFS entry
+// fails, so the bytes have to be consumed while the entry still exists.
+const withRenderedTempFile = async (
+    prefix: string,
+    render: (writable: FileSystemWritableFileStream) => Promise<boolean>,
+    use: (file: File) => Promise<void>
+) => {
+    const opfs = await navigator.storage.getDirectory();
+    const tempName = `${prefix}-${Date.now()}`;
+    const tempHandle = await opfs.getFileHandle(tempName, { create: true });
+    try {
+        const rendered = await render(await tempHandle.createWritable());
+        if (rendered === false) return;
+        await use(await tempHandle.getFile());
+    } finally {
+        await opfs.removeEntry(tempName).catch(() => {});
+    }
 };
 
 class EditorUI {
@@ -128,10 +158,18 @@ class EditorUI {
         canvasContainer.append(modeToggle);
         canvasContainer.append(menu);
 
+        // Set while a video render is showing a still of the view (see
+        // view.freeze below). Camera-driven overlays hold their positions rather
+        // than tracking the animating render camera.
+        let viewFrozen = false;
+
         // view axes container
         const viewCube = new ViewCube(events);
         canvasContainer.append(viewCube);
         events.on('prerender', (cameraMatrix: Mat4) => {
+            if (viewFrozen) {
+                return;
+            }
             viewCube.update(cameraMatrix);
         });
 
@@ -269,9 +307,13 @@ class EditorUI {
         });
 
         events.function('show.imageSettingsDialog', async () => {
-            const imageSettings = await imageSettingsDialog.show();
+            const dialogResult = await imageSettingsDialog.show();
 
-            if (imageSettings) {
+            if (dialogResult) {
+                // `s3` is the publish destination, not a render setting; keep it
+                // out of what render.image receives
+                const { s3, ...imageSettings } = dialogResult;
+
                 try {
                     let writable;
                     let fileHandle: FileSystemFileHandle | undefined;
@@ -282,6 +324,23 @@ class EditorUI {
                         webp: { description: 'WebP Image', accept: { 'image/webp': ['.webp'] }, extension: '.webp' }
                     };
                     const imageFileType = imageFileTypes[imageSettings.format];
+
+                    // Publishing to S3 replaces the local save entirely: no save
+                    // picker, and the render is staged in OPFS then uploaded.
+                    // The destination is settled first so a collision costs the
+                    // user a click rather than a wasted render.
+                    if (s3) {
+                        const ext = imageFileType.extension.slice(1);
+                        if (!await events.invoke('render.s3.confirm', s3, ext)) {
+                            return;
+                        }
+                        await withRenderedTempFile(
+                            'render-image',
+                            stream => events.invoke('render.image', imageSettings, stream),
+                            file => events.invoke('render.s3.upload', file, s3, ext)
+                        );
+                        return;
+                    }
 
                     if (window.showSaveFilePicker) {
                         fileHandle = await window.showSaveFilePicker({
@@ -318,9 +377,12 @@ class EditorUI {
         });
 
         events.function('show.videoSettingsDialog', async () => {
-            const videoSettings = await videoSettingsDialog.show();
+            const dialogResult = await videoSettingsDialog.show();
 
-            if (videoSettings) {
+            if (dialogResult) {
+                // `s3` is the publish destination, not a render setting; keep it
+                // out of what render.video receives
+                const { s3, ...videoSettings } = dialogResult;
 
                 try {
                     // Determine file extension and mime type based on format
@@ -373,10 +435,33 @@ class EditorUI {
 
                     const suggested = `${events.invoke('render.baseFilename')}${fileExtension}`;
 
-                    let writable;
+                    // Publishing to S3 replaces the local save entirely, so the
+                    // save picker never runs. Settle the destination before the
+                    // (multi-minute) render so a collision costs the user a
+                    // click rather than the whole render.
+                    const s3Ext = s3 ? fileExtension.slice(1) : '';
+                    if (s3 && !await events.invoke('render.s3.confirm', s3, s3Ext)) {
+                        return;
+                    }
+
+                    if (s3 && !compress) {
+                        await withRenderedTempFile(
+                            'video-master',
+                            // walkthrough wraps the render only: it must be back
+                            // to normal while the upload runs
+                            stream => withVideoRenderState(events, () => events.invoke('render.video', videoSettings, stream)),
+                            file => events.invoke('render.s3.upload', file, s3, s3Ext)
+                        );
+                        return;
+                    }
+
+                    // explicitly typed: the render call below reads it from
+                    // inside a closure, where TS cannot infer it from the
+                    // assignment flow
+                    let writable: FileSystemWritableFileStream | undefined;
                     let fileHandle: FileSystemFileHandle | undefined;
 
-                    if (window.showSaveFilePicker) {
+                    if (window.showSaveFilePicker && !s3) {
                         fileHandle = await window.showSaveFilePicker({
                             id: 'SuperSplatVideoFileExport',
                             types: filePickerTypes,
@@ -395,7 +480,7 @@ class EditorUI {
                     }
 
                     if (!compress) {
-                        const result = await events.invoke('render.video', videoSettings, writable);
+                        const result = await withVideoRenderState(events, () => events.invoke('render.video', videoSettings, writable));
 
                         // if the render was cancelled, remove the empty file left on disk
                         if (result === false && fileHandle?.remove) {
@@ -415,7 +500,10 @@ class EditorUI {
 
                     try {
                         const tempWritable = await tempHandle.createWritable();
-                        const rendered = await events.invoke('render.video', videoSettings, tempWritable);
+                        // walkthrough wraps the render only: the compression job
+                        // that follows can run for minutes, and the editor should
+                        // look normal throughout it
+                        const rendered = await withVideoRenderState(events, () => events.invoke('render.video', videoSettings, tempWritable));
                         if (rendered === false) {
                             if (fileHandle?.remove) {
                                 await fileHandle.remove();
@@ -454,7 +542,11 @@ class EditorUI {
                             events.fire('progressEnd');
                         }
 
-                        if (fileHandle) {
+                        if (s3) {
+                            // the compressed WebM is what lands in storage, not
+                            // the master that was just re-encoded away
+                            await events.invoke('render.s3.upload', output, s3, s3Ext);
+                        } else if (fileHandle) {
                             const out = await fileHandle.createWritable();
                             await out.write(await output.arrayBuffer());
                             await out.close();
@@ -484,6 +576,83 @@ class EditorUI {
 
         events.on('show.about', () => {
             aboutPopup.hidden = false;
+        });
+
+        // Freeze the editor view with a still of the current frame, for the
+        // duration of a video render (src/video-render-state.ts).
+        //
+        // A video render retargets the camera offscreen and disables the final
+        // pass (camera.ts startOffscreenMode), so the canvas stops being written
+        // and stays black until it is re-enabled. The walkthrough/solo swap
+        // around it is visible too. This hides both.
+        //
+        // Inserted directly after the canvas, so it replaces the live render but
+        // stays UNDER the HUD — canvasContainer's children stack in DOM order.
+        // The menu, panels, toolbars, view cube and annotation markers all keep
+        // drawing on top of the still, and the progress dialog (topContainer)
+        // sits above everything.
+        let viewCover: HTMLDivElement | null = null;
+
+        events.function('view.freeze', async () => {
+            if (viewCover) {
+                return;
+            }
+
+            // opaque immediately; the still is painted in once captured, so
+            // nothing shows through in between
+            const cover = document.createElement('div');
+            cover.classList.add('view-cover');
+            const canvasEl = canvasContainer.dom.querySelector('canvas');
+            canvasContainer.dom.insertBefore(cover, canvasEl ? canvasEl.nextSibling : canvasContainer.dom.firstChild);
+            viewCover = cover;
+
+            // Hold every camera-driven overlay at its current position. They
+            // redraw from the LIVE camera, which is about to animate through the
+            // whole video offscreen — without this the annotation markers slide
+            // around over a static image and the view cube spins.
+            viewFrozen = true;
+            events.fire('view.frozen', true);
+
+            try {
+                const { width, height } = events.invoke('targetSize');
+                const pixels = await events.invoke('render.offscreen', width, height) as Uint8Array;
+
+                // a second freeze may have replaced this cover while we awaited
+                if (!pixels || viewCover !== cover) {
+                    return;
+                }
+
+                const still = document.createElement('canvas');
+                still.width = width;
+                still.height = height;
+                // render.offscreen allocates a plain `new Uint8Array(w*h*4)`, so
+                // the buffer really is an ArrayBuffer — TS only knows the wider
+                // ArrayBufferLike. Viewing beats copying 15 MB.
+                const clamped = new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.length);
+                still.getContext('2d')?.putImageData(new ImageData(clamped, width, height), 0, 0);
+                cover.appendChild(still);
+            } catch (error) {
+                // keep the plain opaque cover: it still hides the blackout
+                console.warn('view freeze snapshot failed:', error);
+            }
+        });
+
+        events.on('view.unfreeze', () => {
+            const cover = viewCover;
+            if (!cover) {
+                return;
+            }
+            viewCover = null;
+
+            // give the restored camera a frame to settle and one live frame to
+            // present before revealing, or the reveal flashes the render's last
+            // pose. The overlays resume with the cover, and the camera is back
+            // where it started, so their held positions are already correct.
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                viewFrozen = false;
+                events.fire('view.frozen', false);
+                cover.remove();
+            }));
         });
 
         events.function('showPopup', (options: ShowOptions) => {

@@ -154,6 +154,154 @@ export const runServerPublish = async (
     });
 };
 
+// --- rendered image / video upload -------------------------------------------
+//
+// A render is a single object (`<subfolder>/<name>.<ext>`), not a folder of
+// viewer files, so it uses its own routes rather than the publish job pipeline:
+// the bytes already exist client-side and there is nothing for the server to
+// build, so there is no job and no SSE stream.
+
+export type UploadResult = { url?: string; key: string };
+
+export type UploadOptions = {
+    subfolder: string;
+    name: string;
+    ext: string;
+    public: boolean;
+    overwrite: boolean;
+};
+
+// Thrown when the destination object already exists and overwrite wasn't set.
+export class UploadExistsError extends Error {
+    constructor() {
+        super('destination already exists');
+        this.name = 'UploadExistsError';
+    }
+}
+
+export const checkUploadExists = async (subfolder: string, name: string, ext: string): Promise<boolean> => {
+    const qs = new URLSearchParams();
+    if (subfolder) qs.set('subfolder', subfolder);
+    qs.set('name', name);
+    qs.set('ext', ext);
+    const res = await fetch(`${location.origin}/api/upload/exists?${qs.toString()}`);
+    if (!res.ok) {
+        // a hand-typed name outside [A-Za-z0-9._-] lands here; surface the
+        // server's reason rather than a bare status code, since this check is
+        // what stops the render before it starts
+        let detail = '';
+        try {
+            detail = (await res.json())?.error ?? '';
+        } catch {
+            // non-JSON error body (e.g. a proxy's HTML page)
+        }
+        throw new Error(detail || `upload-exists check failed (${res.status})`);
+    }
+    const { exists } = await res.json();
+    return !!exists;
+};
+
+// Fraction of the reported progress owned by the browser→server transfer; the
+// rest belongs to the server→S3 PutObject that follows it. Both legs move
+// roughly the same bytes, so they split the bar evenly.
+const UPLOAD_SHARE = 0.5;
+
+// Send the rendered file and resolve with its storage location.
+//
+// Two measured phases, because no single mechanism can see both:
+//   1. browser → server, reported by xhr.upload (fetch reports no upload
+//      progress at all, which is why this is XHR). Note this only works because
+//      the service worker leaves non-GET requests alone — a request answered via
+//      respondWith() is re-issued by the worker and fires no upload events. See
+//      src/sw.ts.
+//   2. server → S3, reported over SSE by the upload job. Invisible to phase 1:
+//      by then the client has sent its last byte and is simply waiting.
+//
+// `onProgress` receives 0..1 spanning both; `onStoring` fires at the handover.
+export const uploadRender = async (
+    file: Blob,
+    options: UploadOptions,
+    onProgress: (fraction: number) => void,
+    onStoring: () => void
+): Promise<UploadResult> => {
+    const form = new FormData();
+    // options first so the server can reject a bad destination (or a collision)
+    // before the body streams in — see the /api/upload handler
+    form.append('options', JSON.stringify(options));
+    form.append('file', file, `render.${options.ext}`);
+
+    const jobId = await new Promise<string>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${location.origin}/api/upload`);
+
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable && e.total > 0) onProgress(UPLOAD_SHARE * e.loaded / e.total);
+        };
+        xhr.upload.onload = () => {
+            onProgress(UPLOAD_SHARE);
+            onStoring();
+        };
+
+        xhr.onload = () => {
+            if (xhr.status === 409) {
+                reject(new UploadExistsError());
+                return;
+            }
+            if (xhr.status < 200 || xhr.status >= 300) {
+                let detail = '';
+                try {
+                    detail = JSON.parse(xhr.responseText)?.error ?? '';
+                } catch {
+                    // non-JSON error body (e.g. a proxy's HTML page)
+                }
+                reject(new Error(detail || `upload failed (${xhr.status})`));
+                return;
+            }
+            try {
+                resolve(JSON.parse(xhr.responseText).jobId);
+            } catch {
+                reject(new Error('server returned an unexpected upload result'));
+            }
+        };
+        xhr.onerror = () => reject(new Error('upload failed'));
+        xhr.onabort = () => reject(new Error('upload cancelled'));
+
+        xhr.send(form);
+    });
+
+    if (!jobId) throw new Error('server did not return a job id');
+
+    return new Promise<UploadResult>((resolve, reject) => {
+        const es = new EventSource(`${location.origin}/api/upload/${jobId}/events`);
+        es.onmessage = (ev) => {
+            let e;
+            try {
+                e = JSON.parse(ev.data);
+            } catch (err) {
+                es.close();
+                reject(new Error(`unexpected SSE data: ${ev.data}`));
+                return;
+            }
+            if (e.kind === 'progress') {
+                if (typeof e.value === 'number') {
+                    onProgress(UPLOAD_SHARE + (1 - UPLOAD_SHARE) * e.value / 100);
+                }
+            } else if (e.kind === 'done') {
+                es.close();
+                onProgress(1);
+                resolve({ url: e.url, key: e.key });
+            } else if (e.kind === 'error') {
+                es.close();
+                reject(new Error(e.message));
+            }
+        };
+        es.onerror = () => {
+            es.close();
+            reject(new Error('progress stream error'));
+        };
+    });
+};
+
 export type VideoCompressOptions = {
     targetMB: number;
     frameRate: number;

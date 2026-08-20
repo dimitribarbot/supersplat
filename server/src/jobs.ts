@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { runExportViaWorker } from './run-export-worker-host.js';
 import type { ExportOptions } from './run-export.js';
 import type { ProgressEvent } from './progress.js';
-import { publishZip, type PublishDest } from './s3.js';
+import { publishZip, uploadFile, type PublishDest } from './s3.js';
 import { runVideoCompress, type VideoCompressOptions } from './video-compress.js';
 
 type Job = {
@@ -128,6 +128,56 @@ export const createVideoJob = (masterPath: string, opts: VideoCompressOptions): 
         const { promise, cancel } = runVideoCompress(masterPath, opts, onProgress);
         return { promise: promise.then(files => ({ files })), cancel };
     }, undefined, () => rm(dirname(masterPath), { recursive: true, force: true }));
+};
+
+// Store an already-received render (image/video) to S3, reporting progress.
+//
+// Deliberately NOT on the serial chain the exports and ffmpeg share: that chain
+// exists because each of those pins a GPU or every CPU core, whereas a PutObject
+// is network-bound. Queueing a few seconds of upload behind a multi-minute GPU
+// export would strand the user's render for no benefit.
+//
+// There is no cancel path either: the bytes are already on disk and the client
+// has nothing left to send, so a dropped SSE subscriber should not abort a
+// half-written object in the bucket.
+export const createUploadJob = (
+    filePath: string,
+    key: string,
+    isPublic: boolean,
+    cleanup: () => Promise<void> | void
+): string => {
+    const id = `job_${randomBytes(16).toString('hex')}`;
+    const job: Job = { id, state: 'running', listeners: [], buffered: [], createdAt: Date.now(), cancelled: false };
+    jobs.set(id, job);
+
+    (async () => {
+        try {
+            // `message` is the English server-log line only; the editor supplies
+            // its own localized text for this phase, so no `loc` is needed.
+            const res = await uploadFile(filePath, key, isPublic, value => push(job, {
+                kind: 'progress',
+                message: `Storing ${key}`,
+                value
+            }));
+            job.state = 'done';
+            job.finishedAt = Date.now();
+            push(job, { kind: 'done', url: res.url, key: res.key });
+        } catch (err: any) {
+            const message: string = err?.message ?? String(err);
+            job.error = message;
+            job.state = 'error';
+            job.finishedAt = Date.now();
+            push(job, { kind: 'error', message });
+        } finally {
+            try {
+                await cleanup();
+            } catch (err) {
+                console.warn('jobs: upload temp cleanup failed:', err);
+            }
+        }
+    })();
+
+    return id;
 };
 
 export const getJob = (id: string): Job | undefined => jobs.get(id);

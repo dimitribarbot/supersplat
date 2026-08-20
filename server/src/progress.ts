@@ -13,7 +13,9 @@ export type ProgressEvent =
     // `value` is a percentage, 0..100 (not a 0..1 fraction) — the editor
     // (src/ui/progress.ts) interpolates it directly into a CSS gradient stop.
     | { kind: 'progress'; message?: string; value?: number; loc?: ProgressLoc; collision?: { index: number; bytes: number } }
-    | { kind: 'done'; url?: string; prefix?: string }
+    // `prefix` is a publish's destination folder; `key` is a single uploaded
+    // object (a rendered image or video). Exactly one of them is set.
+    | { kind: 'done'; url?: string; prefix?: string; key?: string }
     | { kind: 'error'; message: string };
 
 // Transport-agnostic collector. The export worker pushes ProgressEvents in;

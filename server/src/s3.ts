@@ -1,5 +1,8 @@
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { Transform } from 'node:stream';
 import { gzip, unzipSync } from 'fflate';
-import { ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { ProgressEvent } from './progress.js';
 
 const REQUIRED = ['S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'] as const;
@@ -18,11 +21,12 @@ const cfg = () => ({
 
 // A fresh client per call keeps the module env-driven and test-friendly; the
 // publish path is low-frequency so there is no pooling concern.
-const makeClient = (c: ReturnType<typeof cfg>) => new S3Client({
+const makeClient = (c: ReturnType<typeof cfg>, overrides: Record<string, unknown> = {}) => new S3Client({
     endpoint: c.endpoint,
     region: c.region,
     forcePathStyle: c.forcePathStyle,
-    credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }
+    credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey },
+    ...overrides
 });
 
 // Keep in sync with the favicon allow-list in favicon.ts: a published viewer's
@@ -40,7 +44,13 @@ const CONTENT_TYPES: Record<string, string> = {
     svg: 'image/svg+xml',
     gif: 'image/gif',
     jpg: 'image/jpeg',
-    jpeg: 'image/jpeg'
+    jpeg: 'image/jpeg',
+    // rendered image/video uploads (uploadFile). A public url served as
+    // octet-stream downloads instead of rendering or playing in the browser.
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    mkv: 'video/x-matroska'
 };
 
 // Own-property lookup, matching favicon.ts's MIME_EXT/EXT_MIME guard: entry
@@ -76,10 +86,12 @@ const gzipAsync = (data: Uint8Array): Promise<Uint8Array> => new Promise((resolv
     gzip(data, { level: 6 }, (err, out) => (err ? reject(err) : resolve(out)));
 });
 
-const publicUrl = (c: ReturnType<typeof cfg>, prefix: string): string => {
+const objectUrl = (c: ReturnType<typeof cfg>, key: string): string => {
     const base = (c.publicBase ?? `${c.endpoint}/${c.bucket}`).replace(/\/+$/, '');
-    return `${base}/${prefix}/index.html`;
+    return `${base}/${key}`;
 };
+
+const publicUrl = (c: ReturnType<typeof cfg>, prefix: string): string => objectUrl(c, `${prefix}/index.html`);
 
 export type PublishDest = { prefix: string; public: boolean };
 export type PublishResult = { url?: string; prefix: string };
@@ -94,6 +106,84 @@ export const listPrefix = async (prefix: string): Promise<{ count: number }> => 
         MaxKeys: 1
     }));
     return { count: res.KeyCount ?? 0 };
+};
+
+// Whether one exact object already exists. A rendered image or video is a
+// single object rather than a folder of them, so the overwrite check is a
+// HeadObject on the exact key -- listPrefix would also match `shot.png.bak`
+// and report a collision that isn't one.
+export const objectExists = async (key: string): Promise<boolean> => {
+    const c = cfg();
+    const client = makeClient(c);
+    try {
+        await client.send(new HeadObjectCommand({ Bucket: c.bucket, Key: key }));
+        return true;
+    } catch (err: any) {
+        if (err?.$metadata?.httpStatusCode === 404 || err?.name === 'NotFound') return false;
+        throw err;
+    }
+};
+
+export type UploadResult = { url?: string; key: string };
+
+// Upload one already-encoded file (a rendered image or video) to `key`.
+//
+// Streams from disk rather than buffering: a rendered video is routinely
+// hundreds of MB. PutObject needs the length up front when the body is a
+// stream, which is exactly why the route stages the upload in a temp file
+// instead of piping the multipart part straight through.
+//
+// No gzip pass here (unlike publishZip): these payloads are already compressed
+// formats, so gzipping them costs CPU and grows the object.
+//
+// `onProgress` receives 0..100 as the body is read off disk. This is the only
+// window the browser has onto this phase: its xhr.upload progress ended when
+// the last byte reached us, and everything after that is invisible to it.
+export const uploadFile = async (
+    filePath: string,
+    key: string,
+    isPublic: boolean,
+    onProgress?: (percent: number) => void
+): Promise<UploadResult> => {
+    const c = cfg();
+    // WHEN_REQUIRED is what makes the progress below mean anything. The SDK's
+    // default (WHEN_SUPPORTED) computes a request checksum, which forces it to
+    // drain the whole stream body BEFORE sending — so the counter would measure
+    // buffering, not upload. Measured against a deliberately slow endpoint with
+    // a 21 MB body: default drained the body at 37 ms while the receiver only
+    // finished at 970 ms (bar hits 100% in 4% of the transfer, then stalls);
+    // with WHEN_REQUIRED, 920 ms vs 966 ms.
+    //
+    // Scoped to this call — publishZip sends in-memory buffers, has no stream to
+    // pace and no progress derived from one, so its behaviour is left alone.
+    const client = makeClient(c, { requestChecksumCalculation: 'WHEN_REQUIRED' });
+    const { size } = await stat(filePath);
+
+    // Count through a Transform, not a 'data' listener on the read stream:
+    // attaching one would switch the stream to flowing mode and drain the body
+    // before the SDK ever saw it.
+    let sentBytes = 0;
+    const source = createReadStream(filePath);
+    const body = source.pipe(new Transform({
+        transform(chunk, _encoding, callback) {
+            sentBytes += chunk.length;
+            onProgress?.(size > 0 ? 100 * sentBytes / size : 100);
+            callback(null, chunk);
+        }
+    }));
+    // .pipe() does not forward errors, so a read failure would otherwise leave
+    // the SDK waiting on a stream that never ends.
+    source.on('error', err => body.destroy(err));
+
+    await client.send(new PutObjectCommand({
+        Bucket: c.bucket,
+        Key: key,
+        Body: body,
+        ContentLength: size,
+        ContentType: contentType(key),
+        ...(isPublic ? { ACL: 'public-read' as const } : {})
+    }));
+    return { url: isPublic ? objectUrl(c, key) : undefined, key };
 };
 
 // Unzip the produced viewer ZIP and upload every entry under `<prefix>/`.

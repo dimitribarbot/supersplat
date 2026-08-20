@@ -2,9 +2,15 @@ import { BooleanInput, Button, Container, Element, Label, NumericInput, SelectIn
 
 import { Events } from '../events';
 import { probeExportCapabilities } from '../export-server-client';
+import { RenderUploadTarget } from '../render-upload';
 import { buildVideoEncoderConfig, VideoCodecChoice, VideoSettings } from '../video-config';
 import { i18n } from './localization';
+import { createRenderS3Rows } from './render-s3-rows';
 import sceneExport from './svg/export.svg';
+
+// The dialog resolves the render settings plus, when "Publish to S3" is on, the
+// destination the caller uploads to instead of saving locally.
+type VideoDialogResult = VideoSettings & { s3?: RenderUploadTarget };
 
 type ResolutionOption = {
     v: string;
@@ -112,7 +118,7 @@ const createSvg = (svgString: string, args = {}) => {
 };
 
 class VideoSettingsDialog extends Container {
-    show: () => Promise<VideoSettings | null>;
+    show: () => Promise<VideoDialogResult | null>;
     hide: () => void;
     destroy: () => void;
 
@@ -414,6 +420,13 @@ class VideoSettingsDialog extends Container {
         content.append(targetSizeRow);
         content.append(compressHint);
 
+        // publish to s3 (only when the server reports an S3 configuration).
+        // Declared before `updateCompatibilityUI` exists, so the change callback
+        // is deferred through a mutable hook rather than captured directly.
+        let onS3Change = () => {};
+        const s3Rows = createRenderS3Rows(() => onS3Change());
+        s3Rows.rows.forEach(r => content.append(r));
+
         const compatibilityMessage = new Label({
             class: 'video-compatibility-message',
             hidden: true
@@ -512,6 +525,9 @@ class VideoSettingsDialog extends Container {
             const is360 = projectionSelect.value === 'equirect';
             compressRow.hidden = !compressAvailable || is360;
             const on = !is360 && compressAvailable && compressBoolean.value;
+            // the saved file is the compressed WebM whenever compression runs,
+            // so that — not the master's format — is what lands in storage
+            s3Rows.setExtension(on ? 'webm' : formatSelect.value);
             targetSizeRow.hidden = !on;
             setCompressHintVisible(on);
             compressBlocked = false;
@@ -589,6 +605,24 @@ class VideoSettingsDialog extends Container {
             };
         };
 
+        // Estimated master size (MB) when the render uploads to S3 *without*
+        // compression — then the master itself is the upload, so the server's
+        // ceiling applies to it exactly as it does to a compression job. Returns
+        // null when there is nothing to block: no S3 destination, or a
+        // compression pass whose small WebM is what actually uploads.
+        // Catch it now; discovering it after a multi-minute render wastes the
+        // whole render.
+        const oversizeUploadMB = (): number | null => {
+            if (!s3Rows.target()) return null;
+            const is360 = projectionSelect.value === 'equirect';
+            if (!is360 && compressAvailable && compressBoolean.value) return null;
+
+            const seconds = outputFrames() / frameRates[frameRateSelect.value];
+            const { bitrate } = encodingSettingsFor(resolutionSelect.value);
+            const uploadMB = bitrate / 8e6 * seconds;
+            return uploadMB * 1e6 > maxUpload ? uploadMB : null;
+        };
+
         const updateCompatibilityUI = () => {
             const options = activeResolutionOptions();
             updateCompressUI();
@@ -637,7 +671,18 @@ class VideoSettingsDialog extends Container {
             }
 
             const selectedSupported = supportByResolution.get(selected) === true;
-            okButton.disabled = !selectedSupported || compressBlocked;
+            const oversizeMB = oversizeUploadMB();
+            okButton.disabled = !selectedSupported || compressBlocked || oversizeMB !== null;
+
+            // an unsupported resolution is the harder blocker, so it keeps the
+            // message when both apply
+            if (selectedSupported && oversizeMB !== null) {
+                setCompatibilityMessage(i18n.t('popup.render-video.s3-too-large', {
+                    upload: Math.round(oversizeMB),
+                    limit: Math.round(maxUpload / 1e6)
+                }), 'error');
+                return;
+            }
 
             const unsupportedCount = options.filter(option => supportByResolution.get(option.v) === false).length;
             if (selectedSupported && unsupportedCount === 0) {
@@ -763,6 +808,7 @@ class VideoSettingsDialog extends Container {
         compressBoolean.on('change', updateCompatibilityUI);
         targetSizeInput.on('change', updateCompatibilityUI);
         frameRangeInput.on('change', updateCompatibilityUI);
+        onS3Change = updateCompatibilityUI;
 
         syncProjection();
 
@@ -787,6 +833,7 @@ class VideoSettingsDialog extends Container {
             const totalFrames = events.invoke('timeline.frames');
             frameRangeInput.max = totalFrames - 1;
             frameRangeInput.value = [0, totalFrames - 1];
+            s3Rows.reset(events.invoke('render.baseFilename'));
         };
 
         // function implementations
@@ -804,10 +851,11 @@ class VideoSettingsDialog extends Container {
                 if (this.hidden) return;
                 compressAvailable = !!caps?.video;
                 maxUpload = caps?.maxUpload ?? Infinity;
+                s3Rows.setAvailable(!!caps?.publish);
                 updateCompatibilityUI();
             });
 
-            return new Promise<VideoSettings | null>((resolve) => {
+            return new Promise<VideoDialogResult | null>((resolve) => {
                 onCancel = () => {
                     resolve(null);
                 };
@@ -817,11 +865,16 @@ class VideoSettingsDialog extends Container {
                         return;
                     }
 
+                    // an S3 destination with no name has nowhere to go
+                    if (!s3Rows.isValid()) {
+                        return;
+                    }
+
                     const is360 = projectionSelect.value === 'equirect';
                     const encodingSettings = encodingSettingsFor(resolutionSelect.value);
                     const frameRange = frameRangeInput.value as number[];
 
-                    const videoSettings: VideoSettings = {
+                    const videoSettings: VideoDialogResult = {
                         startFrame: frameRange[0],
                         endFrame: frameRange[1],
                         ...encodingSettings,
@@ -832,7 +885,8 @@ class VideoSettingsDialog extends Container {
                         levelHorizon: is360 && levelHorizonBoolean.value,
                         ...(!is360 && compressAvailable && compressBoolean.value ? {
                             compress: { targetMB: targetSizeInput.value, frames: outputFrames() }
-                        } : {})
+                        } : {}),
+                        s3: s3Rows.target() ?? undefined
                     };
 
                     resolve(videoSettings);

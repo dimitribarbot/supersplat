@@ -22,7 +22,19 @@ class AnnotationOverlay {
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.id = 'annotation-overlay-svg';
         svg.classList.add('annotation-overlay-svg');
-        parent.appendChild(svg);
+
+        // Paint above the render but BELOW the HUD. Nothing in the editor sets a
+        // z-index on the canvas container's children, so these positioned
+        // siblings stack purely in DOM order — and this overlay is constructed
+        // from main.ts AFTER EditorUI has appended every panel, so appending
+        // would draw the markers over the scene manager and the menu bar.
+        // Inserting directly after the canvas puts them under all of it.
+        //
+        // Interaction is unaffected: the markers are pointer-events:none and
+        // every listener below is bound to `parent`, not to the svg.
+        const canvasEl = parent.querySelector('canvas');
+        parent.insertBefore(svg, canvasEl ? canvasEl.nextSibling : parent.firstChild);
+
         const ns = svg.namespaceURI;
 
         // HTML preview tooltip mirroring the exported viewer's .pc-annotation look
@@ -71,7 +83,22 @@ class AnnotationOverlay {
             return inFront;
         };
 
+        // Set while the editor is showing a still of the view for a video render
+        // (editor.ts view.freeze). Markers project from the LIVE camera, which
+        // animates through the whole video offscreen — redrawing would slide
+        // them across a static image, and the render also clears renderOverlays,
+        // which would blank them entirely. Holding the last frame keeps them
+        // consistent with the still they sit on.
+        let frozen = false;
+        events.on('view.frozen', (value: boolean) => {
+            frozen = value;
+        });
+
         const draw = () => {
+            if (frozen) {
+                return;
+            }
+
             const showing = scene.camera.renderOverlays;
             if (!showing) {
                 // overlays hidden: also dismiss any lingering hover preview

@@ -80,6 +80,15 @@
                     flex-grow: 0;
                 }
 
+                // the S3 destination's extension, shown after the name field.
+                // It comes from the render format rather than being typed, so
+                // it must not claim any of the input's width.
+                .ext-hint {
+                    flex: 0 0 auto;
+                    margin: 0 0 0 6px;
+                    color: $text-secondary;
+                }
+
                 .slider .pcui-slider-bar {
                     margin-right: 0px;
                     width: calc(100% - 9px);

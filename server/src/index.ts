@@ -13,8 +13,8 @@ import type { RouteHandlerMethod } from 'fastify';
 import { safeAnnotationImageName } from './annotation-images.js';
 import { probeFfmpeg } from './ffmpeg.js';
 import { probeGpu } from './gpu.js';
-import { createJob, createVideoJob, getJob, subscribe } from './jobs.js';
-import { isConfigured as s3IsConfigured, listPrefix } from './s3.js';
+import { createJob, createUploadJob, createVideoJob, getJob, subscribe } from './jobs.js';
+import { isConfigured as s3IsConfigured, listPrefix, objectExists } from './s3.js';
 
 loadEnv({ path: '.env.local' });
 
@@ -196,6 +196,85 @@ export const buildApp = async () => {
         if (segs.some(s => s === '.' || !/^[A-Za-z0-9._-]+$/.test(s) || s.includes('..'))) return null;
         return `${segs.join('/')}/${name}`;
     };
+
+    // Extensions the render dialogs can produce. Publishing a rendered image or
+    // video writes a single object the visitor's browser opens directly, so the
+    // allow-list is the security boundary: an uploaded .html or .svg would run
+    // as a page on the storage origin.
+    const UPLOAD_EXTS = new Set(['png', 'jpg', 'webp', 'mp4', 'webm', 'mov', 'mkv']);
+
+    // Unlike a publish (a folder of viewer files under `<prefix>/`), a render is
+    // one object, so the destination is the prefix plus the format's extension.
+    const buildObjectKey = (subfolder: unknown, name: unknown, ext: unknown): string | null => {
+        if (typeof ext !== 'string' || !UPLOAD_EXTS.has(ext)) return null;
+        const prefix = buildPrefix(subfolder, name);
+        return prefix === null ? null : `${prefix}.${ext}`;
+    };
+
+    app.get('/api/upload/exists', async (req, reply) => {
+        if (!s3IsConfigured()) return reply.code(503).send({ error: 'publishing not configured' });
+        const { subfolder, name, ext } = req.query as { subfolder?: string; name?: string; ext?: string };
+        const key = buildObjectKey(subfolder, name, ext);
+        if (!key) return reply.code(400).send({ error: 'invalid subfolder, name or extension' });
+        return { exists: await objectExists(key) };
+    });
+
+    app.post('/api/upload', async (req, reply) => {
+        if (!s3IsConfigured()) return reply.code(503).send({ error: 'publishing not configured' });
+
+        // A rendered video is routinely hundreds of MB, so it streams to disk
+        // rather than through part.toBuffer() like the (far smaller) gzipped
+        // PLYs -- same reasoning as /api/video/compress.
+        const dir = await mkdtemp(join(tmpdir(), 'ssup-'));
+        let filePath: string | null = null;
+        let key: string | null = null;
+        let isPublic = false;
+
+        const fail = async (code: number, error: string) => {
+            await rm(dir, { recursive: true, force: true });
+            return reply.code(code).send({ error });
+        };
+
+        try {
+            for await (const part of req.parts()) {
+                if (part.type === 'field' && part.fieldname === 'options') {
+                    let options: any;
+                    try {
+                        options = JSON.parse(part.value as string);
+                    } catch {
+                        return fail(400, 'options is not valid JSON');
+                    }
+                    key = buildObjectKey(options.subfolder, options.name, options.ext);
+                    if (!key) return fail(400, 'invalid subfolder, name or extension');
+                    isPublic = !!options.public;
+                    // Checked here, before the body streams in: the client sends
+                    // `options` ahead of the file precisely so a doomed
+                    // destination costs no upload bandwidth.
+                    if (options.overwrite !== true && await objectExists(key)) {
+                        return fail(409, 'destination already exists');
+                    }
+                } else if (part.type === 'file' && part.fieldname === 'file') {
+                    if (!key) return fail(400, 'options must precede the file');
+                    filePath = join(dir, 'upload');
+                    await pipeline(part.file, createWriteStream(filePath));
+                }
+            }
+        } catch (err: any) {
+            return fail(400, `upload failed: ${err?.message ?? err}`);
+        }
+
+        if (!key) return fail(400, 'missing options');
+        if (!filePath) return fail(400, 'missing file');
+
+        // Return as soon as the body is on disk and hand the PutObject to a job.
+        // The client's xhr.upload progress ends here, so without a job (and its
+        // SSE stream) the store phase would be an unreportable dead wait. The
+        // job owns the temp directory from now on and removes it when done.
+        const id = createUploadJob(filePath, key, isPublic, () => rm(dir, { recursive: true, force: true }));
+        return reply.code(202).send({ jobId: id });
+    });
+
+    app.get('/api/upload/:id/events', streamJobEvents);
 
     app.get('/api/publish/exists', async (req, reply) => {
         if (!s3IsConfigured()) return reply.code(503).send({ error: 'publishing not configured' });
