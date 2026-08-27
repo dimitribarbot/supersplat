@@ -69,8 +69,15 @@ describe('runExport streaming packageViewer (GPU)', () => {
         expect(html).toContain('fetch(contentUrl)');
         expect(html).not.toContain('fetch("./lod-meta.json")');
         expect(html).not.toContain('fetch("index.sog")');
-        // default content (when ?content is absent) is the streaming bundle
-        expect(html).toContain("'./lod-meta.json'");
+        // default content (when ?content is absent) is the streaming bundle,
+        // supplied through the viewer's bootstrap block -- and it must WIN over
+        // the throwaway sog writeHtml put there (last key wins on JSON.parse)
+        const open = '<script type="application/json" id="sse-bootstrap">';
+        const start = html.indexOf(open) + open.length;
+        const bootstrap = JSON.parse(html.slice(start, html.indexOf('</script>', start)));
+        expect(bootstrap.contentUrl).toBe('./lod-meta.json');
+        // no contentFilename, so a ?content= override selects the parser too
+        expect(bootstrap.contentFilename).toBeUndefined();
     });
 });
 

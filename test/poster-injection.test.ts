@@ -2,22 +2,34 @@ import { describe, it, expect } from 'vitest';
 
 import { buildPosterFallbackUrl, injectPoster } from '../src/viewer-companion/poster';
 
-// Minimal stand-in for the exported viewer HTML: the inline module reads the
-// poster from the URL query only (upstream default: no poster unless ?poster=
-// is given). injectPoster defaults that expression to an export-provided
-// poster so every streaming export covers the canvas until `loaded` — the
-// pre-reveal chunk pop-in phase is never visible.
-const ANCHOR = 'const posterUrl = url.searchParams.get(\'poster\');';
-const HTML = `<html><head><script type="module">
+// Minimal stand-in for the exported viewer HTML. The viewer reads its poster
+// from the URL query first and the bootstrap block second (upstream default:
+// no poster at all), and writeHtml already puts a contentUrl in that block.
+// injectPoster adds an export-provided default there so every streaming export
+// covers the canvas until `loaded` -- the pre-reveal chunk pop-in phase is
+// never visible. test/viewer-html-anchors.test.ts pins the seam's real shape
+// against the installed splat-transform; this file pins the behaviour.
+const BOOTSTRAP_OPEN = '<script type="application/json" id="sse-bootstrap">';
+const HTML = `<html><head>${BOOTSTRAP_OPEN}{"contentUrl":"index.sog"}</script>
+        <script type="module">
             const url = new URL(location.href);
-            ${ANCHOR}
+            const bootstrap = JSON.parse(document.getElementById('sse-bootstrap').textContent) ?? {};
+            const posterUrl = url.searchParams.get('poster') ?? bootstrap.posterUrl ?? null;
         </script></head><body><div id="poster"></div></body></html>`;
+
+// what the viewer's own JSON.parse of the block yields
+const bootstrapOf = (html: string) => {
+    const start = html.indexOf(BOOTSTRAP_OPEN) + BOOTSTRAP_OPEN.length;
+    return JSON.parse(html.slice(start, html.indexOf('</script>', start)));
+};
 
 describe('injectPoster', () => {
     it('defaults posterUrl to the provided poster while ?poster= still wins', () => {
         const out = injectPoster(HTML, { background: { color: [0, 0, 0] } }, './poster.jpg');
-        expect(out).toContain('const posterUrl = url.searchParams.get(\'poster\') ?? "./poster.jpg";');
-        expect(out).not.toContain(ANCHOR);
+        expect(bootstrapOf(out).posterUrl).toBe('./poster.jpg');
+        // the query param is still read first, and writeHtml's own key survives
+        expect(out).toContain("url.searchParams.get('poster') ?? bootstrap.posterUrl");
+        expect(bootstrapOf(out).contentUrl).toBe('index.sog');
     });
 
     // the viewer embeds the URL as unquoted CSS url(...): parens must be
@@ -37,21 +49,20 @@ describe('injectPoster', () => {
         expect(buildPosterFallbackUrl({})).toContain(cssSafe('rgb(0,0,0)'));
     });
 
-    it('is idempotent (second pass finds no anchor and returns input unchanged)', () => {
+    it('a second pass replaces the poster rather than layering a stale one', () => {
         const once = injectPoster(HTML, {}, './poster.jpg');
         const twice = injectPoster(once, {}, './other.jpg');
-        expect(twice).toBe(once);
+        expect(bootstrapOf(twice).posterUrl).toBe('./other.jpg');
     });
 
-    it('returns HTML without the anchor unchanged (soft no-op on upstream drift)', () => {
-        const html = '<html><body>no anchor here</body></html>';
+    it('returns HTML without the bootstrap seam unchanged (soft no-op on upstream drift)', () => {
+        const html = '<html><body>no seam here</body></html>';
         expect(injectPoster(html, {}, './poster.jpg')).toBe(html);
     });
 
-    it('escapes the poster URL safely (data URIs with quotes/newlines survive)', () => {
+    it('escapes the poster URL safely (data URIs with quotes/slashes survive)', () => {
         const dataUri = 'data:image/jpeg;base64,AAAA////====';
-        const out = injectPoster(HTML, {}, dataUri);
-        expect(out).toContain(`?? ${JSON.stringify(dataUri)};`);
+        expect(bootstrapOf(injectPoster(HTML, {}, dataUri)).posterUrl).toBe(dataUri);
     });
 
     // With a poster the viewer holds the canvas at opacity 0 for the whole

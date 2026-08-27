@@ -206,7 +206,7 @@ class S3PublishDialog extends Container {
                     tonemapping: events.invoke('camera.tonemapping') ?? 'none',
                     highPrecisionRendering: false,
                     background: { color: color.value.slice(0, 3) as [number, number, number] },
-                    postEffectSettings: defaultPostEffectSettings,
+                    postEffectSettings: defaultPostEffectSettings(),
                     animTracks,
                     cameras,
                     annotations: events.invoke('annotations.export', bundle?.sceneUids) ?? [],

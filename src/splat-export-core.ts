@@ -31,6 +31,7 @@ import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zone
 import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
 import { buildQualityModeInjection } from './viewer-companion/quality-mode';
+import { patchViewerBootstrap } from './viewer-companion/viewer-bootstrap';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
 
 // Apply the engine patches (#8998 loader stall + #9011 unload race, see
@@ -867,26 +868,22 @@ const writeStreamingViewerCore = async (
     }
 
     // Drop the throwaway content SOG and repoint the viewer at the LOD bundle.
-    // Unbundled writeHtml hardcodes the content fetch to the (now discarded) SOG
-    // (`fetch("index.sog")`) and leaves the default contentUrl pointing at it.
-    // Restore the fetch to `fetch(contentUrl)` and set the default contentUrl to
-    // the LOD bundle. This keeps the default load working (contentUrl defaults to
-    // ./lod-meta.json, whose basename selects the octree streaming parser) while
-    // still honouring a `?content=` override: the override drives both the fetch
-    // and the parser, so a different content file can actually be loaded.
+    // Unbundled writeHtml points the bootstrap's contentUrl at the (now
+    // discarded) SOG it just wrote; overwrite it with the LOD bundle. This keeps
+    // the default load working (contentUrl defaults to ./lod-meta.json, whose
+    // basename selects the octree streaming parser) while still honouring a
+    // `?content=` override: the viewer prefers the query param and, because we
+    // deliberately set no contentFilename, the override drives both the fetch and
+    // the parser, so a different content file can actually be loaded.
     memFs.results.delete('index.sog');
     const rawHtml = memFs.results.get('index.html');
     if (!rawHtml) {
         throw new Error('Streaming export failed: writeHtml did not produce index.html');
     }
     const html = new TextDecoder().decode(rawHtml);
-    const repointedFetch = html.replace('fetch("index.sog")', 'fetch(contentUrl)');
-    if (repointedFetch === html) {
-        throw new Error('Streaming export failed: could not repoint viewer content fetch to contentUrl (writeHtml output format changed)');
-    }
-    const repointed = repointedFetch.replace('./scene.sog', './lod-meta.json');
-    if (repointed === repointedFetch) {
-        throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (writeHtml output format changed)');
+    const repointed = patchViewerBootstrap(html, { contentUrl: './lod-meta.json' });
+    if (repointed === null) {
+        throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (viewer bootstrap seam changed)');
     }
     const settingsWithLods = { ...viewerSettingsJson, portalSceneLodCounts: [primaryLodCounts, ...extraLodCounts] };
     const withPoster = applyPoster(repointed, settingsWithLods, posterBytes, memFs);

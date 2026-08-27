@@ -380,7 +380,7 @@ class PublishSettingsDialog extends Container {
                         tonemapping: events.invoke('camera.tonemapping') ?? 'none',
                         highPrecisionRendering: false,
                         background: { color: bgColor },
-                        postEffectSettings: defaultPostEffectSettings,
+                        postEffectSettings: defaultPostEffectSettings(),
                         animTracks,
                         cameras,
                         annotations: events.invoke('annotations.export') ?? [],

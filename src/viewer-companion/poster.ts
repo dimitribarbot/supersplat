@@ -11,21 +11,19 @@
 // black background — diagnosed 2026-07-04, see
 // docs/superpowers/specs/2026-07-04-streaming-blob-fix-design.md).
 //
-// injectPoster defaults that query expression to an export-provided poster:
-// a real screenshot rendered at export time when available, else a solid
-// SVG in the scene background color (still hides the pop-in window; the
-// "unblur" of a flat color is invisible, which is exactly the point).
-// `?poster=<url>` still overrides, and an EMPTY `?poster=` disables the
-// poster entirely (the viewer treats '' as no poster) — upstream behavior
-// preserved, with an escape hatch.
+// injectPoster supplies that default through the viewer's bootstrap seam
+// (see viewer-bootstrap.ts): a real screenshot rendered at export time when
+// available, else a solid SVG in the scene background color (still hides the
+// pop-in window; the "unblur" of a flat color is invisible, which is exactly
+// the point). The viewer reads `url.searchParams.get('poster') ??
+// bootstrap.posterUrl ?? null`, so `?poster=<url>` still overrides and an
+// EMPTY `?poster=` still disables the poster entirely (the viewer treats ''
+// as no poster) — upstream behavior preserved, with an escape hatch.
 //
 // Environment-agnostic (compiled for the export server via dist-shared):
 // string operations only.
 
-// The exported index.html reads the poster exclusively from the URL query.
-// This exact statement is the injection anchor; if upstream changes it the
-// injection soft no-ops (export stays valid, just without a default poster).
-const POSTER_ANCHOR = 'const posterUrl = url.searchParams.get(\'poster\');';
+import { patchViewerBootstrap } from './viewer-bootstrap';
 
 // Solid single-color poster (SVG data URI) from the viewer settings'
 // background color ([r,g,b] floats 0..1; defaults to black like the viewer).
@@ -89,17 +87,17 @@ const POSTER_CANVAS_KEEPALIVE = `<script>
 // Default the viewer's poster to `posterUrl` (a relative file, e.g.
 // './poster.jpg', or a data URI), falling back to the solid background cover
 // when null/undefined. Also injects the mobile canvas keepalive (above).
-// Returns the input unchanged when the anchor is absent (already injected,
-// or upstream drift).
+// Returns the input unchanged when the bootstrap seam is absent (upstream
+// drift). Note this is not idempotent by accident the way the old
+// statement-rewriting anchor was: a second pass appends a second posterUrl
+// key, which the viewer's JSON.parse resolves last-one-wins, so re-injecting
+// replaces the poster rather than no-opping. Every export path calls it once.
 const injectPoster = (html: string, viewerSettingsJson: any, posterUrl?: string | null): string => {
-    if (!html.includes(POSTER_ANCHOR)) {
+    const url = posterUrl ?? buildPosterFallbackUrl(viewerSettingsJson);
+    const withDefault = patchViewerBootstrap(html, { posterUrl: url });
+    if (withDefault === null) {
         return html;
     }
-    const url = posterUrl ?? buildPosterFallbackUrl(viewerSettingsJson);
-    const withDefault = html.replace(
-        POSTER_ANCHOR,
-        `const posterUrl = url.searchParams.get('poster') ?? ${JSON.stringify(url)};`
-    );
     return withDefault.includes('</body>') ?
         withDefault.replace('</body>', `${POSTER_CANVAS_KEEPALIVE}</body>`) :
         withDefault + POSTER_CANVAS_KEEPALIVE;
