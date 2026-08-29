@@ -11,6 +11,7 @@ import {
     Transform
 } from '@playcanvas/splat-transform';
 import type { ProgressEvent, ProgressLoc } from './progress.js';
+import { loadBrand } from './brand.js';
 import { loadFavicon } from './favicon.js';
 
 export type ExportOptions = {
@@ -258,7 +259,19 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
 
     if (options.fileType === 'htmlViewer') {
         const extraScenes = buildExtraScenes();
-        await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, 'html', createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes);
+        await writeViewerCore({
+            dataTable,
+            viewerSettingsJson: options.viewerExportSettings!.experienceSettings,
+            viewerType: 'html',
+            createDevice,
+            fs: memFs,
+            events,
+            onLog,
+            shouldCancel: isCancelled,
+            collision: options.viewerExportSettings!.collision,
+            extraScenes,
+            posterBytes
+        });
         const data = memFs.results.get('output.html')!;
         console.log(`Created ${options.filename} (${fmtSize(data.length)})`);
         return { files: [{ name: options.filename, data }] };
@@ -270,7 +283,26 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // Deployment-configured favicon (VIEWER_FAVICON_URL), ZIP exports only:
     // null when unset or unreachable, in which case the export is unchanged.
     const favicon = await loadFavicon();
-    await writeViewerCore(dataTable, options.viewerExportSettings!.experienceSettings, viewerType, createDevice, memFs, events, onLog, isCancelled, options.viewerExportSettings!.collision, extraScenes, posterBytes, favicon ?? undefined, annotationImages);
+    // Deployment-configured brand (VIEWER_BRAND_*), ZIP exports only, on the
+    // same terms: null when unset, and each of its three parts drops out
+    // independently if its asset cannot be fetched.
+    const brand = await loadBrand();
+    await writeViewerCore({
+        dataTable,
+        viewerSettingsJson: options.viewerExportSettings!.experienceSettings,
+        viewerType,
+        createDevice,
+        fs: memFs,
+        events,
+        onLog,
+        shouldCancel: isCancelled,
+        collision: options.viewerExportSettings!.collision,
+        extraScenes,
+        posterBytes,
+        favicon: favicon ?? undefined,
+        brand: brand ?? undefined,
+        annotationImages
+    });
     flushChunk();
     return { files: [{ name: options.filename, data: memFs.results.get('output.zip')! }] };
 };

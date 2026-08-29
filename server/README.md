@@ -73,6 +73,31 @@ routes return 404 until you build).
   not a failure. If the fetch fails for any other reason (timeout, non-2xx, unsupported
   type, oversize), the export still completes without an icon, but a warning is logged.
   Single-file HTML exports and local in-browser exports are unaffected.
+- `VIEWER_BRAND_NAME`, `VIEWER_BRAND_ICON_URL`, `VIEWER_BRAND_FONT_NAME`,
+  `VIEWER_BRAND_FONT_URL` — replace the viewer's SuperSplat branding in **ZIP viewer
+  exports**, on exactly the same terms as `VIEWER_FAVICON_URL` (plain and streaming,
+  including the S3 publish that reuses them; single-file HTML and local in-browser exports
+  are unaffected).
+  - `VIEWER_BRAND_NAME` replaces the SuperSplat name in three places: the document
+    `<title>`, the overlay badge (top-left, which the viewer only reveals when it is
+    embedded in a cross-origin iframe) and the info panel's header. The panel keeps its
+    version suffix, so `Acme` renders as `Acme v2.32.5`.
+  - `VIEWER_BRAND_ICON_URL` replaces both SuperSplat logos. Accepted types: PNG, SVG,
+    JPEG, WebP, GIF; 1 MiB maximum. Stored as `brand-icon.<ext>` beside `index.html`.
+  - `VIEWER_BRAND_FONT_NAME` + `VIEWER_BRAND_FONT_URL` set the family the two brand
+    labels are rendered in. **Both are required** — either alone is ignored with a
+    warning. Accepted types: WOFF2, WOFF, TTF, OTF; 4 MiB maximum. Stored as
+    `brand-font.<ext>` beside `index.html` and declared with an `@font-face` rule, so the
+    export needs no network access to render correctly.
+
+  All four are optional and independent: with none set, exports keep the stock branding
+  silently. If an asset cannot be fetched (timeout, non-2xx, unsupported type, oversize)
+  that one piece is dropped with a warning and the rest of the brand — and the export —
+  still completes. Every URL is fetched once per export with a 5 s timeout; only
+  export-derived filenames ever reach the exported HTML, never the configured URL.
+
+  Whenever the name or the icon is overridden, the info panel also gains a small
+  "Based on [PlayCanvas SuperSplat Viewer](https://superspl.at/)" attribution line.
 - `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` —
   S3-compatible (DigitalOcean Spaces) credentials. When all five are present, the
   capabilities endpoint reports `publish: true` and the client's Publish menu

@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 
 import { describe, it, expect } from 'vitest';
 
+import { BRAND_ANCHORS, injectBrand } from '../src/viewer-companion/brand';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from '../src/viewer-engine-patch';
 
 // Drift guard against the REAL baked viewer, not a fixture.
@@ -123,9 +124,36 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     // src/viewer-engine-patch.ts -- the 8 fork patches, applied to the baked
     // index.js of every export. The sibling viewer-engine-patch.test.ts pins
     // their behaviour on snippets; this pins that they still MATCH.
+
     it('matches every engine patch, and re-applying them is a no-op', () => {
         const once = patchViewerEngine(jsSource);
         expect(once.patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
         expect(patchViewerEngine(once.source).patched).toBe(0);
+    });
+    // src/viewer-companion/brand.ts -- the deployment brand override rewrites
+    // the document title, both stock logos and both stock labels, and inserts
+    // its attribution ahead of the info panel's sections. Asserting against the
+    // module's own exported anchors (rather than copies) means the test cannot
+    // drift away from what the injector actually searches for.
+    it('keeps every brand surface injectBrand rewrites', () => {
+        for (const anchor of BRAND_ANCHORS) {
+            expect(occurrences(htmlSource, anchor), anchor).toBe(1);
+        }
+    });
+
+    it('leaves one deliberate SuperSplat mention once a full brand is applied', () => {
+        const branded = injectBrand(htmlSource, {
+            name: 'Acme',
+            iconHref: './brand-icon.png',
+            fontFamily: 'Acme Sans',
+            fontHref: './brand-font.woff2',
+            fontFormat: 'woff2'
+        });
+        expect(branded).toContain('<title>Acme</title>');
+        expect(branded).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
+        expect(branded).toContain('<img id="brandTitleIcon" src="./brand-icon.png" alt="" />');
+        // Only the attribution line survives; nothing else still says SuperSplat.
+        expect(occurrences(branded, 'SuperSplat')).toBe(1);
+        expect(branded).toContain('PlayCanvas SuperSplat Viewer</a>');
     });
 });

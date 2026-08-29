@@ -1437,7 +1437,20 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
         })) ?? [] :
         [];
 
-    await writeViewerCore(dataTable, experienceSettings, viewerType, createGpuDevice, fs, events, undefined, undefined, collision, extraScenes, options.poster, undefined, options.annotationImages);
+    await writeViewerCore({
+        dataTable,
+        viewerSettingsJson: experienceSettings,
+        viewerType,
+        createDevice: createGpuDevice,
+        fs,
+        events,
+        collision,
+        extraScenes,
+        posterBytes: options.poster,
+        annotationImages: options.annotationImages
+        // no favicon and no brand: both are server-only (VIEWER_FAVICON_URL /
+        // VIEWER_BRAND_*), so a local browser export keeps the stock viewer.
+    });
 };
 const serializeViewerSettings = async (
     experienceSettings: ExperienceSettings,

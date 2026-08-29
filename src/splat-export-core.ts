@@ -22,6 +22,7 @@ import {
 import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subsetRowsWithinRadius, voxelResolutionLadder, type CollisionEnvironment } from './collision-voxel-options';
 import { Events } from './events';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
+import { injectBrand } from './viewer-companion/brand';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { buildEarlyLodClampInjection } from './viewer-companion/early-lod-clamp';
 import { injectFaviconLink } from './viewer-companion/favicon';
@@ -107,6 +108,42 @@ const applyFavicon = (
     }
     memFs.results.set(favicon.filename, favicon.data);
     return injectFaviconLink(html, `./${favicon.filename}`, favicon.mime);
+};
+
+// Optional brand override for ZIP exports: the export server fetched the icon
+// and the font from its VIEWER_BRAND_* urls and handed them down (the browser
+// never does, so local exports keep the stock SuperSplat branding). Emit both
+// files beside the viewer and point the injected markup at them by relative
+// filename. Mirrors applyFavicon -- every memFs entry is zipped by the callers
+// below, and the S3 publish path uploads every ZIP entry, so this one insertion
+// point serves package, streaming and publish alike.
+type Brand = {
+    name: string | null;
+    icon: { filename: string; mime: string; data: Uint8Array } | null;
+    font: { family: string; format: string; asset: { filename: string; mime: string; data: Uint8Array } } | null;
+};
+
+const applyBrand = (
+    html: string,
+    brand: Brand | undefined,
+    memFs: { results: Map<string, Uint8Array> }
+): string => {
+    if (!brand) {
+        return html;
+    }
+    if (brand.icon) {
+        memFs.results.set(brand.icon.filename, brand.icon.data);
+    }
+    if (brand.font) {
+        memFs.results.set(brand.font.asset.filename, brand.font.asset.data);
+    }
+    return injectBrand(html, {
+        name: brand.name ?? undefined,
+        iconHref: brand.icon ? `./${brand.icon.filename}` : undefined,
+        fontFamily: brand.font?.family,
+        fontHref: brand.font ? `./${brand.font.asset.filename}` : undefined,
+        fontFormat: brand.font?.format
+    });
 };
 
 // Attached annotation images for ZIP exports: emitted beside the viewer at the
@@ -763,27 +800,42 @@ const repointCollisionUrl = (memFs: MemoryFileSystem): void => {
     memFs.results.set('index.html', new TextEncoder().encode(repointed));
 };
 
-// Produce a streaming viewer ZIP: a viewer shell (from unbundled writeHtml)
-// repointed at lod-meta.json, plus the writeLodSource streaming bundle.
-// Module-private: only called by writeViewerCore.
+// Everything writeViewerCore needs, as one named bag rather than a positional
+// tail. The export server reaches this function through an untyped dynamic
+// `import()` of dist-shared, so a positional signature had no compiler behind
+// it: inserting a parameter silently shifted every argument after it at the two
+// call sites that skip the optional ones, and the only symptom was a runtime
+// `(annotationImages ?? []).forEach is not a function` deep inside a GPU
+// export. Named fields make that class of mistake unrepresentable.
 //
 // viewerSettingsJson is typed `any` here to avoid a circular import with
 // splat-serialize.ts (which owns the ExperienceSettings type). The browser
 // wrapper in splat-serialize.ts retains the strong ExperienceSettings type.
-const writeStreamingViewerCore = async (
-    dataTable: DataTable,
-    viewerSettingsJson: any,
-    createDevice: DeviceCreator,
-    fs: FileSystem,
-    events?: Events,
-    onLog?: (level: string, text: string) => void,
-    shouldCancel?: () => boolean,
-    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
-    extraScenes?: ExtraPortalScene[],
-    posterBytes?: Uint8Array,
-    favicon?: Favicon,
-    annotationImages?: AnnotationImageFile[]
-): Promise<void> => {
+type ViewerCoreOptions = {
+    dataTable: DataTable;
+    viewerSettingsJson: any;
+    viewerType: 'html' | 'package' | 'streaming';
+    createDevice: DeviceCreator;
+    fs: FileSystem;
+    events?: Events;
+    onLog?: (level: string, text: string) => void;
+    shouldCancel?: () => boolean;
+    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number };
+    extraScenes?: ExtraPortalScene[];
+    posterBytes?: Uint8Array;
+    // Server-only: the browser never fetches these, so a local export keeps the
+    // stock favicon-less head and the stock SuperSplat branding.
+    favicon?: Favicon;
+    brand?: Brand;
+    annotationImages?: AnnotationImageFile[];
+};
+
+// Produce a streaming viewer ZIP: a viewer shell (from unbundled writeHtml)
+// repointed at lod-meta.json, plus the writeLodSource streaming bundle.
+// Module-private: only called by writeViewerCore, which hands its own options
+// straight through (viewerType is always 'streaming' here and goes unread).
+const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
+    const { dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon, brand, annotationImages } = options;
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
     // `counted` enables the splat-transform per-unit counter (chunk number)
@@ -895,7 +947,7 @@ const writeStreamingViewerCore = async (
         collisionBinaryBytes(memFs)
     );
     const withApi = injectIframeApi(withCompanions, settingsWithLods);
-    memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(withApi, favicon, memFs)));
+    memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(withApi, favicon, memFs), brand, memFs)));
     patchEngineLoaderInMemFs(memFs);
     applyAnnotationImages(annotationImages, memFs);
     if (collision) {
@@ -943,21 +995,10 @@ type ExtraPortalScene = {
     seed: [number, number, number];
 };
 
-const writeViewerCore = async (
-    dataTable: DataTable,
-    viewerSettingsJson: any,
-    viewerType: 'html' | 'package' | 'streaming',
-    createDevice: DeviceCreator,
-    fs: FileSystem,
-    events?: Events,
-    onLog?: (level: string, text: string) => void,
-    shouldCancel?: () => boolean,
-    collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number },
-    extraScenes?: ExtraPortalScene[],
-    posterBytes?: Uint8Array,
-    favicon?: Favicon,
-    annotationImages?: AnnotationImageFile[]
-): Promise<void> => {
+const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
+    const { dataTable, viewerType, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon, brand, annotationImages } = options;
+    // Reassigned below for the single-file html path.
+    let { viewerSettingsJson } = options;
     // A single-file HTML export carries no image files, so it must not advertise
     // a gallery (see stripHtmlGalleries).
     if (viewerType === 'html') {
@@ -1013,7 +1054,7 @@ const writeViewerCore = async (
             await writer.write(new TextEncoder().encode(enginePatch.source));
             await writer.close();
         } else if (viewerType === 'streaming') {
-            await writeStreamingViewerCore(dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon, annotationImages);
+            await writeStreamingViewerCore({ ...options, viewerSettingsJson });
         } else {
             // Package (ZIP) path: write primary scene, then extra portal scenes, then ZIP everything.
             const memFs = new MemoryFileSystem();
@@ -1048,7 +1089,7 @@ const writeViewerCore = async (
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
             const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings))), collisionBinaryBytes(memFs)), sogSettings);
-            memFs.results.set('index.html', new TextEncoder().encode(applyFavicon(injected, favicon, memFs)));
+            memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(injected, favicon, memFs), brand, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);
             if (collision) {
@@ -1074,4 +1115,4 @@ const writeViewerCore = async (
     }
 };
 
-export { createProgressRenderer, injectIframeApi, stripHtmlGalleries, writeSogCore, writeViewerCore, AnnotationImageFile };
+export { createProgressRenderer, injectIframeApi, stripHtmlGalleries, writeSogCore, writeViewerCore, AnnotationImageFile, ViewerCoreOptions };
