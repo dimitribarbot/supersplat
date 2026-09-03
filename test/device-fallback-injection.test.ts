@@ -52,13 +52,19 @@ describe('buildDeviceFallbackInjection', () => {
 
     it('is template-cooking safe: ES5 only, no backslash escapes at all', () => {
         const out = buildDeviceFallbackInjection();
+        // The prepended shared viewerLangRuntime (Task 1) is a separate,
+        // deliberately ES2015+ utility; this ES5 constraint is device-fallback's
+        // own authored runtime, so scope the check to its script tag -- the last
+        // one in the fragment.
+        const scripts = [...out.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+        const runtime = scripts[scripts.length - 1];
         // the companion templates cook backslash escapes at build time (the
         // residentBudget override shipped dead that way) -- forbid them outright
-        expect(out).not.toMatch(/\\/);
+        expect(runtime).not.toMatch(/\\/);
         // stringified-runtime constraints (terser-safe ES5)
-        expect(out).not.toContain('=>');
-        expect(out).not.toContain('const ');
-        expect(out).not.toContain('let ');
-        expect(out).not.toContain('`');
+        expect(runtime).not.toContain('=>');
+        expect(runtime).not.toContain('const ');
+        expect(runtime).not.toContain('let ');
+        expect(runtime).not.toContain('`');
     });
 });

@@ -1,9 +1,11 @@
+import { viewerLangRuntime } from './viewer-lang';
+
 // Export-shaped annotation, as it appears in viewerSettingsJson.annotations
 // (produced by annotations.export in src/annotations.ts).
 type AnyAnnotation = {
     title?: string,
     text?: string,
-    extras?: { id?: string, scene?: number }
+    extras?: { id?: string, scene?: number, i18n?: Record<string, { title?: string, text?: string }> }
 };
 
 // One baked table entry. Deliberately the exact shape sent back to the host in
@@ -17,7 +19,13 @@ type AnnotationEntry = {
     id: string,
     title: string,
     text: string,
-    scene: number | null
+    scene: number | null,
+    // Baked so the runtime can resolve to the visitor's language. Stripped
+    // before anything is sent to the host.
+    i18n?: Record<string, { title?: string, text?: string }>,
+    // The untranslated title, kept so goto-by-name still matches a host that
+    // was keyed on it before the visitor's language changed.
+    baseTitle?: string
 };
 
 // A host's reference to an annotation, taken straight off the postMessage
@@ -34,13 +42,19 @@ type AnnotationRef = {
 const buildAnnotationIndex = (annotations: AnyAnnotation[]): AnnotationEntry[] => {
     return (annotations || []).map((a, i) => {
         const extras = (a && a.extras) || {};
-        return {
+        const entry: AnnotationEntry = {
             index: i,
             id: typeof extras.id === 'string' ? extras.id : '',
             title: (a && typeof a.title === 'string') ? a.title : '',
             text: (a && typeof a.text === 'string') ? a.text : '',
             scene: typeof extras.scene === 'number' ? extras.scene : null
         };
+        // Carried through only when non-empty, so an untranslated export's
+        // baked JSON stays free of "i18n":null noise.
+        if (extras.i18n && Object.keys(extras.i18n).length > 0) {
+            entry.i18n = extras.i18n;
+        }
+        return entry;
     });
 };
 
@@ -48,6 +62,13 @@ const buildAnnotationIndex = (annotations: AnyAnnotation[]): AnnotationEntry[] =
 // case- and surrounding-whitespace-insensitively); the first hit wins, so a host
 // may send several forms and the strongest available one is used. Duplicate
 // titles are legal in the editor: the first match wins, by documented design.
+// The same first-index-wins rule also covers a second, newer way titles can
+// collide: since a table can carry per-language titles (see
+// localizeAnnotationTable below), one annotation's TRANSLATED title can equal
+// a different annotation's BASE (or baseTitle-matched) title -- e.g. annotation
+// A's French translation happens to read "Roof" while annotation B's English
+// title already is "Roof". This is the same class of ambiguity as duplicate
+// titles, considered deliberately, not overlooked: it resolves the same way.
 //
 // bad-request means no usable reference was supplied at all; not-found means one
 // was, but nothing matched. Self-contained (no module-level references) so it is
@@ -75,12 +96,38 @@ const resolveAnnotationRef = (table: AnnotationEntry[], ref: AnnotationRef): { i
         usable = true;
         const want = r.name.trim().toLowerCase();
         for (let i = 0; i < entries.length; i++) {
-            if (entries[i].title.trim().toLowerCase() === want) {
+            if (entries[i].title.trim().toLowerCase() === want ||
+                (entries[i].baseTitle || '').trim().toLowerCase() === want) {
                 return { index: i, reason: '' };
             }
         }
     }
     return { index: -1, reason: usable ? 'not-found' : 'bad-request' };
+};
+
+// Resolve a baked table to one language. Returns a NEW array -- the runtime
+// keeps the baked table intact so a later request can resolve differently.
+// Per-field fallback: a missing key keeps the base string. `baseTitle` records
+// the untranslated title so goto-by-name accepts either form, and `i18n` is
+// dropped so nothing sent to the host carries the whole dictionary.
+//
+// Self-contained (no module-level references) so it is also injected verbatim
+// into the runtime via Function.toString(), beside resolveAnnotationRef above.
+const localizeAnnotationTable = (table: AnnotationEntry[], lang: string): AnnotationEntry[] => {
+    return (table || []).map((entry) => {
+        const t = (entry.i18n || {})[lang] || {};
+        const out: AnnotationEntry = {
+            index: entry.index,
+            id: entry.id,
+            title: t.title || entry.title,
+            text: t.text || entry.text,
+            scene: entry.scene
+        };
+        if (t.title && t.title !== entry.title) {
+            out.baseTitle = entry.title;
+        }
+        return out;
+    });
 };
 
 // The runtime bridge. Kept as a plain string so it is injected verbatim.
@@ -104,8 +151,9 @@ const resolveAnnotationRef = (table: AnnotationEntry[], ref: AnnotationRef): { i
 // time. String operations only: no regex literals, no escape sequences.
 const companionRuntime = `
 (function () {
-  var table = window.__supersplatIframeApi || [];
   var resolveAnnotationRef = ${resolveAnnotationRef.toString()};
+  var localizeAnnotationTable = ${localizeAnnotationTable.toString()};
+  var table = localizeAnnotationTable(window.__supersplatIframeApi || [], window.__ssLang || 'en');
 
   var ready = false;
   var pendingGoto = null;   // at most one; the latest press wins
@@ -320,9 +368,10 @@ const buildIframeApiInjection = (annotations: AnyAnnotation[]): string => {
     .replace(/&/g, '\\u0026')
     .split(SEP_LINE).join('\\u2028')
     .split(SEP_PARAGRAPH).join('\\u2029');
-    return `<script>window.__supersplatIframeApi = ${tableJson};</script>` +
+    return `<script>${viewerLangRuntime}</script>` +
+        `<script>window.__supersplatIframeApi = ${tableJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };
 
-export { buildAnnotationIndex, buildIframeApiInjection, resolveAnnotationRef };
+export { buildAnnotationIndex, buildIframeApiInjection, localizeAnnotationTable, resolveAnnotationRef };
 export type { AnnotationEntry, AnnotationRef, AnyAnnotation };

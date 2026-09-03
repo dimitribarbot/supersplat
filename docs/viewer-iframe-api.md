@@ -61,15 +61,27 @@ one that matches wins, tried in the order `id`, `index`, `name`. Duplicate title
 are allowed in the editor; `name` resolves to the first annotation with that
 title.
 
+`title` and `text` — here and in `supersplat:annotation.list.result` below —
+are returned in the viewer's resolved language: resolved from `?lang=` on the
+viewer's URL, then the browser's own language, falling back to the
+un-translated string for any language or field with no translation authored.
+`name` matching accepts either the resolved title or the untranslated base
+title, so a host that was keyed on the original title keeps working once a
+visitor's language resolves it to something else.
+
 Reply — `supersplat:annotation.goto.result`:
 
 ```js
 { type: 'supersplat:annotation.goto.result', requestId, ok: true,
-  annotation: { index, id, title, text, scene } }
+  annotation: { index, id, title, text, scene, baseTitle? } }
 
 { type: 'supersplat:annotation.goto.result', requestId, ok: false,
   reason: 'not-found' | 'bad-request' | 'unavailable' }
 ```
+
+`baseTitle` is present only when a translation actually changed the title. It
+carries the untranslated title, which is what lets a host that was keyed on
+the original title keep working after a language switch (see above).
 
 - `not-found` — you supplied a reference, but nothing matched it.
 - `bad-request` — you supplied no usable `name`, `id` or `index`.
@@ -89,11 +101,13 @@ Reply — `supersplat:annotation.list.result`:
 
 ```js
 { type: 'supersplat:annotation.list.result', requestId,
-  annotations: [ { index, id, title, text, scene }, ... ] }
+  annotations: [ { index, id, title, text, scene, baseTitle? }, ... ] }
 ```
 
 `scene` is the portal scene index the annotation belongs to, or `null` in a
-single-scene export.
+single-scene export. `title` and `text` are in the viewer's resolved language,
+and `baseTitle` is present only on an entry whose title a translation actually
+changed — see the language note under `supersplat:annotation.goto` above.
 
 ### `supersplat:ping`
 

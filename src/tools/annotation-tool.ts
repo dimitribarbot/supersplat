@@ -1,7 +1,7 @@
 import { BooleanInput, Button, Container, Label, SelectInput, TextInput } from '@playcanvas/pcui';
 import { Entity, TranslateGizmo, Vec3 } from 'playcanvas';
 
-import { AddAnnotationOp, AnnotationCamera, AnnotationData, MoveAnnotationOp, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
+import { AddAnnotationOp, AnnotationCamera, AnnotationData, hasTranslationContent, MoveAnnotationOp, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
 import { ElementType } from '../element';
 import { Events } from '../events';
 import { Scene } from '../scene';
@@ -49,6 +49,7 @@ class AnnotationTool {
         const newTabLabel = new Label({ text: i18n.t('panel.annotations.new-tab') });
         const newTabInput = new BooleanInput({ type: 'toggle' });
         const imagesButton = new Button({ class: 'annotations-toolbar-button' });
+        const translationsButton = new Button({ class: 'annotations-toolbar-button' });
         const sceneLabel = new Label({ text: i18n.t('panel.annotations.scene') });
         const sceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
         const glyphClass = ['select-toolbar-mode', 'select-toolbar-glyph', 'annotations-toolbar-glyph'];
@@ -70,6 +71,7 @@ class AnnotationTool {
         bar.append(newTabLabel);
         bar.append(newTabInput);
         bar.append(imagesButton);
+        bar.append(translationsButton);
         bar.append(sceneLabel);
         bar.append(sceneInput);
         bar.append(viewButton);
@@ -121,6 +123,10 @@ class AnnotationTool {
             newTabInput.hidden = linkType !== 'url';
             imagesButton.hidden = linkType !== 'images';
             imagesButton.text = i18n.t('panel.annotations.images-edit', { count: a.images.length });
+            // count languages carrying any non-empty field -- the same
+            // definition the dialog's "translated" marker uses
+            const translatedCount = Object.values(a.translations ?? {}).filter(hasTranslationContent).length;
+            translationsButton.text = i18n.t('panel.annotations.translations-edit', { count: translatedCount });
             // the scene association is meaningless without portals: no portals
             // means no exported scene indices and so nothing to switch between
             const hasPortals = ((events.invoke('portals.count') as number) ?? 0) > 0;
@@ -165,6 +171,12 @@ class AnnotationTool {
             const a = selected();
             if (a) {
                 events.fire('annotation.images.edit', a.id);
+            }
+        });
+        translationsButton.on('click', () => {
+            const a = selected();
+            if (a) {
+                events.fire('annotation.translations.edit', a.id);
             }
         });
         sceneInput.on('change', (v: number) => commit('sceneUid', v === NO_SCENE ? null : v));
@@ -366,6 +378,8 @@ class AnnotationTool {
                 newTab: false,
                 linkType: 'none',
                 images: [],
+                // a freshly placed annotation starts with no per-language overrides
+                translations: {},
                 // the splat under the cursor is the scene this annotation belongs to
                 sceneUid: result.splat?.uid ?? null,
                 camera: {

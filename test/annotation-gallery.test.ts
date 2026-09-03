@@ -169,8 +169,8 @@ const loadRuntime = () => {
         createElement: (tag: string) => new FakeEl(tag)
     });
     // eslint-disable-next-line no-new-func
-    const factory = new Function('document', 'navigator', `${galleryRuntime}\nreturn { openGallery: openGallery, closeGallery: closeGallery };`);
-    return { body, document, ...factory(document, { language: 'en' }) };
+    const factory = new Function('document', 'window', `${galleryRuntime}\nreturn { openGallery: openGallery, closeGallery: closeGallery };`);
+    return { body, document, ...factory(document, { __ssLang: 'en' }) };
 };
 
 const IMAGES = [

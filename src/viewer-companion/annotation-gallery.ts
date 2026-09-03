@@ -35,7 +35,7 @@ const galleryRuntime = `
     ru: { close: 'Закрыть', prev: 'Предыдущее изображение', next: 'Следующее изображение', gallery: 'Галерея изображений' },
     zh: { close: '关闭', prev: '上一张图片', next: '下一张图片', gallery: '图片库' }
   };
-  var galleryLang = (navigator.language || 'en').toLowerCase();
+  var galleryLang = (window.__ssLang || 'en').toLowerCase();
   var galleryText = galleryLabels[galleryLang] || galleryLabels[galleryLang.split('-')[0]] || galleryLabels.en;
 
   // At most one modal at a time; also lets the companion close the gallery when

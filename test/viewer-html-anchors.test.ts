@@ -141,6 +141,22 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
         }
     });
 
+    // src/viewer-companion/annotation-i18n.ts -- the companion overwrites these
+    // three nodes to show an annotation in the visitor's language. A rename
+    // upstream would silently ship untranslated tooltips, so pin them here
+    // against the real bundle rather than against a fixture.
+    it('keeps the annotation tooltip and navigator nodes the i18n companion writes', () => {
+        expect(jsSource).toContain("className = 'pc-annotation-title'");
+        expect(jsSource).toContain("className = 'pc-annotation-text'");
+        expect(jsSource).toContain('annotationNavTitle');
+    });
+
+    // The same companion, and annotation-links.ts, depend on the viewer firing
+    // 'annotation.activate' AFTER it has written those divs.
+    it('fires annotation.activate from the annotation show handler', () => {
+        expect(jsSource).toContain("fire('annotation.activate'");
+    });
+
     it('leaves one deliberate SuperSplat mention once a full brand is applied', () => {
         const branded = injectBrand(htmlSource, {
             name: 'Acme',

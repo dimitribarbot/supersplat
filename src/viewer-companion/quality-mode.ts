@@ -27,6 +27,7 @@
 // a permanently dead regex that way), and ES5 only.
 
 import { pickQualityClass, pickAutoMode, hdBudgetFor, demoteQuality, resolveQualityMode, classifyFpsWindow } from '../quality-tier';
+import { viewerLangRuntime } from './viewer-lang';
 
 // Quality dropdown styling. A segmented control was tried first and dropped:
 // showing all three labels at once made the row -- and so the whole settings
@@ -265,7 +266,7 @@ const companionRuntime = `
       d: { perf: '在手机和旧显卡上流畅运行', normal: '清晰度与流畅度的平衡', hd: '最高画质，可能运行较慢' } }
   };
   function labels() {
-    var l = (navigator.language || 'en').toLowerCase();
+    var l = (window.__ssLang || 'en').toLowerCase();
     return LABELS[l] || LABELS[l.split('-')[0]] || LABELS.en;
   }
 
@@ -688,7 +689,7 @@ const companionRuntime = `
 // export benefits, and unlike the portals/zones injectors this one never
 // no-ops.
 const buildQualityModeInjection = (): string => {
-    return `<style>${companionStyle}</style><script>${companionRuntime}</script>`;
+    return `<style>${companionStyle}</style><script>${viewerLangRuntime}</script><script>${companionRuntime}</script>`;
 };
 
 export { buildQualityModeInjection };

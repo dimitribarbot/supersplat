@@ -1,3 +1,5 @@
+import { viewerLangRuntime } from './viewer-lang';
+
 // WebGPU -> WebGL2 crash fallback for the exported viewer.
 //
 // Some mobile GPUs run WebGPU nominally but Dawn drops the device under
@@ -91,7 +93,7 @@ const companionRuntime = `
     // burns the user's one good gesture, while the same reload a few minutes
     // later works. Deliberately vague ('a few minutes', 'might not work') --
     // no Chromium source we have pins the block to a fixed duration.
-    var l = (navigator.language || 'en').toLowerCase().split('-')[0];
+    var l = (window.__ssLang || 'en').toLowerCase().split('-')[0];
     return t[l] || t.en;
   }
   function showRestartOverlay() {
@@ -183,7 +185,7 @@ const companionRuntime = `
 // runs (plain export), injectDeviceFallback's own bootstrap soft-replace in
 // splat-export-core publishes it.
 const buildDeviceFallbackInjection = (): string => {
-    return `<script>${companionRuntime}</script>`;
+    return `<script>${viewerLangRuntime}</script><script>${companionRuntime}</script>`;
 };
 
 export { buildDeviceFallbackInjection };

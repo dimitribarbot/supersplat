@@ -651,23 +651,23 @@ describe('buildPortalsInjection smoke', () => {
         return out;
     };
 
-    it('emits exactly two scripts: payload global then runtime', () => {
+    it('emits exactly three scripts: lang runtime, payload global, then runtime', () => {
         const scripts = extractScripts(buildPortalsInjection(payload));
-        expect(scripts.length).toBe(2);
-        expect(scripts[0]).toContain('window.__supersplatPortals');
-        expect(scripts[1]).toContain('function');
+        expect(scripts.length).toBe(3);
+        expect(scripts[1]).toContain('window.__supersplatPortals');
+        expect(scripts[2]).toContain('function');
     });
 
     it('runtime script body constructs via new Function without throwing', () => {
         const scripts = extractScripts(buildPortalsInjection(payload));
         // Construction (not execution) catches syntax-level breakage in the
         // stringified helpers and the IIFE template.
-        expect(() => new Function(scripts[1])).not.toThrow();
+        expect(() => new Function(scripts[2])).not.toThrow();
     });
 
     it('payload global round-trips through JSON.parse', () => {
         const scripts = extractScripts(buildPortalsInjection(payload));
-        const m = scripts[0].match(/^window\.__supersplatPortals = ([\s\S]*);$/);
+        const m = scripts[1].match(/^window\.__supersplatPortals = ([\s\S]*);$/);
         expect(m).not.toBeNull();
         const parsed = JSON.parse(m![1]);
         expect(parsed.portalScenes).toEqual(payload.portalScenes);

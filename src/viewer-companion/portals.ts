@@ -5,6 +5,7 @@ import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desi
 import { markerRuntime, markerStyle } from './portal-markers';
 import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
+import { viewerLangRuntime } from './viewer-lang';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -152,7 +153,7 @@ const companionRuntime = `
   var tileGeometry = ${tileGeometry.toString()};
   var tileDelay = ${tileDelay.toString()};
   var transitionReducer = ${transitionReducer.toString()};
-  var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, navigator.language || 'en');
+  var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, window.__ssLang || 'en');
 
   // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
   function getApp(v) { return (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.app) || (v && v.navCursor && v.navCursor.app) || null; }
@@ -2362,6 +2363,7 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
     return `<style>${companionStyle}${markerStyle}</style>` +
+        `<script>${viewerLangRuntime}</script>` +
         `<script>window.__supersplatPortals = ${payloadJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };

@@ -21,6 +21,7 @@ import {
 
 import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subsetRowsWithinRadius, voxelResolutionLadder, type CollisionEnvironment } from './collision-voxel-options';
 import { Events } from './events';
+import { buildAnnotationI18nInjection } from './viewer-companion/annotation-i18n';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
 import { injectBrand } from './viewer-companion/brand';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
@@ -163,6 +164,24 @@ const applyAnnotationImages = (
     });
 };
 
+// Drops the `captions` array from every language entry of an annotation's
+// `extras.i18n` (the images that array is aligned to no longer ship), and
+// removes any language entry that this leaves empty -- a translation with
+// nothing left to say costs nothing.
+const stripAnnotationI18nCaptions = (i18n: any): any => {
+    if (!i18n) {
+        return undefined;
+    }
+    const out: Record<string, any> = {};
+    Object.keys(i18n).forEach((code) => {
+        const { captions, ...rest } = i18n[code] ?? {};
+        if (Object.keys(rest).length > 0) {
+            out[code] = rest;
+        }
+    });
+    return Object.keys(out).length ? out : undefined;
+};
+
 // Drop every annotation's image list from a viewer settings object, returning a
 // copy (annotations that carry none are passed through by reference).
 //
@@ -182,7 +201,9 @@ const stripHtmlGalleries = (viewerSettingsJson: any): any => {
     return {
         ...viewerSettingsJson,
         annotations: viewerSettingsJson.annotations.map((a: any) => (
-            a?.extras?.images ? { ...a, extras: { ...a.extras, images: undefined } } : a
+            a?.extras?.images ?
+                { ...a, extras: { ...a.extras, images: undefined, i18n: stripAnnotationI18nCaptions(a.extras.i18n) } } :
+                a
         ))
     };
 };
@@ -209,6 +230,21 @@ const insertBeforeBodyClose = (html: string, injection: string): string => {
 // No-op (returns the input) when there are no annotation links.
 const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string => {
     const injection = buildAnnotationLinksInjection(viewerSettingsJson?.annotations ?? []);
+    if (!injection) {
+        return html;
+    }
+    return insertBeforeBodyClose(html, injection);
+};
+
+// Inject the annotation-translation companion into an HTML string before
+// </body>. No-op when no annotation carries translations, which keeps an
+// untranslated export byte-identical to what it was before the feature.
+//
+// Chain position: this must run BEFORE nothing in particular -- it polls for
+// the viewer handle like every other companion -- but it must be present on
+// every path that carries annotations, which is both of them.
+const injectAnnotationI18n = (html: string, viewerSettingsJson: any): string => {
+    const injection = buildAnnotationI18nInjection(viewerSettingsJson?.annotations ?? []);
     if (!injection) {
         return html;
     }
@@ -939,8 +975,8 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     }
     const settingsWithLods = { ...viewerSettingsJson, portalSceneLodCounts: [primaryLodCounts, ...extraLodCounts] };
     const withPoster = applyPoster(repointed, settingsWithLods, posterBytes, memFs);
-    const withLinks = injectAnnotationLinks(withPoster, settingsWithLods);
-    const withZones = injectOffLimitsZones(withLinks, settingsWithLods);
+    const withAnnotations = injectAnnotationI18n(injectAnnotationLinks(withPoster, settingsWithLods), settingsWithLods);
+    const withZones = injectOffLimitsZones(withAnnotations, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
     const withCompanions = injectLoadingBar(
         injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals))),
@@ -1044,7 +1080,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
             // Single-file HTML: no collision file exists on this path, so the
             // companion's collision term drops out and the gsplat blocks own
             // the whole range.
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), 0), viewerSettingsJson);
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), 0), viewerSettingsJson);
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
@@ -1088,7 +1124,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings))), collisionBinaryBytes(memFs)), sogSettings);
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings), sogSettings))), collisionBinaryBytes(memFs)), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(injected, favicon, memFs), brand, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);

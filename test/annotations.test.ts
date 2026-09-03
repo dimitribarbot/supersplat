@@ -35,6 +35,7 @@ const annotation = (over: Partial<AnnotationData> = {}): AnnotationData => ({
     images: [],
     sceneUid: null,
     camera: { position: [0, 0, 0], target: [0, 0, 1], fov: 60 },
+    translations: {},
     ...over
 });
 
@@ -468,5 +469,174 @@ describe('annotation camera pose', () => {
         op.undo();
         expect(events.invoke('annotations.export')[0].camera.initial)
         .toEqual({ position: [0, 0, 0], target: [0, 0, 1], fov: 60 });
+    });
+});
+
+describe('annotation translations persistence', () => {
+    it('round-trips translations through document serialize/deserialize', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        const translations = {
+            fr: { title: 'Façade', text: 'Construite en 1890', url: 'https://example.com/fr' },
+            de: { title: 'Fassade' }
+        };
+        events.fire('annotations.insertRaw', annotation({ translations }));
+
+        const doc = events.invoke('docSerialize.annotations');
+        expect(doc[0].translations).toEqual(translations);
+
+        events.invoke('docDeserialize.annotations', doc);
+        const list = events.invoke('annotations.list');
+        expect(list[0].translations).toEqual(translations);
+    });
+
+    it('defaults a legacy record with no translations to an empty map', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        events.invoke('docDeserialize.annotations', [{
+            id: 'annotation_0',
+            position: [0, 0, 0],
+            title: 'T',
+            text: 'X',
+            camera: { position: [0, 0, 0], target: [0, 0, 1], fov: 60 }
+        }]);
+        expect(events.invoke('annotations.list')[0].translations).toEqual({});
+    });
+
+    it('drops unknown locale codes', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        events.invoke('docDeserialize.annotations', [{
+            id: 'annotation_0',
+            position: [0, 0, 0],
+            title: 'T',
+            text: 'X',
+            camera: { position: [0, 0, 0], target: [0, 0, 1], fov: 60 },
+            translations: { fr: { title: 'Façade' }, klingon: { title: 'nuqneH' }, 'fr-CA': { title: 'no' } }
+        }]);
+        expect(events.invoke('annotations.list')[0].translations).toEqual({ fr: { title: 'Façade' } });
+    });
+
+    it('drops non-string field values and malformed caption keys', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        events.invoke('docDeserialize.annotations', [{
+            id: 'annotation_0',
+            position: [0, 0, 0],
+            title: 'T',
+            text: 'X',
+            camera: { position: [0, 0, 0], target: [0, 0, 1], fov: 60 },
+            translations: {
+                fr: {
+                    title: 'Façade',
+                    text: 42,
+                    url: { evil: true },
+                    captions: { annimg_0: 'Mur nord', '../../evil': 'x', annimg_1: 99 }
+                }
+            }
+        }]);
+        expect(events.invoke('annotations.list')[0].translations).toEqual({
+            fr: { title: 'Façade', captions: { annimg_0: 'Mur nord' } }
+        });
+    });
+
+    it('drops a language entry that is not an object', () => {
+        const events = makeEvents();
+        registerAnnotationsEvents(events);
+        events.invoke('docDeserialize.annotations', [{
+            id: 'annotation_0',
+            position: [0, 0, 0],
+            title: 'T',
+            text: 'X',
+            camera: { position: [0, 0, 0], target: [0, 0, 1], fov: 60 },
+            translations: { fr: 'Façade', de: null }
+        }]);
+        expect(events.invoke('annotations.list')[0].translations).toEqual({});
+    });
+});
+
+describe('annotation translations export', () => {
+    const exportOne = (over: Partial<AnnotationData>, hasImage: (id: string) => boolean = () => true) => {
+        const events = makeEvents(hasImage);
+        registerAnnotationsEvents(events);
+        events.fire('annotations.insertRaw', annotation(over));
+        return events.invoke('annotations.export')[0];
+    };
+
+    it('omits i18n entirely when nothing is translated', () => {
+        expect(exportOne({}).extras.i18n).toBeUndefined();
+    });
+
+    it('emits title and text for every translated language', () => {
+        const out = exportOne({
+            translations: { fr: { title: 'Façade', text: 'Construite' }, de: { title: 'Fassade' } }
+        });
+        expect(out.extras.i18n).toEqual({
+            fr: { title: 'Façade', text: 'Construite' },
+            de: { title: 'Fassade' }
+        });
+    });
+
+    it('drops empty fields and empty language entries', () => {
+        const out = exportOne({
+            translations: { fr: { title: '', text: '' }, de: { title: 'Fassade' } }
+        });
+        expect(out.extras.i18n).toEqual({ de: { title: 'Fassade' } });
+    });
+
+    it('emits a translated url only in url mode', () => {
+        const base = { url: 'https://example.com/en', translations: { fr: { url: 'https://example.com/fr' } } };
+        expect(exportOne({ ...base, linkType: 'url' }).extras.i18n).toEqual({
+            fr: { url: 'https://example.com/fr' }
+        });
+        expect(exportOne({ ...base, linkType: 'none' }).extras.i18n).toBeUndefined();
+        expect(exportOne({ ...base, linkType: 'images' }).extras.i18n).toBeUndefined();
+    });
+
+    it('emits captions positionally, aligned to the filtered image list', () => {
+        // annimg_1's bytes are missing, so it is dropped from extras.images --
+        // its caption must be dropped from the same position, or every later
+        // caption would describe the wrong picture.
+        const images: AnnotationImage[] = [
+            { imageId: 'annimg_0', ext: 'jpg', mime: 'image/jpeg', caption: 'North' },
+            { imageId: 'annimg_1', ext: 'jpg', mime: 'image/jpeg', caption: 'Gone' },
+            { imageId: 'annimg_2', ext: 'jpg', mime: 'image/jpeg', caption: 'Roof' }
+        ];
+        const out = exportOne({
+            linkType: 'images',
+            images,
+            translations: {
+                fr: { captions: { annimg_0: 'Mur nord', annimg_1: 'Disparu', annimg_2: 'Toit' } }
+            }
+        }, id => id !== 'annimg_1');
+        expect(out.extras.images.map((i: any) => i.src)).toEqual([
+            'annotations/annimg_0.jpg',
+            'annotations/annimg_2.jpg'
+        ]);
+        expect(out.extras.i18n.fr.captions).toEqual(['Mur nord', 'Toit']);
+    });
+
+    it('pads untranslated caption slots and trims the trailing empties', () => {
+        const images: AnnotationImage[] = [
+            { imageId: 'annimg_0', ext: 'jpg', mime: 'image/jpeg', caption: 'A' },
+            { imageId: 'annimg_1', ext: 'jpg', mime: 'image/jpeg', caption: 'B' },
+            { imageId: 'annimg_2', ext: 'jpg', mime: 'image/jpeg', caption: 'C' }
+        ];
+        const out = exportOne({
+            linkType: 'images',
+            images,
+            translations: { fr: { captions: { annimg_1: 'Deux' } } }
+        });
+        expect(out.extras.i18n.fr.captions).toEqual(['', 'Deux']);
+    });
+
+    it('emits captions only in images mode', () => {
+        const out = exportOne({
+            linkType: 'url',
+            url: 'https://example.com',
+            images: [{ imageId: 'annimg_0', ext: 'jpg', mime: 'image/jpeg', caption: 'A' }],
+            translations: { fr: { captions: { annimg_0: 'Mur nord' } } }
+        });
+        expect(out.extras.i18n).toBeUndefined();
     });
 });

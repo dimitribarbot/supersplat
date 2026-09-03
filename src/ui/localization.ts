@@ -30,6 +30,11 @@ class Localization {
      * Supported languages. `name` is the NATIVE name so a user who can't read
      * the current UI language can still recognise their own. Single source of
      * truth for both i18next init and the language selector.
+     *
+     * Must be kept in sync (same codes, same order) with `VIEWER_LOCALES` in
+     * src/viewer-companion/viewer-lang.ts: adding a language here without
+     * adding it there means `sanitizeTranslations` silently drops that
+     * language's translations on the next project load.
      */
     readonly languages = [
         { code: 'en', name: 'English' },

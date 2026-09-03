@@ -1,4 +1,5 @@
 import { galleryRuntime, galleryStyle, hasGallery } from './annotation-gallery';
+import { viewerLangRuntime } from './viewer-lang';
 
 type AnyAnnotation = {
     title?: string,
@@ -41,17 +42,18 @@ const buildLinkTable = (annotations: AnyAnnotation[]): { label: number, url: str
 // an exported file, and asserted by the injection tests.
 const companionRuntime = `
 (function () {
-  // Localize the "Open link" label by the viewer's browser language (the
-  // exported file is standalone, with no access to the editor's i18next). Keys
-  // are primary subtags; a navigator.language like 'pt-BR'/'zh-CN' falls back to
-  // its base subtag, then to English.
+  // Localize the "Open link" label using the language the shared resolver
+  // publishes to window.__ssLang (honours ?lang=, then the browser's
+  // languages -- the exported file is standalone, with no access to the
+  // editor's i18next). Keys are primary subtags; a value like 'pt-BR'/'zh-CN'
+  // falls back to its base subtag, then to English.
   var openLinkLabels = {
     en: 'Open link', de: 'Link \\u00f6ffnen', es: 'Abrir enlace', fr: 'Ouvrir le lien',
     ja: '\\u30ea\\u30f3\\u30af\\u3092\\u958b\\u304f', ko: '\\ub9c1\\ud06c \\uc5f4\\uae30',
     pt: 'Abrir link', ru: '\\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u044c \\u0441\\u0441\\u044b\\u043b\\u043a\\u0443',
     zh: '\\u6253\\u5f00\\u94fe\\u63a5'
   };
-  var navLang = (navigator.language || 'en').toLowerCase();
+  var navLang = (window.__ssLang || 'en').toLowerCase();
   var openLinkText = (openLinkLabels[navLang] || openLinkLabels[navLang.split('-')[0]] || openLinkLabels.en) + ' \\u2197';
 
   ${galleryRuntime}
@@ -176,6 +178,7 @@ const buildAnnotationLinksInjection = (annotations: AnyAnnotation[]): string => 
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
     return `<style>${companionStyle}${galleryStyle}</style>` +
+        `<script>${viewerLangRuntime}</script>` +
         `<script>window.__supersplatAnnotationLinks = ${tableJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };

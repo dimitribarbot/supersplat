@@ -27,6 +27,21 @@ const loadResources = () => {
     return resources;
 };
 
+// Hoisted to module scope (rather than living inside the describe block below)
+// so a sibling describe can use it too: `beforeAll` only runs for the block it
+// is declared in, so a fresh instance is built here from loadResources()
+// directly instead of relying on that block's globalThis.__i18nResources.
+const makeT = async (lng: string) => {
+    const instance = i18next.createInstance();
+    await instance.init({
+        resources: loadResources(),
+        lng,
+        fallbackLng: 'en',
+        interpolation: { escapeValue: false }
+    });
+    return instance.t.bind(instance);
+};
+
 describe('annotation image gallery plural strings', () => {
     beforeAll(async () => {
         const instance = i18next.createInstance();
@@ -40,17 +55,6 @@ describe('annotation image gallery plural strings', () => {
         // language switches can't bleed between tests; store the factory.
         (globalThis as any).__i18nResources = loadResources();
     });
-
-    const makeT = async (lng: string) => {
-        const instance = i18next.createInstance();
-        await instance.init({
-            resources: (globalThis as any).__i18nResources,
-            lng,
-            fallbackLng: 'en',
-            interpolation: { escapeValue: false }
-        });
-        return instance.t.bind(instance);
-    };
 
     it('renders correct English singular and plural for images-edit', async () => {
         const t = await makeT('en');
@@ -119,5 +123,47 @@ describe('annotation image gallery plural strings', () => {
         expect(oneWarning).not.toBe('export.annotation-images-html-warning');
         expect(threeWarning).toBeTruthy();
         expect(threeWarning).not.toBe('export.annotation-images-html-warning');
+    });
+});
+
+describe('annotation translations plural strings', () => {
+    it('renders correct English singular and plural for translations-edit', async () => {
+        const t = await makeT('en');
+        expect(t('panel.annotations.translations-edit', { count: 1 })).toBe('1 language — Edit…');
+        expect(t('panel.annotations.translations-edit', { count: 3 })).toBe('3 languages — Edit…');
+    });
+
+    it('renders a non-empty translations-edit in every locale', async () => {
+        for (const lng of ['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt-BR', 'ru', 'zh-CN']) {
+            const t = await makeT(lng);
+            for (const count of [1, 2, 5]) {
+                const out = t('panel.annotations.translations-edit', { count });
+                expect(out, `${lng} @ ${count}`).not.toBe('panel.annotations.translations-edit');
+                expect(out, `${lng} @ ${count}`).toContain(String(count));
+            }
+        }
+    });
+
+    it('defines the dialog strings in every locale', async () => {
+        // Asserts PRESENCE in each locale's own raw JSON, not the rendered
+        // i18next lookup: with fallbackLng: 'en', a locale MISSING a key still
+        // renders the English string via fallback, so `t(key) !== key` passes
+        // even for a locale that was never filled in and would tell nothing
+        // about whether that locale actually defines the key. This does not
+        // assert the value differs from English -- other locales legitimately
+        // share strings with it (e.g. "Original").
+        const keys = [
+            'popup.annotation-translations.header',
+            'popup.annotation-translations.captions'
+        ];
+        const resources = loadResources();
+        for (const lng of ['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt-BR', 'ru', 'zh-CN']) {
+            const raw = resources[lng].translation;
+            for (const key of keys) {
+                expect(Object.prototype.hasOwnProperty.call(raw, key), `${lng} ${key}`).toBe(true);
+            }
+            const t = await makeT(lng);
+            expect(t('popup.annotation-translations.image-n', { index: 2 })).toContain('2');
+        }
     });
 });

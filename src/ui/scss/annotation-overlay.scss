@@ -185,3 +185,154 @@
         opacity: 0.7;
     }
 }
+
+#annotation-translations-dialog {
+    // wider than the 400px shared settings-dialog default: a lang list column
+    // plus a fields column of at least 320px does not fit on one line at
+    // 400px. Two ids outrank `.settings-dialog #dialog`, as above.
+    #dialog {
+        width: 520px;
+        max-width: calc(100vw - 32px);
+    }
+
+    .annotation-translations-body {
+        display: flex;
+        gap: 12px;
+    }
+
+    .annotation-translations-langs {
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        width: 140px;
+    }
+
+    .annotation-translations-lang {
+        padding: 4px 8px;
+        cursor: pointer;
+
+        &.selected {
+            background-color: $bcg-darker;
+        }
+
+        // a dot marks a language that already carries content, so the author
+        // can see at a glance what is done without clicking through nine rows
+        &.translated > .pcui-label::after {
+            content: ' •';
+        }
+    }
+
+    .annotation-translations-fields {
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+        gap: 8px;
+        min-width: 320px;
+        // the right inset, owned here rather than as a margin on each input, so
+        // every child shares one left edge and one right edge
+        padding-right: 8px;
+    }
+
+    // .pcui-label ships `margin: 6px` and the thumbnails override it to 0, so
+    // labels and inputs sat 6px right of the images. Zero the HORIZONTAL
+    // margins on everything in this column instead of matching the 6px: the
+    // shared left edge then holds regardless of what PCUI's $element-margin
+    // becomes. Vertical margins are untouched, so the rhythm is unchanged.
+    .annotation-translations-label,
+    .annotation-translations-base,
+    .annotation-translations-input,
+    .annotation-translations-heading,
+    .annotation-images-thumb {
+        margin-left: 0;
+        margin-right: 0;
+    }
+
+    // .pcui-label is `white-space: nowrap; overflow: hidden; text-overflow:
+    // ellipsis`, so as a flex item it will happily shrink to "T…" when the
+    // wrapping base string beside it wants the room. The field name is the one
+    // thing in the row that must always be readable.
+    .annotation-translations-label {
+        flex-shrink: 0;
+    }
+
+    // Every editable row is a column: the field name and its untranslated
+    // string on a header line, the input on its own line below. Stacking is
+    // explicit rather than left to wrapping, so a short field (Title) and a
+    // long one (Text) lay out identically instead of by string length.
+    .annotation-translations-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .annotation-translations-row-header {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+    }
+
+    .annotation-translations-base {
+        opacity: 0.6;
+        // The base string is reference material an author copies from, so it
+        // opts out of the global `* { user-select: none }` in style.scss.
+        user-select: text;
+        cursor: text;
+        // .pcui-label truncates by default; a clipped default is unreadable
+        // AND uncopyable, so let it wrap to as many lines as it needs.
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+    }
+
+    // Inputs fill the pane; the right inset comes from the column's
+    // padding-right, so the input's own edge is flush with the labels above it.
+    .annotation-translations-input {
+        width: auto;
+        box-sizing: border-box;
+    }
+
+    .annotation-translations-captions {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        // taller rows than the single-line original (thumbnail + wrapping
+        // caption + input), so the cap is raised to keep ~3 visible
+        max-height: 320px;
+        overflow-y: auto;
+    }
+
+    // flex-shrink: 0 for the reason documented above .annotation-images-list:
+    // .pcui-label carries overflow: hidden, which zeroes a flex item's
+    // automatic minimum size, so without it the rows compress instead of
+    // scrolling once the list passes its max-height.
+    .annotation-translations-caption-row {
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        gap: 4px;
+    }
+
+    // flex-start, not center: a caption wrapping onto several lines should grow
+    // downward beside the thumbnail rather than re-centring against it.
+    .annotation-translations-caption-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    // the caption rows reuse .annotation-images-thumb (see
+    // annotation-translations-dialog.ts): that class's sizing/background rules
+    // live scoped under #annotation-images-dialog above, so this id needs its
+    // own copy of the same values or the thumbnails render unstyled.
+    .annotation-images-thumb {
+        width: 80px;
+        height: 56px;
+        flex-shrink: 0;
+        margin: 0;
+        border-radius: 2px;
+        background-color: #1e1e1e;
+        background-size: cover;
+        background-position: center;
+        text-align: center;
+    }
+}

@@ -1,5 +1,6 @@
 import { Events } from './events';
 import { resolveAnnotationSceneIndex } from './portal-export';
+import { VIEWER_LOCALES } from './viewer-companion/viewer-lang';
 
 // Camera fly-to view stored per annotation (packed arrays for serialization).
 type AnnotationCamera = {
@@ -36,6 +37,101 @@ const isSafeImageRecord = (img: any): boolean => {
         typeof img.ext === 'string' && IMAGE_EXTS.includes(img.ext);
 };
 
+// Locale codes a translation may be stored under. Owned by viewer-lang.ts
+// (VIEWER_LOCALES) and re-exported here under this name so the editor and the
+// exported viewer can never disagree about the locale set. Same nine the
+// editor UI offers (src/ui/localization.ts) and the exported viewer ships
+// dictionaries for, so a stored translation always has somewhere to be shown.
+const TRANSLATION_LOCALES = VIEWER_LOCALES;
+
+// One language's overrides for an annotation. Every field is optional: a
+// missing field falls back to the annotation's base value, per field, so a
+// half-finished translation never blanks anything.
+type AnnotationTranslation = {
+    title?: string,
+    text?: string,
+    url?: string,
+    // imageId -> caption. Keyed by id rather than by list position so
+    // reordering or removing an image cannot silently reattach a caption to a
+    // different picture.
+    captions?: Record<string, string>
+};
+
+// A translations map read out of a project file is untrusted input, exactly as
+// the image records above are: it is baked into an exported viewer's injected
+// <script>, so a hand-crafted .ssproj could otherwise smuggle a non-string or
+// an unexpected locale key into that payload. Unknown locales, non-string
+// values and caption keys that are not real image ids are DROPPED, never
+// repaired.
+const sanitizeTranslations = (raw: any): Record<string, AnnotationTranslation> => {
+    const out: Record<string, AnnotationTranslation> = {};
+    if (!raw || typeof raw !== 'object') {
+        return out;
+    }
+    TRANSLATION_LOCALES.forEach((code) => {
+        const entry = raw[code];
+        if (!entry || typeof entry !== 'object') {
+            return;
+        }
+        const clean: AnnotationTranslation = {};
+        (['title', 'text', 'url'] as const).forEach((field) => {
+            if (typeof entry[field] === 'string') {
+                clean[field] = entry[field];
+            }
+        });
+        if (entry.captions && typeof entry.captions === 'object') {
+            const captions: Record<string, string> = {};
+            Object.keys(entry.captions).forEach((imageId) => {
+                if (IMAGE_ID_RE.test(imageId) && typeof entry.captions[imageId] === 'string') {
+                    captions[imageId] = entry.captions[imageId];
+                }
+            });
+            if (Object.keys(captions).length > 0) {
+                clean.captions = captions;
+            }
+        }
+        if (Object.keys(clean).length > 0) {
+            out[code] = clean;
+        }
+    });
+    return out;
+};
+
+// Whether a translation carries anything at all -- the single definition of
+// "this language has content", shared by the dialog's per-language bullet, the
+// toolbar's language count, and the dialog's OK-commit strip so the three can
+// never disagree.
+//
+// This is deliberately NARROWER than what actually gets exported: the export
+// gate above also applies the isUrl and images.length checks (a url override
+// with an empty base url, or captions with no live images, export as nothing),
+// which are per-annotation rules that do not belong in a per-translation
+// content check. Not shared with that gate for this reason.
+const hasTranslationContent = (t: AnnotationTranslation | undefined): boolean => {
+    if (!t) {
+        return false;
+    }
+    if (t.title || t.text || t.url) {
+        return true;
+    }
+    return Object.values(t.captions ?? {}).some(c => !!c);
+};
+
+// Deep copy for the undo stack and for the working copy the dialog edits.
+// UpdateAnnotationOp snapshots old/new values, so a shared nested object would
+// let a later edit mutate a value already recorded in history.
+const cloneTranslations = (t: Record<string, AnnotationTranslation>): Record<string, AnnotationTranslation> => {
+    const out: Record<string, AnnotationTranslation> = {};
+    Object.keys(t || {}).forEach((code) => {
+        const entry = t[code];
+        out[code] = { ...entry };
+        if (entry.captions) {
+            out[code].captions = { ...entry.captions };
+        }
+    });
+    return out;
+};
+
 // Editor-internal annotation record. Positions/cameras are packed arrays so
 // serialization is a straight copy (mirrors camera-poses.ts packing style).
 type AnnotationData = {
@@ -52,6 +148,9 @@ type AnnotationData = {
     // than a rule the UI has to police.
     linkType: 'none' | 'url' | 'images',
     images: AnnotationImage[],
+    // Per-language overrides for title/text/url/captions. Empty for an
+    // untranslated annotation; the base fields above are the fallback.
+    translations: Record<string, AnnotationTranslation>,
     // Editor splat this annotation belongs to (session-scoped uid), or null.
     // Resolved to an export scene index at export time; persisted by document
     // splat index (see docSerialize.annotations) because uids are not stable.
@@ -62,6 +161,10 @@ type AnnotationData = {
 // On-disk annotation record: AnnotationData plus a stable splat reference as an
 // index into the document's splat array (uids are session-scoped and NOT stable
 // across loads; the sceneUid field is kept only for rollback to older builds).
+// `translations` is inherited from AnnotationData as required; legacy
+// documents saved before this feature existed simply omit the key on disk --
+// docDeserialize reads the field via `any` and sanitizeTranslations treats a
+// missing map the same as an empty one, so no `?` is needed here to express it.
 type AnnotationDocData = AnnotationData & {
     sceneIndex?: number | null
 };
@@ -78,7 +181,8 @@ type AnnotationExport = {
         newTab?: boolean,
         images?: { src: string, caption: string }[],
         scene?: number,
-        id?: string
+        id?: string,
+        i18n?: Record<string, { title?: string, text?: string, url?: string, captions?: string[] }>
     }
 };
 
@@ -290,6 +394,10 @@ const registerAnnotationsEvents = (events: Events) => {
             // Emit ONLY the live action. An annotation in 'images' mode with an
             // empty list exports exactly as 'none' does -- it must never fall
             // back to the url the record still carries.
+            //
+            // Requiring a non-empty BASE url is INTENTIONAL, not a defensive
+            // null-check: a translated url overrides a base url, it does not
+            // introduce a link the base annotation never had.
             const isUrl = a.linkType === 'url' && !!a.url;
             // An image whose bytes are not in the session store (a document
             // loaded from an archive that lacked the entry) is skipped here for
@@ -297,11 +405,57 @@ const registerAnnotationsEvents = (events: Events) => {
             // the src anyway would give the viewer a broken slide it still
             // counts ("2 / 3"). Asked over the event bus rather than by
             // importing annotation-images.ts, which owns the store.
+            const liveImages = a.images.filter(img => events.invoke('annotationImages.has', img.imageId));
             const images = (a.linkType === 'images') ?
-                a.images
-                .filter(img => events.invoke('annotationImages.has', img.imageId))
-                .map(img => ({ src: `annotations/${img.imageId}.${img.ext}`, caption: img.caption })) :
+                liveImages.map(img => ({ src: `annotations/${img.imageId}.${img.ext}`, caption: img.caption })) :
                 [];
+
+            // Per-language overrides, emitted alongside the base strings the
+            // viewer falls back to.
+            //
+            // Only the LIVE action is translated, mirroring the isUrl/images
+            // rule above: an annotation in 'images' mode must never export the
+            // url it still carries, and the same is true of that url's
+            // translations.
+            //
+            // Captions are emitted POSITIONALLY rather than as an imageId map,
+            // because imageId does not exist in the export and `images` above
+            // is filtered -- index i of `captions` describes index i of
+            // `extras.images`. Untranslated slots are '' and a trailing run of
+            // empties is trimmed, so a language that translated nothing costs
+            // nothing.
+            //
+            // This gate is intentionally NOT hasTranslationContent: it also
+            // applies the isUrl and images.length rules above, which are
+            // per-annotation export rules rather than part of "does this
+            // translation have content".
+            const i18n: Record<string, any> = {};
+            Object.keys(a.translations ?? {}).forEach((code) => {
+                const t = a.translations[code];
+                const entry: any = {};
+                if (t.title) {
+                    entry.title = t.title;
+                }
+                if (t.text) {
+                    entry.text = t.text;
+                }
+                if (isUrl && t.url) {
+                    entry.url = t.url;
+                }
+                if (images.length > 0 && t.captions) {
+                    const captions = liveImages.map(img => t.captions[img.imageId] ?? '');
+                    while (captions.length > 0 && captions[captions.length - 1] === '') {
+                        captions.pop();
+                    }
+                    if (captions.length > 0) {
+                        entry.captions = captions;
+                    }
+                }
+                if (Object.keys(entry).length > 0) {
+                    i18n[code] = entry;
+                }
+            });
+
             return {
                 position: [a.position[0], a.position[1], a.position[2]],
                 title: a.title,
@@ -318,7 +472,8 @@ const registerAnnotationsEvents = (events: Events) => {
                     newTab: isUrl ? a.newTab : undefined,
                     images: images.length ? images : undefined,
                     scene: scene ?? undefined,
-                    id: a.id
+                    id: a.id,
+                    i18n: Object.keys(i18n).length ? i18n : undefined
                 }
             };
         });
@@ -357,6 +512,7 @@ const registerAnnotationsEvents = (events: Events) => {
                 newTab: a.newTab,
                 linkType: a.linkType,
                 images: a.images.map(img => ({ ...img })),
+                translations: cloneTranslations(a.translations),
                 sceneUid: a.sceneUid,
                 camera: {
                     position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
@@ -403,6 +559,7 @@ const registerAnnotationsEvents = (events: Events) => {
                     // url was, by definition, a link annotation
                     linkType: d.linkType ?? (d.url ? 'url' : 'none'),
                     images: Array.isArray(d.images) ? d.images.filter(isSafeImageRecord).map(img => ({ ...img })) : [],
+                    translations: sanitizeTranslations(d.translations),
                     sceneUid: indexToUid ? fromIndex(d.sceneIndex) : (d.sceneUid ?? null),
                     camera: d.camera ?? { position: [0, 0, 0], target: [0, 0, 1], fov: 60 }
                 });
@@ -428,5 +585,9 @@ export {
     AnnotationDocData,
     AnnotationCamera,
     AnnotationExport,
-    AnnotationImage
+    AnnotationImage,
+    AnnotationTranslation,
+    TRANSLATION_LOCALES,
+    cloneTranslations,
+    hasTranslationContent
 };

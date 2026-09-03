@@ -5,6 +5,7 @@ import { DataPanel } from './data-panel';
 import { Events } from '../events';
 import { AboutPopup } from './about-popup';
 import { AnnotationImagesDialog } from './annotation-images-dialog';
+import { AnnotationTranslationsDialog } from './annotation-translations-dialog';
 import { BottomToolbar } from './bottom-toolbar';
 import { CameraInfoOverlay } from './camera-info-overlay';
 import { ColorPanel } from './color-panel';
@@ -224,6 +225,9 @@ class EditorUI {
         // annotation images
         const annotationImagesDialog = new AnnotationImagesDialog(events);
 
+        // annotation translations
+        const annotationTranslationsDialog = new AnnotationTranslationsDialog(events);
+
         // about popup
         const aboutPopup = new AboutPopup();
 
@@ -235,6 +239,7 @@ class EditorUI {
         topContainer.append(imageSettingsDialog);
         topContainer.append(videoSettingsDialog);
         topContainer.append(annotationImagesDialog);
+        topContainer.append(annotationTranslationsDialog);
         topContainer.append(shortcutsPopup);
         topContainer.append(aboutPopup);
 

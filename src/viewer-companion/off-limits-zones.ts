@@ -1,4 +1,5 @@
 import { segmentBlockedByWall } from './off-limits-collision';
+import { viewerLangRuntime } from './viewer-lang';
 
 type ZoneLike = {
     position: [number, number, number],
@@ -68,7 +69,7 @@ const companionRuntime = `
 
   var segmentBlockedByWall = ${segmentBlockedByWall.toString()};
   var resolveOffLimitsMessage = ${resolveOffLimitsMessage.toString()};
-  var msgText = resolveOffLimitsMessage(custom, defaults, navigator.language || 'en');
+  var msgText = resolveOffLimitsMessage(custom, defaults, window.__ssLang || 'en');
 
   // --- DOM feedback (always available) ---
   var overlay = document.createElement('div');
@@ -150,6 +151,7 @@ const buildOffLimitsZonesInjection = (zones: ZoneLike[], message: string): strin
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
     return `<style>${companionStyle}</style>` +
+        `<script>${viewerLangRuntime}</script>` +
         `<script>window.__supersplatOffLimitsZones = ${payloadJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };

@@ -137,6 +137,7 @@ const runCompanion = (annotations: any[], viewer: ReturnType<typeof makeViewer>)
         return false;
     }
     const scripts = [...injection.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+    viewer.window.__ssLang = 'en';
     viewer.window.__supersplatAnnotationLinks = buildLinkTable(annotations);
     const MutationObserver = class {
         constructor(_cb: any) {}
@@ -345,5 +346,37 @@ describe('annotation chip precedence', () => {
             extras: { images: [{ src: 'annotations/annimg_0.jpg', caption: '</script><b>$&' }] }
         }]);
         expect(injection).not.toContain('</script><b>');
+    });
+});
+
+describe('stripHtmlGalleries and translations', () => {
+    it('drops translated captions along with the images', () => {
+        const settings = {
+            annotations: [{
+                title: 'T',
+                text: 'X',
+                extras: {
+                    images: [{ src: 'annotations/annimg_0.jpg', caption: 'North' }],
+                    i18n: { fr: { title: 'Façade', captions: ['Mur nord'] } }
+                }
+            }]
+        };
+        const out = stripHtmlGalleries(settings);
+        expect(out.annotations[0].extras.images).toBeUndefined();
+        expect(out.annotations[0].extras.i18n).toEqual({ fr: { title: 'Façade' } });
+    });
+
+    it('removes a language entry left empty by dropping its captions', () => {
+        const settings = {
+            annotations: [{
+                title: 'T',
+                text: 'X',
+                extras: {
+                    images: [{ src: 'annotations/annimg_0.jpg', caption: 'North' }],
+                    i18n: { fr: { captions: ['Mur nord'] } }
+                }
+            }]
+        };
+        expect(stripHtmlGalleries(settings).annotations[0].extras.i18n).toBeUndefined();
     });
 });

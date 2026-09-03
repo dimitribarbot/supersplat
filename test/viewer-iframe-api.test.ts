@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import { injectIframeApi } from '../src/splat-export-core';
-import { buildAnnotationIndex, buildIframeApiInjection, resolveAnnotationRef } from '../src/viewer-companion/iframe-api';
+import { buildAnnotationIndex, buildIframeApiInjection, localizeAnnotationTable, resolveAnnotationRef } from '../src/viewer-companion/iframe-api';
 
 describe('buildAnnotationIndex', () => {
     it('produces one entry per annotation in settings order', () => {
@@ -158,7 +158,8 @@ const runBridge = (annotations: any[], v: ReturnType<typeof makeViewer>) => {
     const requestAnimationFrame = (fn: () => void) => {
         queue.push(fn);
     };
-    // the last script is the runtime; the first only assigns the table
+    // the last of the three scripts is the runtime; the first two only set up
+    // window.__ssLang and assign the table
     // eslint-disable-next-line no-new-func
     new Function('window', 'document', 'requestAnimationFrame', scripts[scripts.length - 1])(
         v.window, v.document, requestAnimationFrame
@@ -191,15 +192,16 @@ const ANNOTATIONS = [
 const messagesOf = (host: ReturnType<typeof makeHost>, type: string) =>
     host.sent.filter(s => s.message.type === type);
 
-// Execute the emitted table-assignment script (the first <script>, not the
-// runtime) exactly as a browser would, so the escaping path itself is
-// exercised rather than assumed. Returns whatever ends up on
-// window.__supersplatIframeApi after JSON parsing/unescaping by the engine.
+// Execute the emitted table-assignment script (the second <script> -- the
+// first is the language-runtime snippet, the last is the companion runtime)
+// exactly as a browser would, so the escaping path itself is exercised rather
+// than assumed. Returns whatever ends up on window.__supersplatIframeApi after
+// JSON parsing/unescaping by the engine.
 const runTableScript = (injection: string): any => {
     const scripts = [...injection.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
     const window: any = {};
     // eslint-disable-next-line no-new-func
-    new Function('window', scripts[0])(window);
+    new Function('window', scripts[1])(window);
     return window.__supersplatIframeApi;
 };
 
@@ -585,8 +587,12 @@ describe('buildIframeApiInjection', () => {
         // happily parse the table below even if this escaping were removed --
         // the round-trip alone cannot fail on that regression. The escaping
         // exists for engines that predate that change, since the exported
-        // viewer is a standalone file that can be opened anywhere.
-        const [tableScript] = [...injection.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+        // viewer is a standalone file that can be opened anywhere. The bridge
+        // now prepends a language-runtime script ahead of the table-assignment
+        // one, so the table script is the second of three, not the first.
+        const injectionScripts = [...injection.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+        expect(injectionScripts).toHaveLength(3);
+        const tableScript = injectionScripts[1];
         expect(tableScript).not.toContain(sepLine);
         expect(tableScript).not.toContain(sepParagraph);
         expect(tableScript).toContain('\\u2028');
@@ -645,11 +651,69 @@ describe('injectIframeApi ($-substitution safety, CRITICAL)', () => {
         // Execute the emitted table-assignment script exactly as a browser
         // would (as the U+2028/U+2029 test above does) and assert the title
         // round-trips byte-for-byte, $ patterns included, rather than trusting
-        // the substring checks alone.
-        const [tableScript] = [...result.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+        // the substring checks alone. The bridge now prepends a language-runtime
+        // script ahead of the table-assignment one, so the table script is the
+        // second of three, not the first.
+        const scripts = [...result.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+        expect(scripts).toHaveLength(3);
+        const tableScript = scripts[1];
         const window: any = {};
         // eslint-disable-next-line no-new-func
         new Function('window', tableScript)(window);
         expect(window.__supersplatIframeApi[0].title).toBe(title);
+    });
+});
+
+describe('iframe api annotation translations', () => {
+    const annotations = [{
+        title: 'Facade',
+        text: 'Built in 1890',
+        extras: { id: 'annotation_0', i18n: { fr: { title: 'Façade', text: 'Construite en 1890' } } }
+    }, {
+        title: 'Roof',
+        text: 'Slate',
+        extras: { id: 'annotation_1' }
+    }];
+
+    it('bakes the i18n map into the table', () => {
+        const table = buildAnnotationIndex(annotations);
+        expect(table[0].i18n).toEqual({ fr: { title: 'Façade', text: 'Construite en 1890' } });
+        expect(table[1].i18n).toBeUndefined();
+    });
+
+    it('resolves titles and text to the requested language', () => {
+        const out = localizeAnnotationTable(buildAnnotationIndex(annotations), 'fr');
+        expect(out[0].title).toBe('Façade');
+        expect(out[0].text).toBe('Construite en 1890');
+    });
+
+    it('falls back per field and per annotation', () => {
+        const partial = [{
+            title: 'Facade',
+            text: 'Built in 1890',
+            extras: { id: 'annotation_0', i18n: { de: { title: 'Fassade' } } }
+        }];
+        const out = localizeAnnotationTable(buildAnnotationIndex(partial), 'de');
+        expect(out[0].title).toBe('Fassade');
+        expect(out[0].text).toBe('Built in 1890');
+    });
+
+    it('leaves the table untouched for an untranslated language', () => {
+        const out = localizeAnnotationTable(buildAnnotationIndex(annotations), 'ja');
+        expect(out[0].title).toBe('Facade');
+        expect(out[1].title).toBe('Roof');
+    });
+
+    it('drops the i18n map from what is sent to the host', () => {
+        const out = localizeAnnotationTable(buildAnnotationIndex(annotations), 'fr');
+        expect(out[0].i18n).toBeUndefined();
+    });
+
+    it('resolves a reference by the base title or the translated one', () => {
+        const localized = localizeAnnotationTable(buildAnnotationIndex(annotations), 'fr');
+        // a host keyed on the base title must keep working after a visitor
+        // switches language, so BOTH names resolve
+        expect(resolveAnnotationRef(localized, { name: 'Façade' }).index).toBe(0);
+        expect(resolveAnnotationRef(localized, { name: 'Facade' }).index).toBe(0);
     });
 });
