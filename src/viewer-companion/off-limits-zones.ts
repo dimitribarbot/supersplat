@@ -1,5 +1,4 @@
 import { segmentBlockedByWall } from './off-limits-collision';
-import { viewerLangRuntime } from './viewer-lang';
 
 type ZoneLike = {
     position: [number, number, number],
@@ -151,7 +150,6 @@ const buildOffLimitsZonesInjection = (zones: ZoneLike[], message: string): strin
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
     return `<style>${companionStyle}</style>` +
-        `<script>${viewerLangRuntime}</script>` +
         `<script>window.__supersplatOffLimitsZones = ${payloadJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };

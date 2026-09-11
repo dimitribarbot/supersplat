@@ -50,6 +50,18 @@ describe('runExport package portal walkthrough, 2 scenes, non-streaming (GPU)', 
         expect(names).not.toContain('favicon.png');
     });
 
+    // End-to-end guard for the deduplicated language runtime: the companions
+    // used to prepend a private copy each, so a real export carried up to seven
+    // identical blocks. injectViewerLang now emits exactly one, ahead of every
+    // companion. Asserted on a REAL exported index.html because the unit tests
+    // only see one companion at a time and cannot see the assembled document.
+    it('bakes exactly one language resolver, ahead of every companion', () => {
+        if (!gpu) return;
+        const html = zipReadEntry(Buffer.from(res!.files[0].data), 'index.html').toString('utf8');
+        expect(html.split('window.__ssLang =')).toHaveLength(2);
+        expect(html.indexOf('window.__ssLang =')).toBeLessThan(html.indexOf('window.__supersplatPortals'));
+    });
+
     it('bakes a single-element count per scene into portalSceneLodCounts', () => {
         if (!gpu) return;
         const html = zipReadEntry(Buffer.from(res!.files[0].data), 'index.html').toString('utf8');

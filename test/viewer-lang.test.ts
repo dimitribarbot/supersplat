@@ -1,5 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, it, expect } from 'vitest';
 
+import { injectViewerLang } from '../src/splat-export-core';
 import { buildAnnotationI18nInjection } from '../src/viewer-companion/annotation-i18n';
 import { buildAnnotationLinksInjection } from '../src/viewer-companion/annotation-links';
 import { buildDeviceFallbackInjection } from '../src/viewer-companion/device-fallback';
@@ -138,8 +143,35 @@ describe('companions share one language resolver', () => {
         ['annotation-i18n', buildAnnotationI18nInjection([translatedAnnotation])]
     ];
 
-    it.each(injections)('%s publishes window.__ssLang', (_name, injection) => {
-        expect(injection).toContain('window.__ssLang =');
+    // The resolver is injected ONCE per export by injectViewerLang, ahead of
+    // every companion. Each companion used to prepend a private copy, which put
+    // up to seven identical blocks into a single exported file. A companion that
+    // reintroduces its own copy fails here.
+    it.each(injections)('%s carries no language resolver of its own', (_name, injection) => {
+        expect(injection).not.toContain('window.__ssLang =');
+    });
+
+    it('injectViewerLang emits exactly one resolver, before </body>', () => {
+        const out = injectViewerLang('<html><body><p>x</p></body></html>');
+        expect(out.split('window.__ssLang =')).toHaveLength(2);
+        expect(out.indexOf('window.__ssLang =')).toBeLessThan(out.indexOf('</body>'));
+    });
+
+    // insertBeforeBodyClose APPENDS before </body>, so document order equals
+    // call-nesting order and the innermost injector lands first. Every export
+    // pipeline must therefore wrap its html in injectViewerLang innermost --
+    // i.e. inside injectAnnotationLinks, the innermost companion on all three
+    // paths. A pipeline that forgets it ships companions whose window.__ssLang
+    // is undefined at parse time; nothing else catches that without a full GPU
+    // export, so this reads the wiring out of the source.
+    it('every export pipeline injects the resolver innermost', () => {
+        const src = readFileSync(
+            resolve(dirname(fileURLToPath(import.meta.url)), '../src/splat-export-core.ts'),
+            'utf8'
+        );
+        const callSites = [...src.matchAll(/injectAnnotationLinks\(([^,]+),/g)].map(m => m[1].trim());
+        expect(callSites.length).toBeGreaterThanOrEqual(3);
+        callSites.forEach(arg => expect(arg).toMatch(/^injectViewerLang\(/));
     });
 
     it.each(injections)('%s reads no navigator.language of its own', (_name, injection) => {

@@ -158,8 +158,7 @@ const runBridge = (annotations: any[], v: ReturnType<typeof makeViewer>) => {
     const requestAnimationFrame = (fn: () => void) => {
         queue.push(fn);
     };
-    // the last of the three scripts is the runtime; the first two only set up
-    // window.__ssLang and assign the table
+    // the last of the two scripts is the runtime; the first only assigns the table
     // eslint-disable-next-line no-new-func
     new Function('window', 'document', 'requestAnimationFrame', scripts[scripts.length - 1])(
         v.window, v.document, requestAnimationFrame
@@ -192,16 +191,15 @@ const ANNOTATIONS = [
 const messagesOf = (host: ReturnType<typeof makeHost>, type: string) =>
     host.sent.filter(s => s.message.type === type);
 
-// Execute the emitted table-assignment script (the second <script> -- the
-// first is the language-runtime snippet, the last is the companion runtime)
-// exactly as a browser would, so the escaping path itself is exercised rather
-// than assumed. Returns whatever ends up on window.__supersplatIframeApi after
+// Execute the emitted table-assignment script (the first <script> -- the second
+// and last is the companion runtime) exactly as a browser would, so the escaping
+// path itself is exercised rather than assumed. Returns whatever ends up on window.__supersplatIframeApi after
 // JSON parsing/unescaping by the engine.
 const runTableScript = (injection: string): any => {
     const scripts = [...injection.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
     const window: any = {};
     // eslint-disable-next-line no-new-func
-    new Function('window', scripts[1])(window);
+    new Function('window', scripts[0])(window);
     return window.__supersplatIframeApi;
 };
 
@@ -587,12 +585,12 @@ describe('buildIframeApiInjection', () => {
         // happily parse the table below even if this escaping were removed --
         // the round-trip alone cannot fail on that regression. The escaping
         // exists for engines that predate that change, since the exported
-        // viewer is a standalone file that can be opened anywhere. The bridge
-        // now prepends a language-runtime script ahead of the table-assignment
-        // one, so the table script is the second of three, not the first.
+        // viewer is a standalone file that can be opened anywhere. The shared
+        // language runtime is injected once per export by injectViewerLang, not
+        // by this bridge, so the table script is the first of two.
         const injectionScripts = [...injection.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
-        expect(injectionScripts).toHaveLength(3);
-        const tableScript = injectionScripts[1];
+        expect(injectionScripts).toHaveLength(2);
+        const tableScript = injectionScripts[0];
         expect(tableScript).not.toContain(sepLine);
         expect(tableScript).not.toContain(sepParagraph);
         expect(tableScript).toContain('\\u2028');
@@ -651,12 +649,12 @@ describe('injectIframeApi ($-substitution safety, CRITICAL)', () => {
         // Execute the emitted table-assignment script exactly as a browser
         // would (as the U+2028/U+2029 test above does) and assert the title
         // round-trips byte-for-byte, $ patterns included, rather than trusting
-        // the substring checks alone. The bridge now prepends a language-runtime
-        // script ahead of the table-assignment one, so the table script is the
-        // second of three, not the first.
+        // the substring checks alone. The shared language runtime is injected
+        // once per export by injectViewerLang, not by this bridge, so the table
+        // script is the first of two.
         const scripts = [...result.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
-        expect(scripts).toHaveLength(3);
-        const tableScript = scripts[1];
+        expect(scripts).toHaveLength(2);
+        const tableScript = scripts[0];
         const window: any = {};
         // eslint-disable-next-line no-new-func
         new Function('window', tableScript)(window);

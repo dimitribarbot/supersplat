@@ -1,5 +1,3 @@
-import { viewerLangRuntime } from './viewer-lang';
-
 // Export-shaped annotation, as it appears in viewerSettingsJson.annotations
 // (produced by annotations.export in src/annotations.ts).
 type AnyAnnotation = {
@@ -368,8 +366,7 @@ const buildIframeApiInjection = (annotations: AnyAnnotation[]): string => {
     .replace(/&/g, '\\u0026')
     .split(SEP_LINE).join('\\u2028')
     .split(SEP_PARAGRAPH).join('\\u2029');
-    return `<script>${viewerLangRuntime}</script>` +
-        `<script>window.__supersplatIframeApi = ${tableJson};</script>` +
+    return `<script>window.__supersplatIframeApi = ${tableJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };
 

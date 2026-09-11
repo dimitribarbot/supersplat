@@ -45,9 +45,12 @@ const resolveLocale = (candidates: string[], keys: string[]): string => {
 
 // Publishes window.__ssLang once, from `?lang=` then the browser's languages.
 //
-// Guarded, so every injection that needs a language prepends this string to its
-// own script with no ordering or duplication concern: an export may carry
-// several such companions, and none of them may assume another one ran first.
+// Injected ONCE per export, ahead of every companion, by injectViewerLang in
+// splat-export-core.ts. Companions that read window.__ssLang used to prepend
+// their own copy of this block, which cost up to seven identical copies in a
+// single export. The `if (window.__ssLang) return;` guard is kept regardless:
+// it makes the block idempotent, so a second injection from any future path
+// stays harmless.
 // The two interpolations are the deliberate build-time kind (a stringified pure
 // function and a constant array), not runtime template expressions.
 const viewerLangRuntime = `
@@ -62,4 +65,12 @@ const viewerLangRuntime = `
 })();
 `;
 
-export { VIEWER_LOCALES, resolveLocale, viewerLangRuntime };
+// The HTML fragment carrying the language runtime. injectViewerLang (in
+// splat-export-core.ts) places this ahead of every other companion in the
+// document, so each companion's own script can read window.__ssLang at parse
+// time without carrying a resolver of its own.
+const buildViewerLangInjection = (): string => {
+    return `<script>${viewerLangRuntime}</script>`;
+};
+
+export { VIEWER_LOCALES, resolveLocale, viewerLangRuntime, buildViewerLangInjection };

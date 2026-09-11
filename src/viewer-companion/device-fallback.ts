@@ -1,5 +1,3 @@
-import { viewerLangRuntime } from './viewer-lang';
-
 // WebGPU -> WebGL2 crash fallback for the exported viewer.
 //
 // Some mobile GPUs run WebGPU nominally but Dawn drops the device under
@@ -185,7 +183,7 @@ const companionRuntime = `
 // runs (plain export), injectDeviceFallback's own bootstrap soft-replace in
 // splat-export-core publishes it.
 const buildDeviceFallbackInjection = (): string => {
-    return `<script>${viewerLangRuntime}</script><script>${companionRuntime}</script>`;
+    return `<script>${companionRuntime}</script>`;
 };
 
 export { buildDeviceFallbackInjection };

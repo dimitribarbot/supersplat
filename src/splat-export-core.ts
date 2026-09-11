@@ -34,6 +34,7 @@ import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
 import { buildQualityModeInjection } from './viewer-companion/quality-mode';
 import { patchViewerBootstrap } from './viewer-companion/viewer-bootstrap';
+import { buildViewerLangInjection } from './viewer-companion/viewer-lang';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
 
 // Apply the engine patches (#8998 loader stall + #9011 unload race, see
@@ -224,6 +225,18 @@ const insertBeforeBodyClose = (html: string, injection: string): string => {
     return html.includes('</body>') ?
         html.replace('</body>', () => `${injection}</body>`) :
         html + injection;
+};
+
+// Inject the shared language runtime into an HTML string before </body>.
+// ALWAYS injected, and ALWAYS the FIRST companion in the chain on every export
+// path, because it publishes window.__ssLang for every companion that follows:
+// insertBeforeBodyClose appends, so document order equals call order and the
+// innermost call wins. Companions used to carry a private copy each (up to
+// seven identical blocks in one export); they now rely on this one. Adding a
+// companion that reads window.__ssLang therefore needs no change here -- but
+// adding a new export pipeline does, and test/viewer-lang.test.ts guards that.
+const injectViewerLang = (html: string): string => {
+    return insertBeforeBodyClose(html, buildViewerLangInjection());
 };
 
 // Inject the annotation-link companion into an HTML string before </body>.
@@ -975,7 +988,7 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     }
     const settingsWithLods = { ...viewerSettingsJson, portalSceneLodCounts: [primaryLodCounts, ...extraLodCounts] };
     const withPoster = applyPoster(repointed, settingsWithLods, posterBytes, memFs);
-    const withAnnotations = injectAnnotationI18n(injectAnnotationLinks(withPoster, settingsWithLods), settingsWithLods);
+    const withAnnotations = injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), settingsWithLods), settingsWithLods);
     const withZones = injectOffLimitsZones(withAnnotations, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
     const withCompanions = injectLoadingBar(
@@ -1080,7 +1093,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
             // Single-file HTML: no collision file exists on this path, so the
             // companion's collision term drops out and the gsplat blocks own
             // the whole range.
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(withPoster, viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), 0), viewerSettingsJson);
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), 0), viewerSettingsJson);
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
@@ -1124,7 +1137,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(withPoster, sogSettings), sogSettings), sogSettings), sogSettings))), collisionBinaryBytes(memFs)), sogSettings);
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), sogSettings), sogSettings), sogSettings), sogSettings))), collisionBinaryBytes(memFs)), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(injected, favicon, memFs), brand, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);
@@ -1151,4 +1164,4 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
     }
 };
 
-export { createProgressRenderer, injectIframeApi, stripHtmlGalleries, writeSogCore, writeViewerCore, AnnotationImageFile, ViewerCoreOptions };
+export { createProgressRenderer, injectIframeApi, injectViewerLang, stripHtmlGalleries, writeSogCore, writeViewerCore, AnnotationImageFile, ViewerCoreOptions };

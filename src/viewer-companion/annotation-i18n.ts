@@ -1,5 +1,3 @@
-import { viewerLangRuntime } from './viewer-lang';
-
 // Export-shaped annotation, as it appears in viewerSettingsJson.annotations
 // (produced by annotations.export in src/annotations.ts).
 type AnyAnnotation = {
@@ -122,8 +120,7 @@ const buildAnnotationI18nInjection = (annotations: AnyAnnotation[]): string => {
     if (!hasAnnotationTranslations(annotations)) {
         return '';
     }
-    return `<script>${viewerLangRuntime}</script>` +
-        `<script>${companionRuntime}</script>`;
+    return `<script>${companionRuntime}</script>`;
 };
 
 export { applyAnnotationTranslation, buildAnnotationI18nInjection, hasAnnotationTranslations };

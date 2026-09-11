@@ -100,9 +100,11 @@ describe('buildAnnotationI18nInjection', () => {
         expect(buildAnnotationI18nInjection([{ title: 'T', extras: {} }])).toBe('');
     });
 
-    it('publishes the language resolver and the runtime', () => {
+    it('emits the runtime and no language resolver of its own', () => {
+        // The resolver is injected once per export by injectViewerLang; see
+        // test/viewer-lang.test.ts.
         const injection = buildAnnotationI18nInjection([translated()]);
-        expect(injection).toContain('window.__ssLang =');
+        expect(injection).not.toContain('window.__ssLang =');
         expect(injection).toContain('annotation.activate');
     });
 

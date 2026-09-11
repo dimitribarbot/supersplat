@@ -5,7 +5,6 @@ import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desi
 import { markerRuntime, markerStyle } from './portal-markers';
 import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
-import { viewerLangRuntime } from './viewer-lang';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -2363,7 +2362,6 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
     return `<style>${companionStyle}${markerStyle}</style>` +
-        `<script>${viewerLangRuntime}</script>` +
         `<script>window.__supersplatPortals = ${payloadJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };

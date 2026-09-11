@@ -1,5 +1,4 @@
 import { galleryRuntime, galleryStyle, hasGallery } from './annotation-gallery';
-import { viewerLangRuntime } from './viewer-lang';
 
 type AnyAnnotation = {
     title?: string,
@@ -178,7 +177,6 @@ const buildAnnotationLinksInjection = (annotations: AnyAnnotation[]): string => 
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
     return `<style>${companionStyle}${galleryStyle}</style>` +
-        `<script>${viewerLangRuntime}</script>` +
         `<script>window.__supersplatAnnotationLinks = ${tableJson};</script>` +
         `<script>${companionRuntime}</script>`;
 };
