@@ -1,53 +1,62 @@
-const vertexShader = /* glsl */ `
-    attribute vec3 vertex_position;
-    attribute vec4 vertex_color;
+const vertexShader = /* wgsl */`
+attribute vertex_position: vec3f;
+attribute vertex_color: vec4f;
 
-    varying vec4 vColor;
-    varying float vViewZ;
+uniform matrix_model: mat4x4f;
+uniform matrix_view: mat4x4f;
+uniform matrix_viewProjection: mat4x4f;
 
-    uniform mat4 matrix_model;
-    uniform mat4 matrix_view;
-    uniform mat4 matrix_viewProjection;
+varying vColor: vec4f;
+varying vViewZ: f32;
 
-    void main(void) {
-        vec4 worldPos = matrix_model * vec4(vertex_position, 1.0);
-        gl_Position = matrix_viewProjection * worldPos;
-        vColor = vertex_color;
-        vViewZ = (matrix_view * worldPos).z;
-    }
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    let worldPos = uniform.matrix_model * vec4f(input.vertex_position, 1.0);
+    output.position = uniform.matrix_viewProjection * worldPos;
+    output.vColor = input.vertex_color;
+    output.vViewZ = (uniform.matrix_view * worldPos).z;
+    return output;
+}
 `;
 
-const fragmentShader = /* glsl */ `
-    precision highp float;
+const fragmentShader = /* wgsl */`
+var zoneDepthTex: texture_2d<f32>;
 
-    varying vec4 vColor;
-    varying float vViewZ;
+// [1/farClip, farClip, nearClip, projection] -- published by camera.ts as its own
+// device-scope uniform. v3 sets the engine's cameraParams as a material
+// parameter on the projected splat material, so it is not visible here.
+uniform zoneCameraParams: vec4f;
 
-    uniform sampler2D zoneDepthTex;
-    uniform vec4 camera_params; // matches src/shaders/splat-shader.ts usage
+varying vColor: vec4f;
+varying vViewZ: f32;
 
-    void main(void) {
-        vec2 uv = gl_FragCoord.xy / vec2(textureSize(zoneDepthTex, 0));
-        vec4 d = texture2D(zoneDepthTex, uv);
-        float transmittance = d.a;
+@fragment
+fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+    var output: FragmentOutput;
 
-        // Wall's normalized linear depth, using the SAME formula as the splat
-        // depth-estimation shader so the two are directly comparable:
-        //   normalizedDepth = (linearDepth - camera_params.z) / (camera_params.y - camera_params.z)
-        // with linearDepth = -view.z.
-        float wallNorm = (-vViewZ - camera_params.z) / (camera_params.y - camera_params.z);
+    let texel = vec2i(pcPosition.xy);
+    let d = textureLoad(zoneDepthTex, texel, 0);
+    let transmittance = d.a;
 
-        // Only occlude where splats actually exist in front (transmittance low
-        // enough to be a real surface). Where there is no splat, always show.
-        if (transmittance < 0.99) {
-            float splatNorm = d.r / (1.0 - transmittance);
-            if (wallNorm > splatNorm) {
-                discard; // wall is behind the splat surface -> occluded
-            }
+    // Wall's normalized linear depth, using the SAME formula as the splat
+    // depth-estimation shader so the two are directly comparable:
+    //   normalizedDepth = (linearDepth - nearClip) / (farClip - nearClip)
+    // with linearDepth = -view.z.
+    let wallNorm = (-input.vViewZ - uniform.zoneCameraParams.z) / (uniform.zoneCameraParams.y - uniform.zoneCameraParams.z);
+
+    // Only occlude where splats actually exist in front (transmittance low
+    // enough to be a real surface). Where there is no splat, always show.
+    if (transmittance < 0.99) {
+        let splatNorm = d.r / (1.0 - transmittance);
+        if (wallNorm > splatNorm) {
+            discard; // wall is behind the splat surface -> occluded
         }
-
-        gl_FragColor = vColor; // smooth alpha blend over composited splats behind
     }
+
+    output.color = input.vColor; // smooth alpha blend over composited splats behind
+    return output;
+}
 `;
 
 export { vertexShader, fragmentShader };

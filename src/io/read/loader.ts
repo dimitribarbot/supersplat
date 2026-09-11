@@ -3,28 +3,30 @@
  */
 
 import {
-    getInputFormat,
-    readFile,
-    sortMortonOrder,
-    createChunkDataPool,
-    materializeToDataTable,
-    selectLod,
-    combine,
-    Column,
-    ColumnType,
-    DataTable,
-    Options,
+    ChunkData,
+    ChunkDataPool,
+    ChunkLayer,
     ChunkSource,
+    ChunkSourceMetadata,
+    Options,
     ReadFileSystem,
+    ReadRequest,
     Transform,
-    ZipReadFileSystem
+    ZipReadFileSystem,
+    concatSource,
+    createChunkDataPool,
+    dataTableToChunkSource,
+    getInputFormat,
+    materializeToDataTable,
+    readFile,
+    selectLod,
+    sortMortonOrder
 } from '@playcanvas/splat-transform';
-import { GSplatData } from 'playcanvas';
 
 import { readLccEnvironment } from './lcc-environment';
 
 type LoadResult = {
-    gsplatData: GSplatData;
+    source: ChunkSource;
     transform: Transform;
 };
 
@@ -59,97 +61,134 @@ const defaultOptions: Options = {
 };
 
 /**
- * Map splat-transform column types to GSplatData property types.
+ * Presents `parent` reordered by `order` (`order[row]` is the parent row that
+ * appears at `row`). `parent` and `order` are public so consumers doing bulk
+ * sequential work (e.g. the initial texture upload) can iterate the parent in
+ * its native order — fast sequential reads — and scatter rows to their
+ * permuted destination, instead of gathering the whole file in permuted order.
  */
-const columnTypeToGSplatType = (colType: ColumnType | null): string => {
-    switch (colType) {
-        case 'int8': return 'char';
-        case 'uint8': return 'uchar';
-        case 'int16': return 'short';
-        case 'uint16': return 'ushort';
-        case 'int32': return 'int';
-        case 'uint32': return 'uint';
-        case 'float32': return 'float';
-        case 'float64': return 'double';
-        default: return 'float';
-    }
-};
+class PermutedChunkSource implements ChunkSource {
+    readonly meta: ChunkSourceMetadata;
 
-/**
- * Convert a splat-transform DataTable to PlayCanvas GSplatData.
- */
-const dataTableToGSplatData = (dataTable: DataTable): GSplatData => {
-    const properties = dataTable.columns.map((col: Column) => ({
-        type: columnTypeToGSplatType(col.dataType),
-        name: col.name,
-        storage: col.data,
-        byteSize: col.data.BYTES_PER_ELEMENT
-    }));
-
-    const gsplatData = new GSplatData([{
-        name: 'vertex',
-        count: dataTable.numRows,
-        properties
-    }]);
-
-    // Support loading 2D splats by adding scale_2 property with almost 0 scale
-    if (gsplatData.getProp('scale_0') && gsplatData.getProp('scale_1') && !gsplatData.getProp('scale_2')) {
-        const scale2 = new Float32Array(gsplatData.numSplats).fill(Math.log(1e-6));
-        gsplatData.addProp('scale_2', scale2);
-
-        // Place the new scale_2 property just after scale_1
-        const props = gsplatData.getElement('vertex').properties;
-        props.splice(props.findIndex((prop: any) => prop.name === 'scale_1') + 1, 0, props.splice(props.length - 1, 1)[0]);
+    constructor(readonly parent: ChunkSource, readonly order: Uint32Array) {
+        this.meta = {
+            ...parent.meta,
+            numGaussians: order.length,
+            numLods: 1,
+            lodCounts: [order.length],
+            numChunks: [Math.ceil(order.length / parent.meta.chunkSize)]
+        };
     }
 
-    return gsplatData;
+    read(request: ReadRequest): Promise<void> {
+        const target = {
+            position: request.position,
+            geometric: request.geometric,
+            color: request.color,
+            other: request.other
+        };
+        if ('indices' in request) {
+            const mapped = new Uint32Array(request.count);
+            for (let i = 0; i < request.count; ++i) {
+                mapped[i] = this.order[request.indices[request.indexOffset + i]];
+            }
+            return this.parent.read({
+                ...target,
+                indices: mapped,
+                indexOffset: 0,
+                count: mapped.length
+            });
+        }
+
+        const anyData = (request.position ?? request.geometric ?? request.color ?? request.other) as ChunkData;
+        const indexOffset = request.chunkIndex * this.meta.chunkSize;
+        return this.parent.read({
+            ...target,
+            indices: this.order,
+            indexOffset,
+            count: anyData.count
+        });
+    }
+
+    close(): Promise<void> {
+        return this.parent.close();
+    }
+}
+
+class OwnedChunkSource implements ChunkSource {
+    readonly meta: ChunkSourceMetadata;
+    private closed = false;
+
+    constructor(private readonly parent: ChunkSource, private readonly onClose: () => void | Promise<void>) {
+        this.meta = parent.meta;
+    }
+
+    read(request: ReadRequest): Promise<void> {
+        return this.parent.read(request);
+    }
+
+    async close(): Promise<void> {
+        if (this.closed) return;
+        this.closed = true;
+        try {
+            await this.parent.close();
+        } finally {
+            await this.onClose();
+        }
+    }
+}
+
+const selectFirst = async (sources: ChunkSource[], pickLod?: PickLod) => {
+    const first = sources[0];
+    for (let i = 1; i < sources.length; ++i) await sources[i].close();
+    if (first.meta.numLods <= 1) return first;
+
+    const lod = pickLod ? await pickLod(first.meta.lodCounts) : defaultLodIndex(first.meta.lodCounts);
+    if (lod === null) {
+        await first.close();
+        return null;
+    }
+    return new OwnedChunkSource(selectLod(first, lod), () => first.close());
 };
 
-/**
- * Materialize the first source returned by readFile into a DataTable.
- * readFile returns lazy ChunkSource[]; multi-LOD sources (e.g. LCC) are
- * reduced to a single LOD before materializing - chosen by the pickLod
- * callback when supplied, otherwise the most detailed level with a
- * reasonable splat count. Returns null if pickLod cancels the load.
- */
-const materializeFirst = async (sources: ChunkSource[], pickLod?: PickLod): Promise<DataTable | null> => {
-    const source = sources[0];
+const mortonOrderSource = async (source: ChunkSource) => {
     const pool = createChunkDataPool({ chunkSize: source.meta.chunkSize });
     try {
-        let single = source;
-        if (source.meta.numLods > 1) {
-            const { lodCounts } = source.meta;
-            const lod = pickLod ? await pickLod(lodCounts) : defaultLodIndex(lodCounts);
-            if (lod === null) {
-                return null;
-            }
-            single = selectLod(source, lod);
-        }
-        return await materializeToDataTable(single, pool);
+        const positions = await materializeToDataTable(source, pool, new Set<ChunkLayer>(['position']));
+        const indices = new Uint32Array(source.meta.numGaussians);
+        for (let i = 0; i < indices.length; ++i) indices[i] = i;
+        sortMortonOrder(positions, indices);
+        return new PermutedChunkSource(source, indices);
     } finally {
-        for (const s of sources) {
-            await s.close();
-        }
         pool.destroy();
     }
 };
 
+const validateSplatSource = (source: ChunkSource): void => {
+    const required: ChunkLayer[] = ['position', 'geometric', 'color'];
+    const missing = required.filter(layer => !source.meta.availableLayers.has(layer));
+    if (missing.length > 0) {
+        throw new Error(`This file does not contain gaussian splatting data. The following layers are missing: ${missing.join(', ')}`);
+    }
+};
+
 /**
- * Load a file using splat-transform and convert to GSplatData.
+ * Open a lazy ChunkSource and keep it alive for the lifetime of the loaded Splat.
  * Returns null if the user cancels LOD selection.
- * @param filename - The filename to load
- * @param fileSystem - The file system to read from
- * @param skipReorder - Skip morton reordering (for files already in morton order or animation playback)
- * @param pickLod - Invoked when the file contains multiple LODs to choose which to load
  */
-const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skipReorder?: boolean, pickLod?: PickLod): Promise<LoadResult | null> => {
+const loadSplatSource = async (
+    filename: string,
+    fileSystem: ReadFileSystem,
+    skipReorder?: boolean,
+    pickLod?: PickLod
+): Promise<LoadResult | null> => {
     const inputFormat = getInputFormat(filename);
     const lowerFilename = filename.toLowerCase();
+    let source: ChunkSource;
 
-    // Handle bundled SOG (.sog extension) - wrap with ZipReadFileSystem
     if (inputFormat === 'sog' && lowerFilename.endsWith('.sog')) {
-        const source = await fileSystem.createSource(filename);
-        const zipFs = new ZipReadFileSystem(source);
+        const archive = await fileSystem.createSource(filename);
+        const zipFs = new ZipReadFileSystem(archive);
         try {
             const sources = await readFile({
                 filename: 'meta.json',
@@ -158,82 +197,120 @@ const loadGSplatData = async (filename: string, fileSystem: ReadFileSystem, skip
                 params: [],
                 fileSystem: zipFs
             });
-            const dataTable = await materializeFirst(sources, pickLod);
-            if (!dataTable) {
+            const selected = await selectFirst(sources, pickLod);
+            if (!selected) {
+                zipFs.close();
                 return null;
             }
-            return { gsplatData: dataTableToGSplatData(dataTable), transform: dataTable.transform };
-        } finally {
+            source = new OwnedChunkSource(selected, () => zipFs.close());
+        } catch (err) {
             zipFs.close();
+            throw err;
         }
+    } else {
+        const sources = await readFile({
+            filename,
+            inputFormat,
+            options: defaultOptions,
+            params: [],
+            fileSystem
+        });
+        source = await selectFirst(sources, pickLod);
+        if (!source) return null;
     }
 
-    // Read the file using splat-transform
-    const sources = await readFile({
-        filename,
-        inputFormat,
-        options: defaultOptions,
-        params: [],
-        fileSystem
-    });
+    try {
+        validateSplatSource(source);
 
-    const dataTable = await materializeFirst(sources, pickLod);
-    if (!dataTable) {
-        return null;
-    }
-
-    // Restore the LCC/LCC2 environment (skybox) splats. v3's readFile drops the
-    // environment chunk (its streaming LCC readers exclude it), so we read it
-    // separately and merge it in, mirroring the pre-v3 loader. combine() unions
-    // columns by name/type, zero-filling any column absent from a table (e.g.
-    // normals, which the environment lacks). Best-effort: readLccEnvironment
-    // returns null when there is no skybox or it can't be decoded.
-    let table = dataTable;
-    if (lowerFilename.endsWith('.lcc') || lowerFilename.endsWith('.lcc2')) {
-        const envTable = await readLccEnvironment(fileSystem, filename);
-        if (envTable) {
-            table = combine([dataTable, envTable]);
+        // Restore the LCC/LCC2 environment (skybox) splats. v3's streaming LCC
+        // readers exclude the environment chunk (splat-transform's own
+        // readLccEnvironmentSource is not publicly exported), so we decode it
+        // ourselves and concatenate it on. Best-effort: readLccEnvironment
+        // returns null when there is no skybox or it can't be decoded.
+        //
+        // concatSource refuses sources whose layouts disagree, so the scene's
+        // meta goes in and readLccEnvironment conforms the environment table's
+        // SH bands and extra columns to it (see conformToSceneLayout).
+        //
+        // The concat sits *below* the morton reorder, as combine() did pre-v3, so
+        // the skybox is reordered along with the scene: concatSource serves the
+        // index gather PermutedChunkSource turns every read into (asserted in
+        // test/lcc-environment-concat.test.ts).
+        //
+        // Gated on inputFormat rather than the filename suffix: getInputFormat
+        // strips any query/hash first, so a suffix test would load an
+        // `...meta.lcc?v=2` as LCC and then silently skip its skybox.
+        if (inputFormat === 'lcc' || inputFormat === 'lcc2') {
+            const envTable = await readLccEnvironment(fileSystem, filename, source.meta);
+            if (envTable) {
+                const chunkSize = source.meta.chunkSize;
+                // Declared outside the try so the catch can release whichever of
+                // the two was actually built. The guarded region covers the whole
+                // fold -- pool, env source AND concat -- because a throw from any
+                // of the three has the same consequence, and each leaves a
+                // different amount to tear down (see the catch).
+                let pool: ChunkDataPool;
+                let envSource: ChunkSource;
+                try {
+                    pool = createChunkDataPool({ chunkSize });
+                    // The model tag is the one axis concatSource does NOT validate:
+                    // it silently resolves a disagreement to 'default' (with only a
+                    // logger.warn), which would retag an antialiased or 2dgs .lcc2
+                    // scene-wide just because it has a skybox. A DataTable carries no
+                    // model, so the scene's has to be passed in explicitly.
+                    envSource = dataTableToChunkSource(envTable, chunkSize, undefined, source.meta.model);
+                    // concatSource reads through the pool lazily, so the pool must
+                    // outlive the source: hand it to OwnedChunkSource, which
+                    // destroys it when the loaded source is finally closed.
+                    source = new OwnedChunkSource(
+                        concatSource([source, envSource], pool),
+                        () => pool.destroy()
+                    );
+                } catch (err) {
+                    // Nothing took ownership of the pool or the env source on this
+                    // path (only the OwnedChunkSource above ever does), so whatever
+                    // exists is released here. The optional calls are load-bearing:
+                    // createChunkDataPool throwing leaves neither, and
+                    // dataTableToChunkSource throwing leaves a pool but no env
+                    // source. concatSource validates layout agreement synchronously,
+                    // so its refusal leaves both.
+                    //
+                    // Deliberately NOT rethrown: the skybox is best-effort (see
+                    // readLccEnvironment), and conformToSceneLayout only covers the
+                    // SH-band and extra-column axes. Any other disagreement
+                    // concatSource checks -- availableLayers, transform, chunkSize --
+                    // would otherwise turn "no skybox" into "this .lcc2 will not open
+                    // at all", which is what the pre-v3 combine() could never do. The
+                    // same goes for a throw out of dataTableToChunkSource, which
+                    // repacks the caller-supplied column data.
+                    // `source` is still the un-concatenated scene source (the
+                    // assignment above never ran), so the load continues without the
+                    // environment. Only this fold is swallowed; a failure of the
+                    // scene source itself still propagates to the outer catch.
+                    pool?.destroy();
+                    // a rejecting close must not resurrect the hard failure this
+                    // catch exists to prevent
+                    await envSource?.close().catch(() => { /* nothing consumed it */ });
+                    console.warn('LCC environment could not be folded in; loading without skybox:', err);
+                }
+            }
         }
-    }
 
-    // Reorder data into morton order for better render performance.
-    // Skip reordering for:
-    // - SOG format (already in morton order)
-    // - Compressed PLY (already in morton order from write-compressed-ply)
-    // - When skipReorder is true (ssproj files are already ordered, animation frames need speed)
-    const isCompressedPly = lowerFilename.endsWith('.compressed.ply');
-    if (inputFormat !== 'sog' && !isCompressedPly && !skipReorder) {
-        const indices = new Uint32Array(table.numRows);
-        for (let i = 0; i < indices.length; i++) {
-            indices[i] = i;
+        const isCompressedPly = lowerFilename.endsWith('.compressed.ply');
+        if (inputFormat !== 'sog' && !isCompressedPly && !skipReorder) {
+            source = await mortonOrderSource(source);
         }
-        sortMortonOrder(table, indices);
-        table.permuteRowsInPlace(indices);
-    }
 
-    // Convert to GSplatData
-    return { gsplatData: dataTableToGSplatData(table), transform: table.transform };
-};
-
-/**
- * Validate that GSplatData contains required properties.
- */
-const validateGSplatData = (gsplatData: GSplatData): void => {
-    const required = [
-        'x', 'y', 'z',
-        'scale_0', 'scale_1', 'scale_2',
-        'rot_0', 'rot_1', 'rot_2', 'rot_3',
-        'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity'
-    ];
-
-    const missing = required.filter(x => !gsplatData.getProp(x));
-    if (missing.length > 0) {
-        throw new Error(`This file does not contain gaussian splatting data. The following properties are missing: ${missing.join(', ')}`);
+        return { source, transform: source.meta.transform };
+    } catch (err) {
+        await source.close();
+        throw err;
     }
 };
 
 export {
     defaultLodIndex,
-    loadGSplatData,
-    validateGSplatData
+    loadSplatSource,
+    PermutedChunkSource,
+    validateSplatSource
 };

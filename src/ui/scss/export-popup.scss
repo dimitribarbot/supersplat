@@ -17,7 +17,10 @@
 
         display: flex;
         flex-direction: column;
-        overflow: hidden;
+
+        // allow select dropdown lists to extend past the dialog bounds; the
+        // header then needs its own top rounding
+        overflow: visible;
 
         border-radius: 8px;
         background-color: $bcg-primary;
@@ -32,13 +35,14 @@
             line-height: 32px;
             margin: 0px;
             padding: 0px 12px;
+            border-radius: 8px 8px 0 0;
 
             font-weight: bold;
             color: $text-primary;
             background-color: $bcg-darker;
             text-transform: uppercase;
 
-            #icon {
+            #icon, #save-icon {
                 vertical-align: middle;
                 color: $clr-icon-hilight;
             }
@@ -125,20 +129,142 @@
                     width: 180px;
                 }
 
-                .select, .color-picker, .slider, .text-entry {
+                .select, .color-picker, .slider, .text-entry, .location, .filename-field {
                     margin: 0px;
                     width: 100%;
+                }
+
+                .filename-field {
+                    position: relative;
+                    min-width: 0;
+
+                    &:not(:focus-within):not(:hover) #export-filename-message {
+                        visibility: hidden;
+                    }
+
+                    // Dock the filename hint IN FLOW, under the field.
+                    //
+                    // Upstream floats it at `left: calc(100% + 24px)` - 24px to
+                    // the right of the full-width field, i.e. outside #content -
+                    // which works only because upstream's #dialog is
+                    // `overflow: visible`. This fork gives #content a max-height
+                    // plus `overflow-y: auto` (above) so the taller
+                    // portal/collision dialog fits the viewport, and a scroll
+                    // container clips on BOTH axes (CSS forces
+                    // `overflow-x: visible` to `auto` when the other axis
+                    // scrolls), so the floated hint was clipped away entirely
+                    // and filename validation errors were never visible.
+                    //
+                    // Absolute positioning cannot be rescued inside a scroller:
+                    // in the `splat` and `ssproj` variants every row after the
+                    // filename row is hidden (export-popup.ts `activeRows`), so
+                    // the filename row is the last in-flow row, and #content -
+                    // which has no fixed height - does not grow to contain an
+                    // absolutely positioned descendant. Taking the hint into the
+                    // flow instead makes #content's own height include it, so it
+                    // is fully visible in every export variant, at every viewport
+                    // width, for any message length (`error.message` at
+                    // export-popup.ts:1057 is unbounded).
+                    //
+                    // 4 IDs + 3 classes beats upstream's 3-ID rule regardless of
+                    // source order.
+                    #export-filename-message:not(.pcui-hidden) {
+                        position: static;
+                        width: auto;
+                        margin-top: 6px;
+                        transform: none;
+                    }
+
+                    // In flow the box reserves its space as soon as there is a
+                    // message, so upstream's hover/focus reveal would leave a
+                    // blank gap rather than hide an overlay. Show it whenever it
+                    // has text. Overriding the reveal (rather than collapsing the
+                    // box with `display: none`) is deliberate: #dialog is
+                    // centre-anchored, so growing it on :hover moves the 24px
+                    // field out from under the cursor and flickers.
+                    // 4 IDs + 5 classes beats the rule above unconditionally.
+                    &:not(:focus-within):not(:hover) #export-filename-message:not(.pcui-hidden) {
+                        visibility: visible;
+                    }
                 }
 
                 .text-input {
                     margin: 0px;
                     width: 100%;
+
+                    > input {
+                        display: block;
+                    }
                 }
 
                 .boolean {
                     margin: 5px 0 0 auto;
                     flex-grow: 0;
                 }
+
+                .location {
+                    display: flex;
+                    min-width: 0;
+
+                    .location-name {
+                        flex: 1;
+                        min-width: 0;
+                        margin: 0;
+                        padding: 0 8px;
+                        border-radius: 2px;
+                        background-color: $bcg-dark;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                    }
+
+                    .change-location {
+                        flex-shrink: 0;
+                        margin: 0 0 0 8px;
+                        height: 24px;
+                        line-height: 22px;
+                    }
+
+                    .location-name.pcui-hidden + .change-location {
+                        flex-grow: 1;
+                        margin-left: 0;
+                        text-align: left;
+                    }
+                }
+            }
+
+            // Let the filename row grow to contain the in-flow hint (see
+            // .filename-field above). `.row` is a fixed 24px, which would leave
+            // the hint overflowing the row and back outside #content's box.
+            // Collapses to 24px whenever the hint is `.pcui-hidden`
+            // (display: none), so no variant pays for this while the filename is
+            // valid. 3 IDs + 2 classes beats the `.row` rule above.
+            .row:has(.filename-field) {
+                height: auto;
+                min-height: 24px;
+            }
+        }
+
+        #export-filename-message {
+            position: absolute;
+            z-index: 10;
+            top: 50%;
+            left: calc(100% + 24px);
+            transform: translateY(-50%);
+            width: 280px;
+            margin: 0;
+            padding: 10px 12px;
+            border-radius: 4px;
+            background-color: $bcg-darker;
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.5);
+            color: $clr-icon-hilight;
+            line-height: 18px;
+            white-space: normal;
+            pointer-events: none;
+            overflow-wrap: anywhere;
+            text-overflow: clip;
+
+            &.error {
+                color: $error;
             }
         }
 

@@ -8,7 +8,7 @@ import { MemoryFileSystem } from '@playcanvas/splat-transform';
 import { Events } from './events';
 import { collisionSeedTuple, resolvePortalExtras } from './portal-export';
 import { Splat } from './splat';
-import { serializePly, SerializeSettings } from './splat-serialize';
+import { SerializeSettings, writeSplatFile } from './splat-serialize';
 
 type PortalUploadMeta = {
     seed: [number, number, number];
@@ -59,7 +59,7 @@ const buildPortalUpload = async (args: {
         const splat = all.find(s => s.uid === ex.uid);
         if (!splat) throw new Error(`Portal export: scene uid ${ex.uid} not found among loaded splats.`);
         const sFs = new MemoryFileSystem();
-        await serializePly([splat], serializeSettings, sFs, 'scene.ply');
+        await writeSplatFile([splat], serializeSettings, 'ply', 'scene.ply', {}, sFs);
         const bytes = sFs.results.get('scene.ply');
         if (!bytes) throw new Error(`Portal export: scene uid ${ex.uid} produced no PLY.`);
         const gz = await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))).blob();

@@ -5,6 +5,8 @@ import {
     BLENDMODE_SRC_ALPHA,
     CULLFACE_NONE,
     PRIMITIVE_TRIANGLES,
+    SEMANTIC_COLOR,
+    SEMANTIC_POSITION,
     BlendState,
     Entity,
     Mesh,
@@ -55,8 +57,15 @@ class OffLimitsZoneShape extends Element {
 
         this.material = new ShaderMaterial({
             uniqueName: 'offLimitsZoneMaterial',
-            vertexGLSL: vertexShader,
-            fragmentGLSL: fragmentShader
+            // WGSL needs these declared explicitly: the WebGPU shader processor
+            // drops any `attribute` the material doesn't map to a semantic (the
+            // GLSL path used to derive them from the source automatically).
+            attributes: {
+                vertex_position: SEMANTIC_POSITION,
+                vertex_color: SEMANTIC_COLOR
+            },
+            vertexWGSL: vertexShader,
+            fragmentWGSL: fragmentShader
         });
         // Rendered in the dedicated zone pass (after the splats). Occlusion is
         // done manually in the fragment shader against the splat depth texture,

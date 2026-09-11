@@ -28,6 +28,8 @@ import {
     readFile,
     createChunkDataPool,
     materializeToDataTable,
+    type ChunkSourceMetadata,
+    type ExtraColumn,
     type Options,
     type ReadFileSystem
 } from '@playcanvas/splat-transform';
@@ -48,6 +50,10 @@ const defaultOptions: Options = {
 
 // LCC v1 and LCC2 share the same fixed coordinate transform (Y-up -> engine),
 // applied lazily on consume. Mirrors splat-transform's LCC_TRANSFORM/LCC2_TRANSFORM.
+// Hardcoded because neither constant is exported; verified identical in
+// splat-transform 3.4.2. RE-CHECK THIS ON EVERY splat-transform BUMP: if
+// upstream's transform drifts, concatSource sees two sources whose `transform`
+// disagrees and refuses the fold, silently dropping the skybox.
 const LCC_TRANSFORM = () => new Transform().fromEulers(90, 0, 180);
 
 // directory portion of a "dir/name" path (returns "" for a bare filename).
@@ -290,21 +296,134 @@ const readLcc2Environment = async (fileSystem: ReadFileSystem, filename: string)
     }
 };
 
+// --- conforming the environment table to the scene source's layout ---
+
+// The columns splat-transform's dataTableToChunkSource recognises by name and
+// maps to the position/geometric/color layers. Everything else in a table is
+// either an f_rest_* SH coefficient or an `other`-layer extra.
+const STANDARD_COLUMNS = [
+    'x', 'y', 'z',
+    'rot_0', 'rot_1', 'rot_2', 'rot_3',
+    'scale_0', 'scale_1', 'scale_2',
+    'f_dc_0', 'f_dc_1', 'f_dc_2',
+    'opacity'
+];
+
+// f_rest_* column count for a band count: 3 channels x ((bands + 1)^2 - 1)
+// coefficients each, giving 0 / 9 / 24 / 45 for bands 0-3. This is the SH
+// definition rather than a transcribed table; splat-transform's equivalent
+// (SH_REST_COUNTS) is not part of its public export list, so it can't be reused.
+const shRestCount = (shBands: number) => 3 * ((shBands + 1) ** 2 - 1);
+
+// How dataTableToChunkSource classifies a column's storage when it becomes an
+// `other`-layer extra: float32 and float64 both narrow to float32, everything
+// else is read as raw uint32 words.
+const extraTypeOf = (column: Column): ExtraColumn['type'] => {
+    return (column.dataType === 'float32' || column.dataType === 'float64') ? 'float32' : 'uint32';
+};
+
+/**
+ * Make `table`'s layout equal the scene source's declared layout, so the two can
+ * be handed to `concatSource`.
+ *
+ * `concatSource` refuses sources that disagree on SH band count, available
+ * layers or extra columns -- and it compares the extras as an *ordered*
+ * `name:type` key -- so every one of those disagreements is a hard failure of
+ * the whole file load. The pre-v3 `combine()` unioned columns by name and
+ * zero-filled the absent ones, which absorbed all of this silently; nothing
+ * does that now, so the environment is conformed here instead:
+ *
+ * - **SH bands** -- `f_rest_*` is padded up to the scene's band count with
+ *   zero-filled columns, and any beyond it are dropped. Both directions occur:
+ *   an LCC2 environment is an independent `.sog`/`.spz` sub-file whose band
+ *   count is free to differ from the scene chunks' in either direction. (LCC v1
+ *   cannot diverge -- `lccHasSH` reads the same file-level `shcoef` attribute
+ *   that governs the scene -- but this path serves both.)
+ *
+ *   **Dropping bands beyond the scene's count loses environment SH detail, and
+ *   that loss is deliberate.** Do not "fix" the trim: `concatSource` demands one
+ *   shared colour layout, and the only alternative -- padding the *scene* up to
+ *   the environment's band count -- would mean materialising the scene, which is
+ *   exactly the streaming memory win this whole path exists to protect.
+ *   Removing the trim reintroduces a hard load failure on every `.lcc2` whose
+ *   environment carries more bands than its scene.
+ * - **Extras** -- exactly the scene's extras, in the scene's order, matched to
+ *   the environment's own columns *by name* (not by position) and re-emitted
+ *   zeroed when absent or when the storage type disagrees.
+ * - **Env-only extras** -- dropped. The combined source's `other` layout has no
+ *   slot for a column the scene does not declare, so carrying it is not an
+ *   option; keeping it would make the concat throw.
+ *
+ * Applied at the `readLccEnvironment` level rather than inside
+ * `deserializeEnvironment` so the LCC2 path -- whose table comes from
+ * `materializeToDataTable`, not our own decoder -- is covered from one place.
+ *
+ * @param table - the decoded environment table, conformed in place
+ * @param sceneLayout - the scene source's `meta`; only `shBands` and
+ * `extraColumns` are read
+ */
+const conformToSceneLayout = (
+    table: DataTable,
+    sceneLayout: Pick<ChunkSourceMetadata, 'shBands' | 'extraColumns'>
+) => {
+    const numRows = table.numRows;
+    const zeros = (type: ExtraColumn['type']) => {
+        return type === 'uint32' ? new Uint32Array(numRows) : new Float32Array(numRows);
+    };
+
+    const columns: Column[] = [];
+
+    // the standard layers, in canonical order, keeping only what is present
+    for (const name of STANDARD_COLUMNS) {
+        const column = table.getColumnByName(name);
+        if (column) {
+            columns.push(column);
+        }
+    }
+
+    // exactly the scene's SH run: reuse, zero-fill, or drop
+    for (let i = 0; i < shRestCount(sceneLayout.shBands); ++i) {
+        const name = `f_rest_${i}`;
+        columns.push(table.getColumnByName(name) ?? new Column(name, zeros('float32')));
+    }
+
+    // exactly the scene's extras, in the scene's order
+    for (const { name, type } of sceneLayout.extraColumns) {
+        const column = table.getColumnByName(name);
+        columns.push(column && extraTypeOf(column) === type ?
+            column :
+            new Column(name, zeros(type)));
+    }
+
+    table.columns = columns;
+};
+
 /**
  * Read the environment (skybox) splats for an LCC (v1) or LCC2 file, or null if
  * the format has no environment / it can't be loaded. Best-effort by design.
  * @param fileSystem - file system to read from
  * @param filename - path to the meta.lcc / meta.lcc2 file
+ * @param sceneLayout - the scene source's `meta`, whose `shBands` and
+ * `extraColumns` the environment table is conformed to so the two can be
+ * concatenated (see {@link conformToSceneLayout}). Omit to leave the decoded
+ * table exactly as it came out of the reader.
  */
-const readLccEnvironment = async (fileSystem: ReadFileSystem, filename: string): Promise<DataTable | null> => {
-    const lower = filename.toLowerCase();
-    if (lower.endsWith('.lcc2')) {
-        return await readLcc2Environment(fileSystem, filename);
+const readLccEnvironment = async (
+    fileSystem: ReadFileSystem,
+    filename: string,
+    sceneLayout?: Pick<ChunkSourceMetadata, 'shBands' | 'extraColumns'>
+): Promise<DataTable | null> => {
+    // getInputFormat rather than a suffix test: it strips any query/hash first,
+    // so an `...meta.lcc?v=2` still dispatches instead of silently returning
+    // null. Matches loader.ts's gate, which is derived the same way.
+    const inputFormat = getInputFormat(filename);
+    const table = inputFormat === 'lcc2' ? await readLcc2Environment(fileSystem, filename) :
+        inputFormat === 'lcc' ? await readLccV1Environment(fileSystem, filename) :
+            null;
+    if (table && sceneLayout) {
+        conformToSceneLayout(table, sceneLayout);
     }
-    if (lower.endsWith('.lcc')) {
-        return await readLccV1Environment(fileSystem, filename);
-    }
-    return null;
+    return table;
 };
 
-export { readLccEnvironment, deserializeEnvironment, resolveLcc2EnvFile };
+export { readLccEnvironment, conformToSceneLayout, deserializeEnvironment, resolveLcc2EnvFile };

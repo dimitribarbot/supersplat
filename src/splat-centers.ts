@@ -1,35 +1,24 @@
 import {
-    BLEND_NORMAL,
-    PRIMITIVE_POINTS,
+    BLEND_NONE,
+    FUNC_LESS,
+    PRIMITIVE_TRIANGLES,
     SEMANTIC_POSITION,
-    TYPE_FLOAT32,
-    Color,
     Entity,
-    EventHandler,
-    GSplatResource,
     ShaderMaterial,
     Mesh,
-    MeshInstance,
-    VertexBuffer,
-    VertexFormat
+    MeshInstance
 } from 'playcanvas';
 
 import { ElementType, Element } from './element';
-import { vertexShader, fragmentShader } from './shaders/splat-overlay-shader';
+import { vertexShader, fragmentShader } from './shaders/splat-centers-shader';
 import { Splat } from './splat';
 
-const nullClr = new Color(0, 0, 0, 0);
-
-class SplatOverlay extends Element {
+class SplatCenters extends Element {
     entity: Entity;
     mesh: Mesh;
     material: ShaderMaterial;
     meshInstance: MeshInstance;
     splat: Splat;
-    onSorterUpdated: (count: number) => void;
-    // the sorter we subscribed to in attach(); cached so detach() unsubscribes
-    // from it directly (splat.entity may have been swapped out by replaceData)
-    sorter: EventHandler;
 
     constructor() {
         super(ElementType.debug);
@@ -40,44 +29,40 @@ class SplatOverlay extends Element {
         const device = scene.graphicsDevice;
 
         this.material = new ShaderMaterial({
-            uniqueName: 'splatOverlayMaterial',
-            vertexGLSL: vertexShader,
-            fragmentGLSL: fragmentShader
+            uniqueName: 'splatCentersMaterial',
+            attributes: {
+                vertex_position: SEMANTIC_POSITION
+            },
+            vertexWGSL: vertexShader,
+            fragmentWGSL: fragmentShader
         });
-        this.material.blendType = BLEND_NORMAL;
-        this.material.depthWrite = false;
+        // opaque and depth resolved: centers own the depth buffer of their layer,
+        // so each pixel keeps the frontmost center whatever order the instances
+        // draw in. Blending them instead makes the result order-dependent - a
+        // pixel takes one blend or several depending on which center reached it
+        // first - which reads as patches of differing density across a large
+        // scene. FUNC_LESS matters: the LESSEQUAL default admits every coincident
+        // fragment, putting the overdraw cost straight back
+        this.material.blendType = BLEND_NONE;
+        this.material.depthWrite = true;
         this.material.depthTest = true;
+        this.material.depthFunc = FUNC_LESS;
         this.material.update();
 
         this.mesh = new Mesh(device);
-
-        // dummy 1-vertex VB so the engine caches the VAO (avoids creating a new one every frame)
-        const format = new VertexFormat(device, [
-            { semantic: SEMANTIC_POSITION, components: 1, type: TYPE_FLOAT32 }
-        ]);
-        format.instancing = true;
-        const vb = new VertexBuffer(device, format, 1);
-        vb.lock();
-        vb.unlock();
-        this.mesh.vertexBuffer = vb;
-
-        this.mesh.primitive[0] = {
-            baseVertex: 0,
-            type: PRIMITIVE_POINTS,
-            base: 0,
-            count: 0
-        };
+        this.mesh.setPositions([-1, -1, 1, -1, 1, 1, -1, 1], 2);
+        this.mesh.setIndices([0, 1, 2, 0, 2, 3]);
+        this.mesh.update(PRIMITIVE_TRIANGLES);
 
         this.meshInstance = new MeshInstance(this.mesh, this.material, null);
-        // slightly higher priority so it renders before gizmos
-        this.meshInstance.drawBucket = 128;
+        this.meshInstance.setInstancing(true, false);
         // disable frustum culling since mesh has no vertex buffer for AABB calculation
         this.meshInstance.cull = false;
 
-        this.entity = new Entity('splatOverlay');
+        this.entity = new Entity('splatCenters');
         this.entity.addComponent('render', {
             meshInstances: [this.meshInstance],
-            layers: [scene.gizmoLayer.id]
+            layers: [scene.centersLayer.id]
         });
 
         scene.events.on('selection.changed', (selection: Splat) => {
@@ -108,20 +93,17 @@ class SplatOverlay extends Element {
         this.detach();
 
         const { mesh, material } = this;
-        const instance = splat.entity.gsplat.instance;
-        const orderTexture = instance.orderTexture;
-
-        // set up order texture uniforms
-        material.setParameter('splatOrder', orderTexture);
-        material.setParameter('splatTextureSize', orderTexture.width);
 
         // set up other uniforms
-        const resource = instance.resource as GSplatResource;
-        material.setParameter('splatState', splat.stateTexture);
-        material.setParameter('splatPosition', (resource as any).getTexture('transformA'));
-        material.setParameter('splatTransform', splat.transformTexture);
+        const resource = splat.resource;
+        const positionTexture = (resource as any).getTexture('transformA');
+        material.setParameter('instanceSource', splat.instances.instanceSource);
+        material.setParameter('instanceFlags', splat.instances.instanceFlags);
+        material.setParameter('instancePalette', splat.instances.instancePalette);
+        material.setParameter('instanceBase', 0);
+        material.setParameter('splatPosition', positionTexture);
         material.setParameter('splatColor', (resource as any).getTexture('splatColor'));
-        material.setParameter('texParams', [splat.stateTexture.width, splat.stateTexture.height]);
+        material.setParameter('texParams', [positionTexture.width, positionTexture.height]);
 
         // set up SH textures and define based on SH bands
         const shBands = resource.shBands;
@@ -139,30 +121,11 @@ class SplatOverlay extends Element {
 
         material.update();
 
-        // subscribe to sorter updates for dynamic count, caching the sorter so
-        // detach() can unsubscribe from this exact instance
-        this.onSorterUpdated = () => {
-            mesh.primitive[0].count = instance.sorter.pendingSorted?.count ?? mesh.primitive[0].count;
-        };
-        this.sorter = instance.sorter;
-        this.sorter.on('updated', this.onSorterUpdated);
-
-        // initialize count - numSplats is the current visible count (excluding deleted)
-        mesh.primitive[0].count = splat.numSplats;
-
         splat.entity.addChild(this.entity);
         this.splat = splat;
     }
 
     detach() {
-        // unsubscribe from the cached sorter (not splat.entity, which replaceData
-        // may have already swapped to a new entity/instance)
-        if (this.sorter && this.onSorterUpdated) {
-            this.sorter.off('updated', this.onSorterUpdated);
-        }
-        this.sorter = null;
-        this.onSorterUpdated = null;
-
         this.entity.remove();
         this.splat = null;
     }
@@ -175,15 +138,23 @@ class SplatOverlay extends Element {
 
         if (enabled) {
             const { material } = this;
-            const splatSize = events.invoke('camera.splatSize');
-            const selectedClr = events.invoke('view.outlineSelection') ? nullClr : events.invoke('selectedClr');
+            // delete/undo resizes the instance list, so the draw count is per-frame
+            this.meshInstance.instancingCount = this.splat.instances.count;
+            const centerSize = events.invoke('view.centerSize');
+            const selectedClr = events.invoke('selectedClr');
             const unselectedClr = events.invoke('unselectedClr');
-            const useGaussianColor = events.invoke('view.centersUseGaussianColor') ? 1.0 : 0.0;
+            // the edit view switch (tab) hides the non-selection centers;
+            // selection centers stay visible
+            const showAllCenters = events.invoke('view.centers') && events.invoke('view.editView');
 
-            material.setParameter('splatSize', splatSize * window.devicePixelRatio);
+            material.setParameter('centerSize', centerSize * window.devicePixelRatio);
+            material.setParameter('viewportSize', [scene.targetSize.width, scene.targetSize.height]);
+            material.setParameter('selectionOnly', showAllCenters ? 0 : 1);
+            material.setParameter('selectionCenters', events.invoke('view.selectionCenters') ? 1 : 0);
             material.setParameter('selectedClr', [selectedClr.r, selectedClr.g, selectedClr.b, selectedClr.a]);
             material.setParameter('unselectedClr', [unselectedClr.r, unselectedClr.g, unselectedClr.b, unselectedClr.a]);
-            material.setParameter('useGaussianColor', useGaussianColor);
+            material.setParameter('colorBlend', events.invoke('view.centersColorBlend'));
+            material.setParameter('selectionBlend', events.invoke('view.centersSelectionBlend'));
             material.setParameter('transformPalette', this.splat.transformPalette.texture);
 
             // pass camera position for SH evaluation
@@ -195,12 +166,13 @@ class SplatOverlay extends Element {
     get enabled() {
         const { scene, splat } = this;
         const { events } = scene;
+        const showAllCenters = events.invoke('view.centers') && events.invoke('view.editView');
+        const showSelectedCenters = events.invoke('view.selectionCenters') && (splat?.instances.numSelected ?? 0) > 0;
         return splat &&
-            events.invoke('camera.splatSize') > 0 &&
+            events.invoke('view.centerSize') > 0 &&
             scene.camera.renderOverlays &&
-            events.invoke('camera.overlay') &&
-            events.invoke('camera.mode') === 'centers';
+            (showAllCenters || showSelectedCenters);
     }
 }
 
-export { SplatOverlay };
+export { SplatCenters };
