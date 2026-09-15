@@ -4,9 +4,11 @@ import {
     BUFFERUSAGE_COPY_DST,
     BUFFERUSAGE_COPY_SRC,
     CULLFACE_NONE,
+    FUNC_LESS,
     PIXELFORMAT_R32U,
     PIXELFORMAT_RGBA32U,
     PRIMITIVE_TRIANGLES,
+    SAMPLETYPE_DEPTH,
     SAMPLETYPE_FLOAT,
     SAMPLETYPE_UINT,
     SAMPLETYPE_UNFILTERABLE_FLOAT,
@@ -47,9 +49,11 @@ import { createGradeTerms, gradeRows, gradeTerms, type GradeParams } from './col
 import { maskByteSize } from './data-processor/histogram-config';
 import type { Scene } from './scene';
 import { footprintIntersect } from './shaders/footprint-intersect-shader';
+import { projectedSplatDepthReduce } from './shaders/projected-splat-depth-reduce-shader';
 import { projectedSplatIndirectArgs } from './shaders/projected-splat-indirect-args-shader';
 import { projectedSplatProjector } from './shaders/projected-splat-projector-shader';
 import { fragmentShader, vertexShader } from './shaders/projected-splat-shader';
+import { fragmentShader as centersFragmentShader, vertexShader as centersVertexShader } from './shaders/splat-centers-shader';
 import type { Splat } from './splat';
 
 const INSTANCE_SIZE = 128;
@@ -59,6 +63,25 @@ const ENTRY_ALIGNMENT = 256;
 // significant bits in a sort key: sortKeys stores (~depth) >> 12, so the top 12
 // bits are always zero and sorting more than this cannot change the ordering
 const SORT_KEY_BITS = 20;
+
+// the contribution cull on stochastic frames steps from zero to this floor and
+// never above this ceiling (alpha * area in pixels), at most once per interval:
+// a frame's span reports several frames after the threshold that produced it,
+// so stepping every report overshoots. The ceiling is deliberately low: the
+// mass of an opaque splat at the 2 px size cull is ~pi, so 1 never removes an
+// opaque splat the size cull kept and only thins faint content (a 3 px splat
+// below alpha 0.14). A ceiling of 8 culled 88% of the Bowes aerial survivors
+// and doubled the error against the sorted frame; 1 costs ~2 RMS for -26% gpu
+const MOTION_CONTRIBUTION_STEP = 0.05;
+const MOTION_CONTRIBUTION_MAX = 1;
+const MOTION_STEP_MS = 50;
+
+// the occlusion cull's max-depth map: pixels per block. The projector gathers
+// one or two blocks around a splat's centre and skips wider footprints, so
+// this also bounds what it tests. Measured on the Bowes facade: 4 px blocks
+// culled 26% of survivors, 8 px 41% - the footprint bound outweighs the
+// statistical power of a smaller block
+const OCCLUSION_BLOCK = 8;
 
 const roundUp = (value: number, alignment: number) => Math.ceil(value / alignment) * alignment;
 
@@ -98,6 +121,8 @@ type ProjectedRendererStats = {
     totalSplatGpuBytes: number;
     submissionCpuMs: number;
     gpuFrameMs: number;
+    motionContribution: number;
+    occlusionActive: boolean;
 };
 
 const createQuadMesh = (device: GraphicsDevice) => {
@@ -140,14 +165,20 @@ class ProjectedSplatRenderer {
     private readonly mesh: Mesh;
     private readonly meshInstance: MeshInstance;
     private readonly entity: Entity;
+    // the centres overlay: a second draw of the same quad mesh over the compact
+    // list - survivors plus the size-culled tail - on the centres layer
+    private readonly centersMaterial: ShaderMaterial;
+    private readonly centersMeshInstance: MeshInstance;
+    private readonly centersEntity: Entity;
 
     private sortKeys: StorageBuffer | null = null;
     // entry index per compact slot: the sort payload, and what the stochastic draw
     // reads directly. Keeping the entry index means gaussian ids are unchanged by
     // compaction, so picking, rings and the stochastic dither all still work
     private compactEntries: StorageBuffer | null = null;
-    // single u32 the projector atomically appends into, consumed by the indirect
-    // draw args, the sort's element count and the vertex shader's bounds check
+    // two u32 the projector atomically appends into: the survivor count, consumed
+    // by the indirect draw args, the sort's element count and the vertex shader's
+    // bounds check, then the size-culled tail kept for the centres overlay
     private splatCounter: StorageBuffer | null = null;
     private argsCompute: Compute | null = null;
     private argsShader: Shader | null = null;
@@ -169,6 +200,38 @@ class ProjectedSplatRenderer {
     private layoutDirty = true;
     private submissionCpuMs = 0;
     private stochastic = false;
+    private overdraw = false;
+    // contribution cull on stochastic frames, adapted from each stochastic
+    // frame's gpu span toward motionBudgetMs: raised while frames run over the
+    // budget, relaxed toward zero when they have headroom. It is a lossy motion
+    // LOD, bounded by MOTION_CONTRIBUTION_MAX; the settled frame never culls
+    // this way. Console-tweakable like scene.autoEngageMs
+    motionBudgetMs = 12;
+    private motionContribution = 0;
+    private motionStepTime = 0;
+    // occlusion cull on stochastic frames (see the projector shader). After a
+    // stochastic splat pass, Camera's depth-reduce pass folds the depth buffer
+    // into one max depth per block (reduceDepth), and the next stochastic
+    // frame's projector tests splats against it through the matrices kept
+    // here. A sorted frame writes no splat depth, so it invalidates the map.
+    // The switch is console-tweakable, for measuring the cull
+    occlusionCull = true;
+    private depthMax: StorageBuffer | null = null;
+    private depthReduceCompute: Compute | null = null;
+    private depthReduceShader: Shader | null = null;
+    private depthReduceBindGroupFormat: BindGroupFormat | null = null;
+    private readonly occlusionBlocks = new Vec2();
+    private prevValid = false;
+    private readonly prevViewProjection = new Mat4();
+    private readonly prevView = new Mat4();
+    private prevClipZ = [0, 0, 0, 0];
+    private readonly prevViewport = new Vec2();
+    private readonly prevFocal = new Vec2();
+    // this frame's, staged by render() for reduceDepth to promote
+    private frameStochastic = false;
+    private readonly frameView = new Mat4();
+    private frameClipZ = [0, 0, 0, 0];
+    private readonly frameFocal = new Vec2();
 
     constructor(scene: Scene) {
         this.scene = scene;
@@ -177,7 +240,7 @@ class ProjectedSplatRenderer {
         // indirect only: the survivor count lives on the gpu, so every sort this
         // renderer issues is an indirect dispatch
         this.sorter = new ComputeRadixSort(this.device, { indirect: true } as any);
-        this.splatCounter = new StorageBuffer(this.device, 4, BUFFERUSAGE_COPY_SRC | BUFFERUSAGE_COPY_DST);
+        this.splatCounter = new StorageBuffer(this.device, 8, BUFFERUSAGE_COPY_SRC | BUFFERUSAGE_COPY_DST);
 
         this.material = new ShaderMaterial({
             uniqueName: 'ProjectedSplatMaterial',
@@ -199,6 +262,7 @@ class ProjectedSplatRenderer {
         this.material.setParameter('pickCount', 0);
         this.material.setParameter('pickOp', 2);
         this.material.setParameter('outlineMode', 0);
+        this.material.setParameter('selectionUnderlay', 1);
         this.material.setParameter('showGaussians', 1);
         this.material.setParameter('showSelectedGaussians', 0);
         this.material.setParameter('ringSize', 0);
@@ -225,6 +289,40 @@ class ProjectedSplatRenderer {
         });
         this.entity.enabled = false;
         scene.app.root.addChild(this.entity);
+
+        // opaque and depth resolved: centres own the depth buffer of their layer,
+        // so each pixel keeps the frontmost centre whatever order they draw in.
+        // Blending them instead makes the result order-dependent - a pixel takes
+        // one blend or several depending on which centre reached it first - which
+        // reads as patches of differing density across a large scene. FUNC_LESS
+        // matters: the LESSEQUAL default admits every coincident fragment, putting
+        // the overdraw cost straight back
+        this.centersMaterial = new ShaderMaterial({
+            uniqueName: 'ProjectedSplatCentersMaterial',
+            attributes: {
+                vertex_position: SEMANTIC_POSITION
+            },
+            vertexWGSL: centersVertexShader,
+            fragmentWGSL: centersFragmentShader
+        });
+        this.centersMaterial.blendType = BLEND_NONE;
+        this.centersMaterial.cull = CULLFACE_NONE;
+        this.centersMaterial.depthWrite = true;
+        this.centersMaterial.depthTest = true;
+        this.centersMaterial.depthFunc = FUNC_LESS;
+        this.centersMaterial.update();
+
+        this.centersMeshInstance = new MeshInstance(this.mesh, this.centersMaterial, null);
+        this.centersMeshInstance.cull = false;
+        this.centersMeshInstance.setInstancing(true, false);
+
+        this.centersEntity = new Entity('projectedSplatCenters');
+        this.centersEntity.addComponent('render', {
+            meshInstances: [this.centersMeshInstance],
+            layers: [scene.centersLayer.id]
+        });
+        this.centersEntity.enabled = false;
+        scene.app.root.addChild(this.centersEntity);
 
         // diagnostics hook, not consumed by the ui: invoke it from the console
         scene.events.function('splat.projectedRendererStats', () => this.stats);
@@ -301,9 +399,9 @@ class ProjectedSplatRenderer {
     }
 
     // Switch between the default sorted premultiplied-alpha renderer and the
-    // experimental 1 spp stochastic-transparency renderer (opaque, depth-tested,
-    // no per-frame sort). Recompiles the material variant only when the mode
-    // actually changes.
+    // 1 spp stochastic-transparency renderer (opaque, depth-tested, no per-frame
+    // sort). Recompiles the material variant only when the mode actually
+    // changes.
     private setStochastic(value: boolean) {
         if (value === this.stochastic) {
             return;
@@ -312,6 +410,18 @@ class ProjectedSplatRenderer {
         this.material.setDefine('STOCHASTIC', value ? '' : undefined);
         this.material.blendType = value ? BLEND_NONE : BLEND_PREMULTIPLIED;
         this.material.depthWrite = value;
+        this.material.update();
+    }
+
+    // the overdraw view keeps the sorted path's blend state and swaps the
+    // fragment shader's colour for a fill count (see projected-splat-shader).
+    // The define is outside the pick branch, so picks are unaffected
+    private setOverdraw(value: boolean) {
+        if (value === this.overdraw) {
+            return;
+        }
+        this.overdraw = value;
+        this.material.setDefine('OVERDRAW', value ? '' : undefined);
         this.material.update();
     }
 
@@ -364,7 +474,20 @@ class ProjectedSplatRenderer {
             new UniformFormat('pickOp', UNIFORMTYPE_INT),
             new UniformFormat('minPixelSize', UNIFORMTYPE_FLOAT),
             new UniformFormat('near', UNIFORMTYPE_FLOAT),
-            new UniformFormat('far', UNIFORMTYPE_FLOAT)
+            new UniformFormat('far', UNIFORMTYPE_FLOAT),
+            new UniformFormat('capacity', UNIFORMTYPE_UINT),
+            new UniformFormat('keepCulled', UNIFORMTYPE_UINT),
+            new UniformFormat('minContribution', UNIFORMTYPE_FLOAT),
+            new UniformFormat('keepRings', UNIFORMTYPE_UINT),
+            new UniformFormat('prevViewProj', UNIFORMTYPE_MAT4),
+            new UniformFormat('prevView', UNIFORMTYPE_MAT4),
+            new UniformFormat('prevClipZ', UNIFORMTYPE_VEC4),
+            new UniformFormat('prevViewport', UNIFORMTYPE_VEC2),
+            new UniformFormat('prevFocal', UNIFORMTYPE_VEC2),
+            new UniformFormat('occlusionBlocksX', UNIFORMTYPE_UINT),
+            new UniformFormat('occlusionBlocksY', UNIFORMTYPE_UINT),
+            new UniformFormat('occlusionBlock', UNIFORMTYPE_FLOAT),
+            new UniformFormat('occlusionEnabled', UNIFORMTYPE_UINT)
         ]);
         const bindGroupFormat = new BindGroupFormat(this.device, [
             new BindStorageBufferFormat('sortKeys', SHADERSTAGE_COMPUTE),
@@ -375,6 +498,7 @@ class ProjectedSplatRenderer {
             new BindStorageBufferFormat('instanceSource', SHADERSTAGE_COMPUTE, true),
             new BindStorageBufferFormat('instanceFlags', SHADERSTAGE_COMPUTE, true),
             new BindStorageBufferFormat('instancePalette', SHADERSTAGE_COMPUTE, true),
+            new BindStorageBufferFormat('prevDepthMax', SHADERSTAGE_COMPUTE, true),
             ...textureFormats,
             new BindUniformBufferFormat('uniforms', SHADERSTAGE_COMPUTE)
         ]);
@@ -409,7 +533,7 @@ class ProjectedSplatRenderer {
                 new UniformFormat('drawSlot', UNIFORMTYPE_UINT),
                 new UniformFormat('indexCount', UNIFORMTYPE_UINT),
                 new UniformFormat('sortSlotBase', UNIFORMTYPE_UINT),
-                new UniformFormat('pad0', UNIFORMTYPE_UINT),
+                new UniformFormat('centersDrawSlot', UNIFORMTYPE_UINT),
                 new UniformFormat('sortIndirectInfo', UNIFORMTYPE_UVEC4)
             ]);
             const bindGroupFormat = new BindGroupFormat(this.device, [
@@ -429,6 +553,96 @@ class ProjectedSplatRenderer {
             this.argsCompute = new Compute(this.device, this.argsShader, 'ProjectedSplatIndirectArgs');
         }
         return this.argsCompute;
+    }
+
+    // the gpu span of a stochastic frame, from Scene.onGpuReport. Frame time is
+    // roughly proportional to survivors and survivors roughly inverse in the
+    // threshold, so a damped proportional step, bounded and rate limited,
+    // settles within a few hundred milliseconds without hunting
+    reportStochasticFrame(gpuMs: number) {
+        const now = performance.now();
+        if (now - this.motionStepTime < MOTION_STEP_MS) {
+            return;
+        }
+        this.motionStepTime = now;
+        const ratio = gpuMs / this.motionBudgetMs;
+        const factor = Math.min(1.2, Math.max(0.85, 1 + 0.5 * (ratio - 1)));
+        if (ratio > 1.05) {
+            this.motionContribution = Math.min(MOTION_CONTRIBUTION_MAX,
+                Math.max(MOTION_CONTRIBUTION_STEP, this.motionContribution * factor));
+        } else if (ratio < 0.9) {
+            this.motionContribution *= factor;
+            if (this.motionContribution < MOTION_CONTRIBUTION_STEP) {
+                this.motionContribution = 0;
+            }
+        }
+    }
+
+    // one workgroup per block of the depth buffer, writing the block's max
+    private getDepthReduceCompute() {
+        if (!this.depthReduceCompute) {
+            const uniformBufferFormat = new UniformBufferFormat(this.device, [
+                new UniformFormat('width', UNIFORMTYPE_UINT),
+                new UniformFormat('height', UNIFORMTYPE_UINT),
+                new UniformFormat('blocksX', UNIFORMTYPE_UINT),
+                new UniformFormat('pad0', UNIFORMTYPE_UINT)
+            ]);
+            const bindGroupFormat = new BindGroupFormat(this.device, [
+                new BindTextureFormat('depthTexture', SHADERSTAGE_COMPUTE, undefined, SAMPLETYPE_DEPTH, false),
+                new BindStorageBufferFormat('depthMax', SHADERSTAGE_COMPUTE),
+                new BindUniformBufferFormat('uniforms', SHADERSTAGE_COMPUTE)
+            ]);
+            this.depthReduceShader = new Shader(this.device, {
+                name: 'ProjectedSplatDepthReduce',
+                shaderLanguage: SHADERLANGUAGE_WGSL,
+                cshader: projectedSplatDepthReduce(OCCLUSION_BLOCK),
+                computeBindGroupFormat: bindGroupFormat,
+                computeUniformBufferFormats: { uniforms: uniformBufferFormat }
+            } as any);
+            this.depthReduceBindGroupFormat = bindGroupFormat;
+            this.depthReduceCompute = new Compute(this.device, this.depthReduceShader, 'ProjectedSplatDepthReduce');
+        }
+        return this.depthReduceCompute;
+    }
+
+    // the map is sized to the target in blocks; a change in size drops the
+    // previous frame's map, whose blocks would no longer line up
+    private updateDepthMap(width: number, height: number) {
+        const blocksX = Math.ceil(width / OCCLUSION_BLOCK);
+        const blocksY = Math.ceil(height / OCCLUSION_BLOCK);
+        if (!this.depthMax || this.occlusionBlocks.x !== blocksX || this.occlusionBlocks.y !== blocksY) {
+            this.depthMax?.destroy();
+            this.depthMax = new StorageBuffer(this.device, blocksX * blocksY * 4, BUFFERUSAGE_COPY_SRC);
+            this.occlusionBlocks.set(blocksX, blocksY);
+            this.prevValid = false;
+        }
+    }
+
+    // after the splat pass and before the gizmo pass clears depth (Camera's
+    // depth-reduce pass): on a stochastic frame fold the depth buffer into the
+    // max-depth map and promote this frame's matrices for the next frame's
+    // projector; otherwise the map goes stale
+    reduceDepth() {
+        const depthBuffer = this.scene.camera.mainTarget?.depthBuffer;
+        if (!this.frameStochastic || !this.occlusionCull || !this.depthMax || !depthBuffer) {
+            this.prevValid = false;
+            return;
+        }
+        const compute = this.getDepthReduceCompute();
+        compute.setParameter('depthTexture', depthBuffer);
+        compute.setParameter('depthMax', this.depthMax);
+        compute.setParameter('width', depthBuffer.width);
+        compute.setParameter('height', depthBuffer.height);
+        compute.setParameter('blocksX', this.occlusionBlocks.x);
+        compute.setParameter('pad0', 0);
+        compute.setupDispatch(this.occlusionBlocks.x, this.occlusionBlocks.y);
+        this.device.computeDispatch([compute], 'ProjectedSplatDepthReduce');
+        this.prevViewProjection.copy(this.viewProjection);
+        this.prevView.copy(this.frameView);
+        this.prevClipZ = this.frameClipZ;
+        this.prevViewport.set(depthBuffer.width, depthBuffer.height);
+        this.prevFocal.copy(this.frameFocal);
+        this.prevValid = true;
     }
 
     private getFootprintCompute() {
@@ -579,6 +793,7 @@ class ProjectedSplatRenderer {
                 );
                 this.sorter.capacity = count;
             }
+            this.motionContribution = 0;
         }
 
         // The forward draw is gpu-driven, but indirect draw commands are bound per
@@ -596,6 +811,8 @@ class ProjectedSplatRenderer {
             this.rebuildLayout();
         }
         if (this.capacity === 0 || !this.sortKeys || !this.compactEntries || !this.cacheA || !this.cacheB) {
+            this.centersEntity.enabled = false;
+            this.frameStochastic = false;
             return;
         }
 
@@ -625,6 +842,26 @@ class ProjectedSplatRenderer {
         // Size culling is visual only: selection and depth queries need every footprint.
         const minPixelSize = forPick ? 0 : (events.invoke('view.minPixelSize') as number) ?? 0;
 
+        // the centres overlay draws the selected layer's centres from this
+        // frame's projection: all of them in the edit view with centres on,
+        // otherwise the selection's alone
+        const editView = events.invoke('view.editView');
+        const centerSize = events.invoke('view.centerSize') as number;
+        const showAllCenters = events.invoke('view.centers') && editView;
+        const showSelectedCenters = events.invoke('view.selectionCenters') &&
+            (selectedSplat?.instances.numSelected ?? 0) > 0;
+        // centres draw opaque over the overdraw view's fragment counts, so a
+        // selection would blank the heat map under its dots: skip them there
+        const showCenters = !!selectedSplat && camera.renderOverlays && centerSize > 0 &&
+            !this.scene.overdrawRender && (showAllCenters || showSelectedCenters);
+        // rings likewise: every ring in the edit view with rings on, otherwise
+        // the selection's alone. Decided here because the projector exempts
+        // ringed splats from the contribution cull
+        const showAllRings = events.invoke('view.rings') && editView;
+        const showSelectedRings = events.invoke('view.selectionRings') &&
+            (selectedSplat?.instances.numSelected ?? 0) > 0;
+        const showRings = showAllRings || showSelectedRings;
+
         // the colour panel's uncommitted grade, previewed on the layer it targets.
         // Packed once per frame: it is the same for every placement, only the
         // preview mode differs.
@@ -634,14 +871,26 @@ class ProjectedSplatRenderer {
             gradeRows(gradeTerms(pending, this.previewTerms), this.previewRows);
         }
 
-        // motion-adaptive: fast stochastic (no-sort) while interacting, clean
-        // sorted & blended when the scene settles (driven by Scene.onUpdate)
+        // motion-adaptive: fast stochastic while interacting, clean sorted &
+        // blended when the scene settles (driven by Scene.onUpdate)
         this.setStochastic(this.scene.movingRender && !forPick);
+        this.setOverdraw(this.scene.overdrawRender);
+
+        // the occlusion cull reads the previous stochastic frame's map, which
+        // a sorted frame or a resize in between has invalidated. An edit to the
+        // scene content makes it stale for this frame - splats would test
+        // against the depth of what moved or vanished, their own included -
+        // and a projection switch changes its depth mapping; both skip the
+        // cull, and the frame writes a fresh map
+        this.updateDepthMap(targetSize.width, targetSize.height);
+        const isOrtho = cameraComponent.projection === 1;
+        const occlusion = this.stochastic && this.occlusionCull && this.prevValid &&
+            !this.scene.editedRender && this.prevClipZ[2] === (isOrtho ? 1 : 0);
 
         let ringsBase = 0;
         let ringsCount = 0;
 
-        // the projector appends survivors, so the count starts each frame at zero.
+        // the projector appends survivors, so the counts start each frame at zero.
         // The clear is recorded on the shared command encoder, which orders it
         // ahead of the dispatches below
         this.splatCounter.clear();
@@ -712,6 +961,31 @@ class ProjectedSplatRenderer {
             compute.setParameter('minPixelSize', minPixelSize);
             compute.setParameter('near', cameraComponent.nearClip);
             compute.setParameter('far', cameraComponent.farClip);
+            compute.setParameter('capacity', this.capacity);
+            // culled splats of the selected layer stay projected while the
+            // centres overlay is up, so their centres still draw
+            compute.setParameter('keepCulled', showCenters && selectedSplat === splat ? 1 : 0);
+            compute.setParameter('minContribution', this.stochastic ? this.motionContribution : 0);
+            // rings draw from the survivor list, so the projector never culls a
+            // splat whose ring would show: the whole layer in rings mode, the
+            // selection alone with selection rings
+            let keepRings = 0;
+            if (selectionEnabled && showAllRings) {
+                keepRings = 2;
+            } else if (selectionEnabled && showSelectedRings) {
+                keepRings = 1;
+            }
+            compute.setParameter('keepRings', keepRings);
+            compute.setParameter('prevDepthMax', this.depthMax);
+            compute.setParameter('prevViewProj', this.prevViewProjection.data);
+            compute.setParameter('prevView', this.prevView.data);
+            compute.setParameter('prevClipZ', this.prevClipZ);
+            compute.setParameter('prevViewport', [this.prevViewport.x, this.prevViewport.y]);
+            compute.setParameter('prevFocal', [this.prevFocal.x, this.prevFocal.y]);
+            compute.setParameter('occlusionBlocksX', this.occlusionBlocks.x);
+            compute.setParameter('occlusionBlocksY', this.occlusionBlocks.y);
+            compute.setParameter('occlusionBlock', OCCLUSION_BLOCK);
+            compute.setParameter('occlusionEnabled', occlusion ? 1 : 0);
 
             const workgroups = Math.ceil(placement.entryCapacity / WORKGROUP_SIZE);
             Compute.calcDispatchSize(workgroups, this.dispatchSize);
@@ -722,7 +996,8 @@ class ProjectedSplatRenderer {
         // Turn the survivor count into indirect draw and sort arguments. Indirect
         // slots are recycled at frame end, so they are claimed fresh every frame.
         const sortInfo = this.sorter.prepareIndirect();
-        const drawSlot = (this.device as any).getIndirectDrawSlot();
+        // two consecutive slots: the gaussian draw, then the centres draw
+        const drawSlot = (this.device as any).getIndirectDrawSlot(2);
         this.drawSlot = drawSlot;
         const sortSlotBase = (this.device as any).getIndirectDispatchSlot(sortInfo[0]);
         const args = this.getArgsCompute();
@@ -732,16 +1007,20 @@ class ProjectedSplatRenderer {
         args.setParameter('drawSlot', drawSlot);
         args.setParameter('indexCount', INSTANCE_SIZE * 6);
         args.setParameter('sortSlotBase', sortSlotBase);
-        args.setParameter('pad0', 0);
+        args.setParameter('centersDrawSlot', drawSlot + 1);
         // sorter-owned Uint32Array, uploaded as a vec4u - setParameter's types only cover f32 arrays
         args.setParameter('sortIndirectInfo', sortInfo as any);
         args.setupDispatch(1, 1);
         this.device.computeDispatch([args], 'ProjectedSplatIndirectArgs');
         this.meshInstance.setIndirect(null, drawSlot, 1);
-        this.material.setParameter('compactEntries', this.compactEntries);
         this.material.setParameter('splatCount', this.splatCounter);
 
-        if (!this.stochastic) {
+        if (this.stochastic) {
+            // no sort: the draw is opaque and depth tested, so it reads the
+            // compact list in the projector's append order. Both lists carry
+            // cache entry indices, so gaussian ids mean the same on either path
+            this.material.setParameter('sortedIndices', this.compactEntries);
+        } else {
             // the sort requires numBits to be a multiple of the active backend's
             // radix width, and the backend is chosen from the device: 4 bits for
             // the portable multipass sorter, 8 for OneSweep (NVIDIA only). A
@@ -762,22 +1041,17 @@ class ProjectedSplatRenderer {
         this.material.setParameter('cacheB', this.cacheB);
         this.material.setParameter('cacheWidth', this.cacheWidth);
         this.finishPick();
-        this.material.setParameter('viewportSize', [
-            targetSize.width,
-            targetSize.height,
-            2 / targetSize.width,
-            2 / targetSize.height
-        ]);
+        const viewportParams = [targetSize.width, targetSize.height, 2 / targetSize.width, 2 / targetSize.height];
+        this.material.setParameter('viewportSize', viewportParams);
         this.material.setParameter('outlineMode', outlineSelection ? 1 : 0);
+        // the selection's 80/20 split only pays off if the Underlay pass adds
+        // the 20% back this frame; the transform handler disables that pass
+        // for the length of a drag
+        this.material.setParameter('selectionUnderlay', this.scene.underlay.enabled ? 1 : 0);
         // the edit view switch (tab) shows the raw scene: gaussians render
         // regardless of the profile flag and the non-selection rings hide
-        const editView = events.invoke('view.editView');
         this.material.setParameter('showGaussians', events.invoke('view.gaussians') || !editView || pending ? 1 : 0);
         this.material.setParameter('showSelectedGaussians', events.invoke('view.selectionColor') && !pending ? 1 : 0);
-        const showAllRings = events.invoke('view.rings') && editView;
-        const showSelectedRings = events.invoke('view.selectionRings') &&
-            (selectedSplat?.instances.numSelected ?? 0) > 0;
-        const showRings = showAllRings || showSelectedRings;
         this.material.setParameter('ringSize', showRings ? events.invoke('view.ringSize') * 0.01 : 0);
         this.material.setParameter('ringSelectionOnly', showAllRings ? 0 : 1);
         // the colour alphas carry blend weights, not opacity. The gaussian
@@ -818,7 +1092,39 @@ class ProjectedSplatRenderer {
         // clip z is affine in view depth for perspective/ortho projections:
         // z = -m22 * depth + m23, taken from the WebGPU-transformed projection
         const shaderProj = this.shaderProjection.data;
-        this.material.setParameter('clipZParams', [-shaderProj[10], shaderProj[14], cameraComponent.projection === 1 ? 1 : 0, 0]);
+        const clipZParams = [-shaderProj[10], shaderProj[14], cameraComponent.projection === 1 ? 1 : 0, 0];
+        this.material.setParameter('clipZParams', clipZParams);
+        // staged for reduceDepth, which runs after the splat pass
+        this.frameStochastic = this.stochastic;
+        this.frameView.copy(view);
+        this.frameClipZ = clipZParams;
+        this.frameFocal.set(focal[0], focal[1]);
+
+        // the centres overlay reads this frame's projection through the same
+        // compact list, counter and cache. Its entry range is the selected
+        // placement's, which is also the rings range
+        this.centersMeshInstance.setIndirect(null, drawSlot + 1, 1);
+        this.centersEntity.enabled = showCenters;
+        if (showCenters) {
+            const centers = this.centersMaterial;
+            centers.setParameter('compactEntries', this.compactEntries);
+            centers.setParameter('splatCount', this.splatCounter);
+            centers.setParameter('cacheA', this.cacheA);
+            centers.setParameter('cacheB', this.cacheB);
+            centers.setParameter('cacheWidth', this.cacheWidth);
+            centers.setParameter('capacity', this.capacity);
+            centers.setParameter('viewportSize', viewportParams);
+            centers.setParameter('clipZParams', clipZParams);
+            centers.setParameter('centersBase', ringsBase);
+            centers.setParameter('centersCount', ringsCount);
+            centers.setParameter('centerSize', centerSize * window.devicePixelRatio);
+            centers.setParameter('selectionOnly', showAllCenters ? 0 : 1);
+            centers.setParameter('selectionCenters', events.invoke('view.selectionCenters') ? 1 : 0);
+            centers.setParameter('colorBlend', events.invoke('view.centersColorBlend'));
+            centers.setParameter('selectionBlend', events.invoke('view.centersSelectionBlend'));
+            centers.setParameter('selectedClr', [selectedColor.r, selectedColor.g, selectedColor.b, selectedColor.a]);
+            centers.setParameter('unselectedClr', [unselectedColor.r, unselectedColor.g, unselectedColor.b, unselectedColor.a]);
+        }
         this.submissionCpuMs = performance.now() - start;
     }
 
@@ -847,7 +1153,9 @@ class ProjectedSplatRenderer {
             totalTransientBytes,
             totalSplatGpuBytes: sourceBytes + editingBytes + totalTransientBytes,
             submissionCpuMs: this.submissionCpuMs,
-            gpuFrameMs: (this.device.gpuProfiler as any)._frameTime ?? 0
+            gpuFrameMs: (this.device.gpuProfiler as any)._frameTime ?? 0,
+            motionContribution: this.motionContribution,
+            occlusionActive: this.occlusionCull && this.prevValid
         };
     }
 
@@ -865,6 +1173,10 @@ class ProjectedSplatRenderer {
         this.argsCompute?.destroy();
         this.argsShader?.destroy();
         this.argsBindGroupFormat?.destroy();
+        this.depthMax?.destroy();
+        this.depthReduceCompute?.destroy();
+        this.depthReduceShader?.destroy();
+        this.depthReduceBindGroupFormat?.destroy();
         this.footprintCompute?.destroy();
         this.footprintShader?.destroy();
         this.footprintBindGroupFormat?.destroy();
@@ -876,6 +1188,9 @@ class ProjectedSplatRenderer {
         this.entity.destroy();
         this.meshInstance.destroy();
         this.material.destroy();
+        this.centersEntity.destroy();
+        this.centersMeshInstance.destroy();
+        this.centersMaterial.destroy();
     }
 }
 

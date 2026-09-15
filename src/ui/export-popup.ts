@@ -1,21 +1,17 @@
 import { BooleanInput, Button, ColorPicker, Container, Element, Label, SelectInput, SliderInput, TextInput } from '@playcanvas/pcui';
 
-import { collectAnnotationImages } from '../annotation-images';
 import { Pose } from '../camera-poses';
 import { PerSceneCollisionPanel } from './collision-params';
 import { i18n } from './localization';
 import { Events } from '../events';
+import { ExportChoices, ExportDialogResult, ExportType } from '../export-options';
 import { probeExportCapabilities } from '../export-server-client';
 import { ExportSettings } from '../export-settings';
-import { ExportType, SceneExportOptions } from '../file-handler';
 import type { BlobReadSource, WriteTarget } from '../io';
-import { buildPortalBundle } from '../portal-export';
-import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
 import sceneExport from './svg/export.svg';
 import projectSave from './svg/save.svg';
 
 type FileDialogType = ExportType | 'ssproj';
-type SaveOptions = Pick<SceneExportOptions, 'filename' | 'fileTarget'>;
 
 const createSvg = (svgString: string, args = {}) => {
     const decodedStr = decodeURIComponent(svgString.substring('data:image/svg+xml,'.length));
@@ -57,7 +53,7 @@ const isValidFilename = (filename: string) => {
 };
 
 class ExportPopup extends Container {
-    show: (exportType: FileDialogType, splatNames: string[], settings?: ExportSettings, exclude?: BlobReadSource) => Promise<null | SceneExportOptions | SaveOptions>;
+    show: (exportType: FileDialogType, splatNames: string[], settings?: ExportSettings, exclude?: BlobReadSource) => Promise<null | ExportDialogResult>;
     hide: () => void;
     destroy: () => void;
 
@@ -823,14 +819,9 @@ class ExportPopup extends Container {
             saveIcon.hidden = !saveProject;
 
             const frames = events.invoke('timeline.frames');
-            const frameRate = events.invoke('timeline.frameRate');
-            const smoothness = events.invoke('timeline.smoothness');
-            const orderedPoses = (events.invoke('camera.poses') as Pose[])
-            .slice()
-            .filter(p => p.frame >= 0 && p.frame < frames)
-            .sort((a, b) => a.frame - b.frame);
+            const hasPoses = (events.invoke('camera.poses') as Pose[]).some(p => p.frame >= 0 && p.frame < frames);
 
-            reset(exportType, splatNames, orderedPoses.length > 0);
+            reset(exportType, splatNames, hasPoses);
 
             directory = settings.directory;
             locationRow.hidden = !hasFilePicker;
@@ -842,173 +833,48 @@ class ExportPopup extends Container {
             this.dom.addEventListener('keydown', keydown);
             filenameEntry.focus(true);
 
-            const assemblePlyOptions = () : SceneExportOptions => {
-                return {
-                    filename: getFilename(),
-                    splatIdx: 'all',
-                    serializeSettings: {
-                        maxSHBands: bandsSlider.value
-                    },
-                    compressedPly: compressBoolean.value,
-                    useServer: !serverRow.hidden && serverToggle.value
-                };
-            };
-
-            const assembleSplatOptions = () : SceneExportOptions => {
-                return {
-                    filename: getFilename(),
-                    splatIdx: 'all',
-                    serializeSettings: { },
-                    useServer: !serverRow.hidden && serverToggle.value
-                };
-            };
-
-            const assembleSogOptions = () : SceneExportOptions => {
-                return {
-                    filename: getFilename(),
-                    splatIdx: 'all',
-                    serializeSettings: {
-                        maxSHBands: bandsSlider.value
-                    },
-                    sogIterations: iterationsSlider.value,
-                    useServer: !serverRow.hidden && serverToggle.value
-                };
-            };
-
-            const assembleSpzOptions = () : SceneExportOptions => {
-                return {
-                    filename: getFilename(),
-                    splatIdx: 'all',
-                    serializeSettings: {
-                        maxSHBands: bandsSlider.value
-                    },
-                    spzVersion: spzVersionSelect.value === '3' ? 3 : 4
-                };
-            };
-
-            const assembleViewerOptions = () : SceneExportOptions => {
-                const fov = fovSlider.value;
-
-                // use current viewport as start pose
-                const pose = events.invoke('camera.getPose');
-                const p = pose?.position;
-                const t = pose?.target;
-                const cameras = (p && t) ? [{
-                    initial: {
-                        position: [p.x, p.y, p.z] as [number, number, number],
-                        target: [t.x, t.y, t.z] as [number, number, number],
-                        fov
-                    }
-                }] : [];
-
-                const includeAnimation = animationToggle.value;
-                const animTracks: AnimTrack[] = [];
-
-                if (includeAnimation && orderedPoses.length > 0) {
-                    const times: number[] = [];
-                    const position: number[] = [];
-                    const target: number[] = [];
-                    const fovKeys: number[] = [];
-                    for (let i = 0; i < orderedPoses.length; ++i) {
-                        const op = orderedPoses[i];
-                        times.push(op.frame);
-                        position.push(op.position.x, op.position.y, op.position.z);
-                        target.push(op.target.x, op.target.y, op.target.z);
-                        fovKeys.push(op.fov ?? fov);
-                    }
-
-                    animTracks.push({
-                        name: 'cameraAnim',
-                        duration: frames / frameRate,
-                        frameRate,
-                        loopMode: loopSelect.value as 'none' | 'repeat' | 'pingpong',
-                        interpolation: 'spline',
-                        smoothness,
-                        keyframes: {
-                            times,
-                            values: { position, target, fov: fovKeys }
-                        }
-                    });
+            const getChoices = (): ExportChoices => {
+                const filename = getFilename();
+                const useServer = !serverRow.hidden && serverToggle.value;
+                switch (exportType) {
+                    case 'ply':
+                        return { filename, maxSHBands: bandsSlider.value, compressedPly: compressBoolean.value, useServer };
+                    case 'sog':
+                        return { filename, maxSHBands: bandsSlider.value, sogIterations: iterationsSlider.value, useServer };
+                    case 'spz':
+                        return { filename, maxSHBands: bandsSlider.value, spzVersion: spzVersionSelect.value === '3' ? 3 : 4 };
+                    case 'viewer':
+                    case 'viewerSettings':
+                        return {
+                            filename,
+                            maxSHBands: bandsSlider.value,
+                            viewerType: viewerTypeSelect.value === 'zip' ? 'zip' : 'html',
+                            includeAnimation: animationToggle.value,
+                            loopMode: loopSelect.value as ExportChoices['loopMode'],
+                            backgroundColor: colorPicker.value.slice(0, 3) as [number, number, number],
+                            fov: fovSlider.value,
+                            streaming: streamingToggle.value,
+                            collision: collisionToggle.value,
+                            // index-aligned with the portal bundle; empty when the
+                            // scene has no portals, in which case globalCollision is used
+                            perSceneCollision: Array.from(
+                                { length: perSceneCollision.sceneCount() },
+                                (_, i) => perSceneCollision.valuesAt(i)
+                            ),
+                            globalCollision: {
+                                environment: environmentSelect.value as 'indoor' | 'outdoor',
+                                radius: radiusSlider.value,
+                                voxelSize: voxelSizeSlider.value
+                            },
+                            useServer
+                        };
+                    default:
+                        // splat and ssproj have no settings beyond the server toggle
+                        return { filename, useServer };
                 }
-
-                const bgColor = colorPicker.value.slice(0, 3) as [number, number, number];
-
-                // portal multi-scene bundle (absent when no portals)
-                const portalsRaw = events.invoke('portals.export') ?? [];
-                const startUid = events.invoke('portals.startSplat') ?? null;
-                const allSplats = events.invoke('scene.allSplats') ?? [];
-                const availableUids = allSplats.map((s: any) => s.uid);
-                const collisionOn = viewerTypeSelect.value === 'zip' && collisionToggle.value;
-                const preferredStartUid = events.invoke('selection')?.uid ?? null;
-                const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
-                    buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streamingToggle.value, collision: collisionOn, preferredStartUid }) :
-                    null;
-
-                const experienceSettings: ExperienceSettings = {
-                    version: 2,
-                    tonemapping: events.invoke('camera.tonemapping') ?? 'none',
-                    highPrecisionRendering: false,
-                    background: { color: bgColor },
-                    postEffectSettings: defaultPostEffectSettings(),
-                    animTracks,
-                    cameras,
-                    annotations: events.invoke('annotations.export', bundle?.sceneUids) ?? [],
-                    offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
-                    offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
-                    ...(bundle ? {
-                        portals: bundle.portals,
-                        portalScenes: bundle.portalScenes,
-                        portalStart: bundle.portalStart,
-                        portalCollision: bundle.portalCollision,
-                        portalEnvironments: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).environment),
-                        portalRadii: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).radius),
-                        portalVoxelSizes: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).voxelSize)
-                    } : {}),
-                    startMode: includeAnimation ? 'animTrack' : 'default'
-                };
-
-                return {
-                    filename: getFilename(),
-                    splatIdx: 'all',
-                    serializeSettings: {
-                        maxSHBands: bandsSlider.value
-                    },
-                    viewerExportSettings: {
-                        type: viewerTypeSelect.value,
-                        streaming: streamingToggle.value,
-                        // For a portal export the start scene (index 0) is hidden from the
-                        // global environmentSelect and chosen via its per-scene card, so
-                        // source its environment from there (portalEnvironments[0]); fall back
-                        // to the global select for a non-portal export.
-                        collision: (viewerTypeSelect.value === 'zip' && collisionToggle.value) ? (bundle ? {
-                            environment: perSceneCollision.valuesAt(0).environment,
-                            radius: perSceneCollision.valuesAt(0).radius,
-                            voxelSize: perSceneCollision.valuesAt(0).voxelSize
-                        } : {
-                            environment: environmentSelect.value as 'indoor' | 'outdoor',
-                            radius: radiusSlider.value,
-                            voxelSize: voxelSizeSlider.value
-                        }) : undefined,
-                        experienceSettings,
-                        // ZIP only: the single-file HTML export has nowhere to
-                        // put them (the warning below tells the user)
-                        annotationImages: viewerTypeSelect.value === 'zip' ? collectAnnotationImages(events) : undefined
-                    },
-                    useServer: !serverRow.hidden && serverToggle.value
-                };
             };
 
-            const assembleViewerSettingsOptions = (): SceneExportOptions => {
-                const viewerOptions = assembleViewerOptions();
-                return {
-                    filename: viewerOptions.filename,
-                    splatIdx: 'all',
-                    serializeSettings: {},
-                    viewerExportSettings: viewerOptions.viewerExportSettings
-                };
-            };
-
-            return new Promise<null | SceneExportOptions | SaveOptions>((resolve) => {
+            return new Promise<null | ExportDialogResult>((resolve) => {
                 onCancel = () => {
                     resolve(null);
                 };
@@ -1020,14 +886,7 @@ class ExportPopup extends Container {
                     submitting = true;
                     exportButton.enabled = false;
                     try {
-                        const options = exportType === 'ssproj' ? { filename: getFilename() } : {
-                            ply: assemblePlyOptions,
-                            splat: assembleSplatOptions,
-                            sog: assembleSogOptions,
-                            spz: assembleSpzOptions,
-                            viewer: assembleViewerOptions,
-                            viewerSettings: assembleViewerSettingsOptions
-                        }[exportType]();
+                        const choices = getChoices();
                         let fileTarget: WriteTarget;
                         // Every export this dialog can start writes a local file, the
                         // 'export on server' ones included: the server only runs the
@@ -1050,7 +909,7 @@ class ExportPopup extends Container {
                             }
                             fileTarget = target;
                         }
-                        resolve({ ...options, fileTarget });
+                        resolve({ ...choices, directory, fileTarget });
                     } catch (error) {
                         submitting = false;
                         await validateFilename();

@@ -28,7 +28,6 @@ import { ProjectedSplatRenderer } from './projected-splat-renderer';
 import { SceneConfig } from './scene-config';
 import { SceneState } from './scene-state';
 import { Splat } from './splat';
-import { SplatCenters } from './splat-centers';
 import { Underlay } from './underlay';
 
 // sort meshInstances by the aabb corner furthest from the camera
@@ -110,7 +109,19 @@ class Scene {
     // the mode for the current frame; pendingResolve marks that a clean settled
     // frame is still owed after motion ends.
     movingRender = false;
+
+    // the overdraw diagnostic view (view.overdraw): the splat pass counts
+    // fragments per pixel and the final blit maps the count through a heat
+    // ramp. Always the sorted path - the count needs blending, not the
+    // stochastic depth test. It is a debug overlay, so it follows the camera's
+    // overlay flag: always in the viewport, in captures only with Show Debug
+    // Overlays, never for flood selection's offscreen read or 360 captures
+    overdrawRender = false;
     pendingResolve = false;
+    // anything but the camera changed this frame: the projected renderer's
+    // occlusion cull skips a frame whose previous depth no longer describes
+    // the scene (see ProjectedSplatRenderer.render)
+    editedRender = false;
 
     // 'auto' stochastic mode follows the timing of the last rendered sorted
     // frame: engaged (stochastic-during-movement) while that frame's GPU span
@@ -176,7 +187,6 @@ class Scene {
     assetLoader: AssetLoader;
     camera: Camera;
     cameraPoseGizmos: CameraPoseGizmos;
-    splatCenters: SplatCenters;
     grid: Grid;
     outline: Outline;
     underlay: Underlay;
@@ -362,9 +372,6 @@ class Scene {
         this.cameraPoseGizmos = new CameraPoseGizmos();
         this.add(this.cameraPoseGizmos);
 
-        this.splatCenters = new SplatCenters();
-        this.add(this.splatCenters);
-
         this.grid = new Grid();
         this.add(this.grid);
 
@@ -530,6 +537,9 @@ class Scene {
         // compare with previously serialized
         const changed = this.forceRender || profiling || all.size > 0;
         const interacting = this.forceInteracting || all.size > 0;
+        // per-gaussian edits reach here only through forceRender; layer moves,
+        // visibility and grade changes through the state diff
+        this.editedRender = this.forceRender || [...all].some(type => type !== ElementType.camera);
         const stochastic = this.events.invoke('view.stochastic');
 
         // 'movement' takes the fast no-sort stochastic path only while actively
@@ -544,7 +554,8 @@ class Scene {
         this.autoSampling = auto && this.frameTimings.gpuSupported;
         const adaptive = stochastic === 'movement' ||
             (auto && (this.autoEngaged || !this.frameTimings.gpuSupported));
-        this.movingRender = !this.lockedRenderMode &&
+        this.overdrawRender = this.camera.renderOverlays && !!this.events.invoke('view.overdraw');
+        this.movingRender = !this.lockedRenderMode && !this.overdrawRender &&
             (stochastic === 'enabled' || (adaptive && interacting));
 
         // timestamp queries cost a per-frame staging-buffer map and a resolve,
@@ -554,8 +565,10 @@ class Scene {
         // high-resolution capture span could otherwise land in _frameTime
         // after unlock and be mistaken for an editor frame (disabling also
         // zeroes the report, so nothing stale survives the capture).
+        // Stochastic frames are timed too: the renderer's contribution cull
+        // adapts to their span (see onGpuReport).
         this.app.graphicsDevice.gpuProfiler.enabled =
-            (profiling || this.autoSampling) && !this.lockedRenderMode;
+            (profiling || this.autoSampling || this.movingRender) && !this.lockedRenderMode;
 
         if (this.suspendRender) {
             this.app.renderNextFrame = false;
@@ -657,8 +670,9 @@ class Scene {
 
     // handle an asynchronously resolved gpu timing report. Only sorted frames
     // measure the cost 'auto' mode trades away, so only their spans update the
-    // engage decision; stochastic-frame reports are ignored. timings is null
-    // when the backend discards a frame (e.g. a disjoint timer event).
+    // engage decision; stochastic-frame spans drive the renderer's motion cull
+    // instead. timings is null when the backend discards a frame (e.g. a
+    // disjoint timer event).
     private onGpuReport(renderVersion: number, timings: number[] | null, frameTime?: number) {
         const moving = this.frameModes.get(renderVersion);
 
@@ -670,8 +684,13 @@ class Scene {
             }
         });
 
-        if (moving === false && timings && timings.length > 0) {
-            const gpuTime = frameTime ?? timings.reduce((sum, t) => sum + t, 0);
+        if (moving === undefined || !timings || timings.length === 0) {
+            return;
+        }
+        const gpuTime = frameTime ?? timings.reduce((sum, t) => sum + t, 0);
+        if (moving) {
+            this.projectedSplatRenderer.reportStochasticFrame(gpuTime);
+        } else {
             this.autoEngaged = gpuTime > this.autoEngageMs;
         }
     }

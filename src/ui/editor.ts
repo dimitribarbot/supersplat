@@ -16,6 +16,7 @@ import { ExportSummaryDialog } from './export-summary-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
 import { i18n } from './localization';
 import { Menu } from './menu';
+import { OverdrawLegend } from './overdraw-legend';
 import { OverlaysPanel } from './overlays-panel';
 import { PerfOverlay } from './perf-overlay';
 import logo from './playcanvas-logo.png';
@@ -160,12 +161,14 @@ class EditorUI {
         const menu = new Menu(events);
         const cameraInfoOverlay = new CameraInfoOverlay(events, tooltips);
         const perfOverlay = new PerfOverlay(events);
+        const overdrawLegend = new OverdrawLegend(events);
 
         canvasContainer.dom.appendChild(canvas);
         canvasContainer.append(annotationContainer);
         canvasContainer.append(appLabel);
         canvasContainer.append(cameraInfoOverlay);
         canvasContainer.append(perfOverlay);
+        canvasContainer.append(overdrawLegend);
         canvasContainer.append(toolsContainer);
         canvasContainer.append(scenePanel);
         canvasContainer.append(bottomToolbar);

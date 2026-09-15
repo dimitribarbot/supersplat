@@ -1,5 +1,6 @@
 import { applyColorGradeWGSL, paletteGradeWGSL } from './color-grade-chunk';
 import { indexToUvWGSL, paletteMatrixWGSL } from './palette-chunk';
+import { compactTailWGSL, overlayEligibleWGSL } from './projected-splat-chunk';
 
 const shCode = (bands: number) => {
     if (bands === 0) {
@@ -117,14 +118,44 @@ struct ProjectorUniforms {
     minPixelSize: f32,
     // camera clip planes, used to linearly normalize view depth for the sort key
     near: f32,
-    far: f32
+    far: f32,
+    // total cache entries: the culled tail of the compact list grows down from
+    // here (compactTailSlot)
+    capacity: u32,
+    // keep culled splats projected, for the centres overlay, instead of
+    // dropping them
+    keepCulled: u32,
+    // minimum alpha mass of a projected gaussian, in pixels; 0 = off
+    minContribution: f32,
+    // splats exempt from the contribution and occlusion culls because their
+    // ring would draw: 0 none, 1 the selected ones, 2 the whole layer
+    // (overlayEligible decides)
+    keepRings: u32,
+    // the previous stochastic frame, for the occlusion cull: its view and
+    // view-projection, its clip-z mapping (a, b, isOrtho - the render shader's
+    // clipZParams), viewport in pixels and focal length, and the block grid of
+    // its max-depth map. occlusionEnabled is 0 when no usable previous frame
+    // exists
+    prevViewProj: mat4x4f,
+    prevView: mat4x4f,
+    prevClipZ: vec4f,
+    prevViewport: vec2f,
+    prevFocal: vec2f,
+    occlusionBlocksX: u32,
+    occlusionBlocksY: u32,
+    occlusionBlock: f32,
+    occlusionEnabled: u32
 }
 
 // compaction output: surviving splats are appended to a dense list, so the sort
 // and the draw cover the visible count instead of the whole capacity. sortKeys
 // and compactEntries are indexed by compact slot, not by entry; the cache stays
 // indexed by entry, and the entry index rides along as the sort payload so
-// gaussian ids keep their meaning downstream (picking, rings, stochastic dither)
+// gaussian ids keep their meaning downstream (picking, rings, stochastic dither).
+// With the centres overlay up, splats that fail the size, contribution or
+// occlusion cull are appended to a tail growing down from the end of
+// compactEntries (counted in splatCounter[1], placed by compactTailSlot); only
+// the centres draw reads it
 @group(0) @binding(0) var<storage, read_write> sortKeys: array<u32>;
 @group(0) @binding(1) var<storage, read_write> compactEntries: array<u32>;
 @group(0) @binding(2) var<storage, read_write> splatCounter: array<atomic<u32>>;
@@ -133,15 +164,17 @@ struct ProjectorUniforms {
 @group(0) @binding(5) var<storage, read> instanceSource: array<u32>;
 @group(0) @binding(6) var<storage, read> instanceFlags: array<u32>;
 @group(0) @binding(7) var<storage, read> instancePalette: array<u32>;
-@group(0) @binding(8) var transformA: texture_2d<u32>;
-@group(0) @binding(9) var transformB: texture_2d<f32>;
-@group(0) @binding(10) var splatColor: texture_2d<f32>;
-@group(0) @binding(11) var transformPalette: texture_2d<f32>;
-@group(0) @binding(12) var colorPalette: texture_2d<f32>;
-${bands > 0 ? '@group(0) @binding(13) var splatSH_1to3: texture_2d<u32>;' : ''}
-${bands > 1 ? '@group(0) @binding(14) var splatSH_4to7: texture_2d<u32>;\n@group(0) @binding(15) var splatSH_8to11: texture_2d<u32>;' : ''}
-${bands > 2 ? '@group(0) @binding(16) var splatSH_12to15: texture_2d<u32>;' : ''}
-@group(0) @binding(${13 + (bands > 0 ? 1 : 0) + (bands > 1 ? 2 : 0) + (bands > 2 ? 1 : 0)}) var<uniform> uniforms: ProjectorUniforms;
+// max depth per block of the previous stochastic frame (projected-splat-depth-reduce-shader)
+@group(0) @binding(8) var<storage, read> prevDepthMax: array<f32>;
+@group(0) @binding(9) var transformA: texture_2d<u32>;
+@group(0) @binding(10) var transformB: texture_2d<f32>;
+@group(0) @binding(11) var splatColor: texture_2d<f32>;
+@group(0) @binding(12) var transformPalette: texture_2d<f32>;
+@group(0) @binding(13) var colorPalette: texture_2d<f32>;
+${bands > 0 ? '@group(0) @binding(14) var splatSH_1to3: texture_2d<u32>;' : ''}
+${bands > 1 ? '@group(0) @binding(15) var splatSH_4to7: texture_2d<u32>;\n@group(0) @binding(16) var splatSH_8to11: texture_2d<u32>;' : ''}
+${bands > 2 ? '@group(0) @binding(17) var splatSH_12to15: texture_2d<u32>;' : ''}
+@group(0) @binding(${14 + (bands > 0 ? 1 : 0) + (bands > 1 ? 2 : 0) + (bands > 2 ? 1 : 0)}) var<uniform> uniforms: ProjectorUniforms;
 
 ${shCode(bands)}
 ${indexToUvWGSL('sourceCoord', 'uniforms.sourceWidth')}
@@ -149,6 +182,8 @@ ${indexToUvWGSL('cacheCoord', 'uniforms.cacheWidth')}
 ${paletteMatrixWGSL}
 ${applyColorGradeWGSL}
 ${paletteGradeWGSL}
+${overlayEligibleWGSL}
+${compactTailWGSL}
 
 fn rotationMatrix(qIn: vec4f) -> mat3x3f {
     let q = normalize(qIn);
@@ -271,8 +306,11 @@ fn main(
     let lambda1 = mid + radius;
     let lambda2 = max(mid - radius, 0.1);
 
-    // skip splats whose projected size falls below the cull threshold
-    if (2.0 * sqrt(2.0 * lambda1) < uniforms.minPixelSize) {
+    // skip splats whose projected size falls below the cull threshold. With the
+    // centres overlay up they are projected anyway - their centre still draws -
+    // but land in the tail list below instead of among the survivors
+    let sizeCulled = 2.0 * sqrt(2.0 * lambda1) < uniforms.minPixelSize;
+    if (sizeCulled && uniforms.keepCulled == 0u) {
         return;
     }
 
@@ -303,23 +341,96 @@ fn main(
         return;
     }
 
+    // splats whose ring would draw are exempt from the motion culls below:
+    // rings draw from the survivor list
+    let ringKept = uniforms.keepRings != 0u && overlayEligible(state, uniforms.keepRings == 1u);
+
+    // occlusion cull on stochastic frames. The previous stochastic frame's
+    // depth buffer samples the visibility function: each pixel kept the
+    // nearest fragment that passed its coverage test, so the chance a pixel's
+    // depth lies beyond d is the transmittance to d, and the farthest depth
+    // over the blocks around a splat bounds what could still have shown
+    // behind it there. A splat whose front lies beyond that bound was
+    // invisible last frame, up to sampling - a splat with transmittance T
+    // escapes a block of N samples with probability (1 - T)^N - and is routed
+    // like a size-culled one. Static splats reproject exactly through the
+    // previous view, so only true disocclusions arrive a frame late. The
+    // gather widens with the footprint - g blocks around the centre covers at
+    // least g blocks from it in every direction - and splats wider than two
+    // blocks skip the test. The blocks are the previous frame's, so the
+    // footprint the splat had there bounds the gather as well: footprints
+    // scale with focal length over depth (focal length alone in ortho)
+    var occluded = false;
+    if (uniforms.occlusionEnabled != 0u && !ringKept) {
+        let prevClip = uniforms.prevViewProj * worldCenter;
+        let prevDepth = -(uniforms.prevView * worldCenter).z;
+        let prevOrtho = uniforms.prevClipZ.z != 0.0;
+        let prevLen1 = len1 * (uniforms.prevFocal.x / focal.x)
+            * select(depth / max(prevDepth, 0.001), 1.0, prevOrtho);
+        let gather = max(i32(ceil(max(len1, prevLen1) / uniforms.occlusionBlock)), 1);
+        if (gather <= 2 && prevClip.w > 0.0 && (prevOrtho || prevDepth > 0.0)) {
+            let prevNdc = prevClip.xy / prevClip.w;
+            // texture rows run top-down
+            let prevPixel = vec2f(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5) * uniforms.prevViewport;
+            let block = vec2i(floor(prevPixel / uniforms.occlusionBlock));
+            let blocks = vec2i(i32(uniforms.occlusionBlocksX), i32(uniforms.occlusionBlocksY));
+            if (block.x >= gather && block.y >= gather && block.x < blocks.x - gather && block.y < blocks.y - gather) {
+                var farthest = 0.0;
+                for (var dy = -gather; dy <= gather; dy++) {
+                    for (var dx = -gather; dx <= gather; dx++) {
+                        farthest = max(farthest, prevDepthMax[u32((block.y + dy) * blocks.x + block.x + dx)]);
+                    }
+                }
+                // the splat's front along the previous view ray, at the same
+                // cut-off as the quad's edge, mapped to the depth buffer's
+                // clip z the way the render shader maps the centre
+                let front = prevDepth - 2.8284 * sqrt(c22);
+                let w = select(front, 1.0, prevOrtho);
+                if (w > 0.0) {
+                    let frontZ = clamp(uniforms.prevClipZ.x * front + uniforms.prevClipZ.y, 0.0, w) / w;
+                    occluded = frontZ > farthest;
+                }
+            }
+        }
+    }
+    if (occluded && uniforms.keepCulled == 0u) {
+        return;
+    }
+
     var color = textureLoad(splatColor, uv, 0);
+    // the gaussian's committed grade, then the panel's pending one if this
+    // gaussian is part of what an Apply would affect. The alpha factors are
+    // resolved first, because the contribution cull below needs the opacity
+    // the splat will actually draw with; the colour rows wait until after SH
+    let grade = paletteGrade(paletteWord >> 16u);
+    let previewed = (state & 2u) == 0u &&
+        (uniforms.previewMode == 2u || (uniforms.previewMode == 1u && (state & 1u) != 0u));
+    var gradedAlpha = color.a * grade.alpha;
+    if (previewed) {
+        gradedAlpha *= uniforms.colorAlpha;
+    }
+    gradedAlpha = clamp(gradedAlpha, 0.0, 1.0);
+    // stochastic frames also cull by contribution - the gaussian's alpha mass in
+    // pixels, alpha * 2 pi * sqrt(det) of the dilated covariance, the engine's
+    // minContribution rule - on top of the size cull. It runs ahead of the SH
+    // and colour grade work, so a culled splat costs little more than a
+    // size-culled one. A splat whose ring would show is exempt; otherwise it
+    // is routed like a size-culled one - dropped, or kept for its centre
+    let contributionCulled = !ringKept
+        && gradedAlpha * 6.283185 * sqrt(determinant) < uniforms.minContribution;
+    if (contributionCulled && uniforms.keepCulled == 0u) {
+        return;
+    }
     if (${bands}u > 0u) {
         let worldDirection = normalize(worldCenter.xyz - uniforms.cameraPosition);
         let localDirection = normalize(transpose(mat3x3f(model[0].xyz, model[1].xyz, model[2].xyz)) * worldDirection);
         color = vec4f(color.rgb + evaluateSH(uv, localDirection), color.a);
     }
-    // the gaussian's committed grade, then the panel's pending one if this
-    // gaussian is part of what an Apply would affect
-    let grade = paletteGrade(paletteWord >> 16u);
     var graded = applyColorGrade(color.rgb, grade.row0, grade.row1, grade.row2);
-    var gradedAlpha = color.a * grade.alpha;
-    if ((state & 2u) == 0u &&
-        (uniforms.previewMode == 2u || (uniforms.previewMode == 1u && (state & 1u) != 0u))) {
+    if (previewed) {
         graded = applyColorGrade(graded, uniforms.colorRow0, uniforms.colorRow1, uniforms.colorRow2);
-        gradedAlpha *= uniforms.colorAlpha;
     }
-    color = vec4f(graded, clamp(gradedAlpha, 0.0, 1.0));
+    color = vec4f(graded, gradedAlpha);
 
     let selected = (state & 1u) != 0u && uniforms.selectionEnabled != 0u;
     let locked = (state & 2u) != 0u;
@@ -365,6 +476,11 @@ fn main(
             | select(0u, 0x01000000u, selected)
             | select(0u, 0x02000000u, locked)
     ));
+    if (sizeCulled || contributionCulled || occluded) {
+        let tail = atomicAdd(&splatCounter[1], 1u);
+        compactEntries[compactTailSlot(tail, uniforms.capacity)] = entry;
+        return;
+    }
     // survivor: claim a slot in the compact list. Only surviving threads contend,
     // which is 0.1-10% of the dispatch in practice
     let slot = atomicAdd(&splatCounter[0], 1u);
@@ -374,8 +490,8 @@ fn main(
     // ratio; perspective's clip.z would be hyperbolic, so we normalize the raw
     // view depth instead). near may be negative in ortho (the camera sits inside
     // the bound); the subtraction handles that with no sign special-case.
-    let normDepth = (depth - uniforms.near) / (uniforms.far - uniforms.near);
-    sortKeys[slot] = u32(saturate(1.0 - normDepth) * f32((1u << 20u) - 1u));
+    let normDepth = saturate((depth - uniforms.near) / (uniforms.far - uniforms.near));
+    sortKeys[slot] = u32((1.0 - normDepth) * f32((1u << 20u) - 1u));
     compactEntries[slot] = entry;
 }
 `;

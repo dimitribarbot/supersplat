@@ -115,6 +115,7 @@ class Camera extends Element {
     zonePass: RenderPassForward;
     zoneDepthPass: RenderPassPicker;
     zoneDepthBlend: BlendState;
+    depthReducePass: RenderPass;
     finalPass: SimpleRenderPass;
 
     // overridden target size
@@ -376,6 +377,13 @@ class Camera extends Element {
         this.splatPass = new RenderPassForward(device, composition, app.scene, renderer);
         this.gizmoPass = new RenderPassForward(device, composition, app.scene, renderer);
         this.zonePass = new RenderPassForward(device, composition, app.scene, renderer);
+        // compute-only pass between the splat and gizmo passes - never given a
+        // render target, so RenderPass.render runs it without opening one. It
+        // folds a stochastic frame's splat depth into the projected renderer's
+        // occlusion map before the gizmo pass clears the depth buffer
+        this.depthReducePass = new RenderPass(device);
+        this.depthReducePass.name = 'depthReduce';
+        this.depthReducePass.execute = () => scene.projectedSplatRenderer.reduceDepth();
         this.finalPass = new SimpleRenderPass(device,
             new ShaderQuad(device, vertexShader, fragmentShader, 'final-blit'), {
                 vars: () => {
@@ -387,7 +395,8 @@ class Camera extends Element {
                         blitScale: [ts.width / gd.width, ts.height / gd.height],
                         // stochastic frames composite their samples through the
                         // quad resolve; settled frames blit unfiltered
-                        quadResolve: this.scene.movingRender ? RESOLVE_UNIFORM[this.scene.resolveMode] : 0
+                        quadResolve: this.scene.movingRender ? RESOLVE_UNIFORM[this.scene.resolveMode] : 0,
+                        overdraw: this.scene.overdrawRender ? 1 : 0
                     };
                 }
             });
@@ -500,6 +509,7 @@ class Camera extends Element {
         this.splatPass?.destroy();
         this.gizmoPass?.destroy();
         this.zonePass?.destroy();
+        this.depthReducePass?.destroy();
         this.finalPass?.destroy();
         this.camera.framePasses = null;
 
@@ -648,7 +658,9 @@ class Camera extends Element {
             this.finalPass.init(null);
 
             // assign render passes to camera
-            this.camera.framePasses = [this.clearPass, this.mainPass, this.splatPass, this.zonePass, this.gizmoPass, this.finalPass];
+            // depthReducePass folds the splat depth into the occlusion map and must
+            // see it untouched, so it runs before zonePass draws the off-limits layer
+            this.camera.framePasses = [this.clearPass, this.mainPass, this.splatPass, this.depthReducePass, this.zonePass, this.gizmoPass, this.finalPass];
         } else {
             // resize existing render targets
             const { splatTarget, colorTarget, workTarget } = this;

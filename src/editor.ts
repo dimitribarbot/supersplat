@@ -71,7 +71,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         'view.splatsColorBlend', 'view.splatsSelectionBlend',
         'view.centersColorBlend', 'view.centersSelectionBlend',
         'view.ringsColorBlend', 'view.ringsSelectionBlend',
-        'view.bands', 'view.minPixelSize', 'view.stochastic', 'view.perfOverlay', 'camera.bound', 'camera.boundDimensions', 'camera.showPoses',
+        'view.bands', 'view.minPixelSize', 'view.stochastic', 'view.perfOverlay', 'view.overdraw', 'camera.bound', 'camera.boundDimensions', 'camera.showPoses',
         'camera.showInfo', 'selection.changed', 'tool.coordSpace', 'colorPanel.pendingChanged'
     ].forEach((eventName) => {
         events.on(eventName, () => {
@@ -1294,7 +1294,7 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         }
     });
 
-    // experimental stochastic-transparency splat renderer (1 spp, no sort).
+    // stochastic-transparency splat renderer (1 spp, no sort).
     // 'disabled' never uses it, 'enabled' always does, 'movement' uses it only
     // while the scene is changing - trading the sort for speed exactly when the
     // eye is least able to see the sampling noise - and 'auto' behaves like
@@ -1326,6 +1326,22 @@ const registerEditorEvents = (events: Events, editHistory: EditHistory, scene: S
         if (value !== perfOverlay) {
             perfOverlay = value;
             events.fire('view.perfOverlay', value);
+        }
+    });
+
+    // overdraw heat map. Session-only: it replaces the scene with a fill count,
+    // so unlike the frame timings it is never stored as a preference
+
+    let overdraw = false;
+
+    events.function('view.overdraw', () => {
+        return overdraw;
+    });
+
+    events.on('view.setOverdraw', (value: boolean) => {
+        if (value !== overdraw) {
+            overdraw = value;
+            events.fire('view.overdraw', value);
         }
     });
 

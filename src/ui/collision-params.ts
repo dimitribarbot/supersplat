@@ -1,10 +1,9 @@
 import { Container, Label, SelectInput, SliderInput } from '@playcanvas/pcui';
 
 import { Events } from '../events';
+import type { SceneCollision } from '../export-options';
 import { i18n } from './localization';
 import { buildPortalBundle } from '../portal-export';
-
-type SceneCollision = { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number };
 
 const defaults = (): SceneCollision => ({ environment: 'indoor', radius: 50, voxelSize: 0.05 });
 
