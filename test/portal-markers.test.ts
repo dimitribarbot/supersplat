@@ -99,7 +99,7 @@ describe('markerRuntime', () => {
     });
 
     it('reads the suppression inputs from the viewer, not from annotations', () => {
-        expect(markerRuntime).toContain('window.sse.config.noui');
+        expect(markerRuntime).toContain('window.sse.options.ui === false');
         expect(markerRuntime).toContain("transState.phase !== 'idle'");
         expect(markerRuntime).not.toContain('controlsHidden');
         // Visibility is deliberately NOT a function of gamingControls -- icons

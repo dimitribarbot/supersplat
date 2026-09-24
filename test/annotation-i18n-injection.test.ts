@@ -105,7 +105,7 @@ describe('buildAnnotationI18nInjection', () => {
         // test/viewer-lang.test.ts.
         const injection = buildAnnotationI18nInjection([translated()]);
         expect(injection).not.toContain('window.__ssLang =');
-        expect(injection).toContain('annotation.activate');
+        expect(injection).toContain('__ssOnViewer');
     });
 
     it('constructs every script via new Function without throwing', () => {
@@ -137,53 +137,38 @@ describe('buildAnnotationI18nInjection', () => {
         expect(buildAnnotationI18nInjection([translated()])).not.toContain('`');
     });
 
-    it('rewrites the tooltip and the navigator title on activate', () => {
-        const injection = buildAnnotationI18nInjection([translated()]);
-        const runtime = extractScripts(injection).pop();
-
-        const tooltipTitle = { textContent: 'Facade' };
-        const tooltipText = { textContent: 'Built in 1890' };
-        const navTitle = { textContent: 'Facade' };
-        const nodes: Record<string, any> = {
-            '.pc-annotation-title': tooltipTitle,
-            '.pc-annotation-text': tooltipText,
-            '#annotationNavTitle': navTitle
-        };
-
-        const handlers: Record<string, ((...a: any[]) => void)[]> = {};
+    it('translates the settings annotations from the pre-UI viewer hook', () => {
+        const runtime = extractScripts(buildAnnotationI18nInjection([translated()])).pop();
         const ann = translated();
-        const viewer = {
-            global: {
-                events: {
-                    on: (name: string, fn: any) => {
-                        (handlers[name] = handlers[name] ?? []).push(fn);
-                    }
-                },
-                settings: { annotations: [ann] }
-            }
-        };
-
-        const win: any = { __ssLang: 'fr', __supersplatViewer: viewer };
-        const doc: any = {
-            readyState: 'complete',
-            querySelector: (sel: string) => nodes[sel] ?? null,
-            addEventListener: () => {}
-        };
+        const viewer = { global: { settings: { annotations: [ann] } } };
+        const win: any = { __ssLang: 'fr' };
+        // no document parameter: the runtime must not touch the DOM at all
         // eslint-disable-next-line no-new-func
-        new Function('window', 'document', 'requestAnimationFrame', runtime)(
-            win, doc, (fn: any) => fn()
-        );
+        new Function('window', runtime)(win);
+        expect(typeof win.__ssOnViewer).toBe('function');
 
-        // settings mutated in place: the navigator and the link/gallery
-        // companions read these objects live
+        win.__ssOnViewer(viewer);
         expect(ann.title).toBe('Façade');
+        expect(ann.text).toBe('Construite en 1890');
         expect(ann.extras.url).toBe('https://example.com/fr');
-        expect(navTitle.textContent).toBe('Façade');
+    });
 
-        // the tooltip needs the explicit write, because the engine's Annotation
-        // instances copied title/text at construction
-        handlers['annotation.activate'].forEach(fn => fn(ann));
-        expect(tooltipTitle.textContent).toBe('Façade');
-        expect(tooltipText.textContent).toBe('Construite en 1890');
+    it('chains a hook installed before it', () => {
+        const runtime = extractScripts(buildAnnotationI18nInjection([translated()])).pop();
+        const calls: string[] = [];
+        const win: any = { __ssLang: 'fr', __ssOnViewer: () => calls.push('earlier') };
+        // eslint-disable-next-line no-new-func
+        new Function('window', runtime)(win);
+        win.__ssOnViewer({ global: { settings: { annotations: [] } } });
+        expect(calls).toEqual(['earlier']);
+    });
+
+    it('tolerates a viewer with no annotations', () => {
+        const runtime = extractScripts(buildAnnotationI18nInjection([translated()])).pop();
+        const win: any = { __ssLang: 'fr' };
+        // eslint-disable-next-line no-new-func
+        new Function('window', runtime)(win);
+        expect(() => win.__ssOnViewer({ global: { settings: {} } })).not.toThrow();
+        expect(() => win.__ssOnViewer(null)).not.toThrow();
     });
 });

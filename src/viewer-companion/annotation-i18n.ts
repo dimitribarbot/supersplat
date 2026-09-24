@@ -69,48 +69,24 @@ const companionRuntime = `
 
   var lang = window.__ssLang || 'en';
 
-  // The shared tooltip is rewritten by the viewer on every activation from the
-  // engine Annotation instance's OWN copies of title/text, taken when the
-  // instances were constructed -- before this companion could touch anything.
-  // So the settings mutation below cannot reach it and the divs are written
-  // here instead, on 'annotation.activate', which the viewer fires AFTER
-  // writing them. Same hook and same ordering guarantee the link companion
-  // relies on.
-  function paint(ann) {
-    if (!ann) return;
-    var title = document.querySelector('.pc-annotation-title');
-    if (title) title.textContent = ann.title || '';
-    var text = document.querySelector('.pc-annotation-text');
-    if (text) text.textContent = ann.text || '';
-    var nav = document.querySelector('#annotationNavTitle');
-    if (nav) nav.textContent = ann.title || '';
-  }
-
-  function start() {
-    var viewer = window.__supersplatViewer;
+  // supersplat-viewer >= 1.32 builds its annotation UI in initUI, synchronously
+  // right after constructing the Viewer, copying each annotation's title and
+  // text out of global.settings.annotations. The engine patch calls
+  // window.__ssOnViewer at exactly that point (viewer-engine-patch.ts), so
+  // translating the settings here lets the viewer render the visitor's language
+  // natively: tooltip, navigator, and every repaint the viewer does on its own.
+  // The link, gallery and iframe companions read the same mutated objects.
+  // No DOM access here: initUI has not captured the UI yet.
+  var previous = window.__ssOnViewer;
+  window.__ssOnViewer = function (viewer) {
+    if (typeof previous === 'function') { previous(viewer); }
     var global = viewer && viewer.global;
-    var ev = global && global.events;
     var list = global && global.settings && global.settings.annotations;
-    if (!ev || !ev.on || !list) { requestAnimationFrame(start); return; }
-
+    if (!list) { return; }
     for (var i = 0; i < list.length; i++) {
       applyAnnotationTranslation(list[i], lang);
     }
-
-    // The navigator ran its initial refresh against the base strings, possibly
-    // before this companion started, so paint the first one now. Every later
-    // refresh reads the mutated objects and needs no help.
-    var nav = document.querySelector('#annotationNavTitle');
-    if (nav && list.length > 0) nav.textContent = list[0].title || '';
-
-    ev.on('annotation.activate', paint);
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
-  } else {
-    start();
-  }
+  };
 })();
 `;
 

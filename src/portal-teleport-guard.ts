@@ -3,12 +3,15 @@
 // The exported viewer does NOT teleport the camera when an annotation is
 // activated (nor on the reset/frame shortcuts): it calls
 // controllers.<mode>.goto(pose) followed by startTransition(), which lerps the
-// camera from the old pose to the new one over a fixed ~1s (transitionSpeed 1.0,
-// easeOut). The companion's free-navigation crossing detection reads that lerp
-// as real movement, so any portal quad the straight-line flight happens to punch
-// through switches the scene - and plays the transition effect - on top of the
-// scene the jump itself asserted. That is why one annotation pair could land in
-// the wrong scene in one direction only: the outcome depends on which portals
+// camera from the old pose to the new one over duration seconds (easeOut) --
+// a fixed ~1s for reset/frame, and a variable ~1.2-2.4s for an annotation
+// flight (ANNOTATION_MIN_DURATION/ANNOTATION_MAX_DURATION, scaled by travel
+// distance and turn angle). The companion's free-navigation crossing detection
+// reads that lerp as real movement, so any portal quad the straight-line flight
+// happens to punch through switches the scene - and plays the transition
+// effect - on top of the scene the jump itself asserted. That is why one
+// annotation pair could land in the wrong scene in one direction only: the
+// outcome depends on which portals
 // the flight path intersects and which side of the last one the DESTINATION pose
 // sits on, which is not symmetric between A -> B and B -> A.
 //

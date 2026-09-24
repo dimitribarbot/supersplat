@@ -427,7 +427,7 @@ const markerRuntime = `
       markerTip.className = 'ss-portal-marker-tip';
       markerTip.textContent = resolveMarkerTooltip(markerTooltips, window.__ssLang || 'en');
       markerRoot.appendChild(markerTip);
-      markerNoui = !!(window.sse && window.sse.config && window.sse.config.noui);
+      markerNoui = !!(window.sse && window.sse.options && window.sse.options.ui === false);
       var list = data.portals || [];
       for (var i = 0; i < list.length; i++) {
         if (list[i] && list[i].position) { markers[i] = markerMakeOne(pcns, app, list[i], i); }

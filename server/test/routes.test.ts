@@ -1,4 +1,4 @@
-import { Column, DataTable, Transform, writeFile, MemoryFileSystem } from '@playcanvas/splat-transform';
+import { Column, DataTable, Transform, writePly, MemoryFileSystem } from '@playcanvas/splat-transform';
 import { describe, it, expect } from 'vitest';
 import { gzipSync } from 'node:zlib';
 import { buildApp } from '../src/index.js';
@@ -7,7 +7,7 @@ const NAMES = ['x', 'y', 'z', 'scale_0', 'scale_1', 'scale_2', 'f_dc_0', 'f_dc_1
 const makePlyGz = async (n = 32): Promise<Buffer> => {
     const cols = NAMES.map((name, i) => new Column(name, Float32Array.from({ length: n }, (_, r) => Math.fround((i + 1) + r * 0.01))));
     const memFs = new MemoryFileSystem();
-    await writeFile({ filename: 'p.ply', outputFormat: 'ply', dataTable: new DataTable(cols, Transform.PLY), options: {} }, memFs);
+    await writePly({ filename: 'p.ply', plyData: { comments: [], elements: [{ name: 'vertex', dataTable: new DataTable(cols, Transform.PLY) }] } }, memFs);
     return Buffer.from(gzipSync(Buffer.from(memFs.results.get('p.ply')!)));
 };
 

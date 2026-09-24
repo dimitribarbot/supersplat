@@ -12,9 +12,12 @@ import { buildLoadingBarInjection } from '../src/viewer-companion/loading-bar';
 //   - global.state is an observe() Proxy that fires '<prop>:changed' ONLY when
 //     the value actually changes.
 //   - initUI registers the bar painter (and the poster unblur) on
-//     'progress:changed' INSIDE main(), while window.__supersplatViewer is
-//     published only after main() resolves. So the viewer's painter is always
-//     registered first and the companion always gets the last word.
+//     'progress:changed' inside createViewer(), which runs synchronously right
+//     after window.__supersplatViewer is published (the engine patch publishes
+//     the handle immediately before initUI runs, with no await between them).
+//     So by the time this companion's poll ever sees the handle, the viewer's
+//     painter is already registered, and the companion always gets the last
+//     word.
 //
 // The host therefore registers a painter up front and records everything it
 // paints: that array is "what the user sees".
@@ -40,98 +43,6 @@ const makeBus = (): Bus => {
         },
         count: n => (listeners[n] ?? []).length
     };
-};
-
-// A response whose chunks the test delivers by hand, so a download can be
-// advanced one chunk at a time and the gauge inspected in between.
-//
-// It models the browser's DISTURBED-BODY rules on purpose. That is the property
-// the companion's correctness hangs on: reading `response.body` directly marks
-// the body used, so a companion that skipped clone() would make the viewer's own
-// arrayBuffer() reject -- collisionLoad rejects, the Promise.all rejects, and
-// the viewer NEVER REVEALS. A fake that let both branches share one body would
-// pass every test while the real export was bricked.
-type Branch = { pending: ((v: any) => void)[]; queue: any[] };
-
-const makeStreamedResponse = (ok = true) => {
-    const branches: Branch[] = [];
-    let disturbed = false;
-
-    const newBranch = () => {
-        const b: Branch = { pending: [], queue: [] };
-        branches.push(b);
-        return {
-            getReader: () => ({
-                read: () => new Promise<any>((resolve) => {
-                    if (b.queue.length) {
-                        resolve(b.queue.shift());
-                    } else {
-                        b.pending.push(resolve);
-                    }
-                })
-            })
-        };
-    };
-
-    const deliver = (item: any) => {
-        branches.forEach((b) => {
-            const waiter = b.pending.shift();
-            if (waiter) {
-                waiter(item);
-            } else {
-                b.queue.push(item);
-            }
-        });
-    };
-
-    const response: any = {
-        ok,
-        get body() {
-            const branch = newBranch();
-            return {
-                getReader: () => {
-                    disturbed = true;
-                    return branch.getReader();
-                }
-            };
-        },
-        clone: () => {
-            if (disturbed) {
-                throw new TypeError('Failed to execute clone: body is already used');
-            }
-            return { ok, body: newBranch() };
-        },
-        // what loadVoxelCollision actually calls on the response it was handed;
-        // resolves with the byte count it managed to read
-        arrayBuffer: () => {
-            if (disturbed) {
-                return Promise.reject(new TypeError('body is already used'));
-            }
-            disturbed = true;
-            const reader = newBranch().getReader();
-            let total = 0;
-            const pump = (): Promise<number> => reader.read().then((chunk: any) => {
-                if (chunk.done) {
-                    return total;
-                }
-                total += chunk.value.length;
-                return pump();
-            });
-            return pump();
-        }
-    };
-
-    return {
-        response,
-        push: (bytes: number) => deliver({ done: false, value: new Uint8Array(bytes) }),
-        end: () => deliver({ done: true })
-    };
-};
-
-const flush = async () => {
-    for (let i = 0; i < 10; i++) {
-        await Promise.resolve();
-    }
 };
 
 const makeHost = (search = '') => {
@@ -166,19 +77,7 @@ const makeHost = (search = '') => {
         createElement: (tag: string) => ({ tagName: tag, textContent: '' })
     };
 
-    // The viewer's real fetch, and a record of exactly how it was called --
-    // arguments AND receiver, so the wrapper's pass-through can be asserted.
-    const requested: string[] = [];
-    const calls: { input: any; init: any; self: any }[] = [];
-    const responses = new Map<string, any>();
-    const baseFetch = function (this: any, input: any, init?: any) {
-        const url = typeof input === 'string' ? input : input?.url ?? String(input);
-        requested.push(url);
-        calls.push({ input, init, self: this });
-        return Promise.resolve(responses.get(url) ?? { ok: true, body: null, clone: () => ({}) });
-    };
-
-    const win: any = { fetch: baseFetch };
+    const win: any = {};
 
     let queue: (() => void)[] = [];
     const requestAnimationFrame = (fn: () => void) => {
@@ -198,10 +97,6 @@ const makeHost = (search = '') => {
         state,
         painted,
         styles,
-        requested,
-        calls,
-        responses,
-        baseFetch,
         doc,
         requestAnimationFrame,
         flushRaf,
@@ -219,8 +114,8 @@ const makeHost = (search = '') => {
     };
 };
 
-const runCompanion = (host: ReturnType<typeof makeHost>, collisionBytes = 0) => {
-    const script = buildLoadingBarInjection(collisionBytes).match(/<script>([\s\S]*?)<\/script>/)[1];
+const runCompanion = (host: ReturnType<typeof makeHost>) => {
+    const script = buildLoadingBarInjection().match(/<script>([\s\S]*?)<\/script>/)[1];
     const consoleStub = { info: () => {}, warn: () => {}, error: () => {} };
     // eslint-disable-next-line no-new-func
     new Function('window', 'document', 'requestAnimationFrame', 'location', 'console', script)(
@@ -229,8 +124,8 @@ const runCompanion = (host: ReturnType<typeof makeHost>, collisionBytes = 0) => 
 };
 
 // Attach the companion to a published viewer and settle its startup poll.
-const attach = (host: ReturnType<typeof makeHost>, collisionBytes = 0) => {
-    runCompanion(host, collisionBytes);
+const attach = (host: ReturnType<typeof makeHost>) => {
+    runCompanion(host);
     host.publishViewer();
     host.flushRaf();
 };
@@ -241,9 +136,9 @@ describe('loading-bar companion: paint immediately', () => {
         runCompanion(host);
 
         const css = host.styles.map(s => s.textContent).join('');
-        expect(css).toContain('#loadingWrap > #loadingBar');
+        expect(css).toContain('.sse-viewer .sse-loadingWrap > .sse-loadingBar');
         expect(css).toContain('background-image');
-        expect(css).toContain('#loadingWrap > #loadingText:empty::after');
+        expect(css).toContain('.sse-viewer .sse-loadingWrap > .sse-loadingText:empty::after');
         expect(css).toContain('0%');
     });
 
@@ -263,7 +158,6 @@ describe('loading-bar companion: paint immediately', () => {
         expect(host.styles).toHaveLength(0);
         expect(host.pendingRaf()).toBe(0);
         expect(host.gsplat.count('frame:ready')).toBe(0);
-        expect(host.win.fetch).toBe(host.baseFetch);
     });
 });
 
@@ -279,6 +173,16 @@ describe('loading-bar companion: gsplat gauge', () => {
         // the viewer's own readyHandler does not exist yet, so every one of
         // these came from the companion
         expect(host.painted).toEqual([25, 50]);
+    });
+
+    it('paints 75 when three of four blocks have drained, with no collision term', () => {
+        const host = makeHost();
+        attach(host);
+
+        host.frameReady(4);
+        host.frameReady(1);
+
+        expect(host.state.progress).toBe(75);
     });
 
     it('shows nothing above zero until the octree has queued its first work', () => {
@@ -352,6 +256,28 @@ describe('loading-bar companion: never goes backwards', () => {
         expect(host.displayed()).toBe(50);
     });
 
+    // The companion's OWN gauge (show(), fed by update()) is drain-from-peak
+    // too, so a requeue past the previous peak recomputes 0 just like the
+    // viewer's does -- this is the exact field-reported "80% -> 60%" defect,
+    // reproduced entirely within frame:ready with no viewer write involved.
+    // show()'s own high-water guard (if (p <= shown) return) is what absorbs
+    // it; deleting that guard is invisible to every other surviving test here
+    // (the other never-goes-backwards cases go through onProgress, which has
+    // its own clamp, or the NaN case, which returns before reaching show()).
+    it('holds its own high-water mark across a requeue past the previous peak', () => {
+        const host = makeHost();
+        attach(host);
+        host.frameReady(4);
+        host.frameReady(2);
+        expect(host.displayed()).toBe(50);
+
+        host.frameReady(6);   // new work queued: peak rises to 6, blocks -> 0
+        expect(host.displayed()).toBe(50);
+
+        host.frameReady(0);   // everything drained against the new peak of 6
+        expect(host.displayed()).toBe(99);
+    });
+
     it('lets a rising viewer value through untouched', () => {
         const host = makeHost();
         attach(host);
@@ -366,11 +292,12 @@ describe('loading-bar companion: never goes backwards', () => {
 
     // On SOG/package exports there is a SECOND upstream writer: loadGsplat's
     // asset 'progress' callback, which downloadArrayBuffer drives to 100 as soon
-    // as the content bundle lands -- while the collision binary may still have
-    // seconds to run. Left alone, the running-max clamp would pin the bar at a
-    // finished-looking 100% for that whole window, which reads as a hang. The
-    // display is therefore held below 100 until the scene is actually revealed;
-    // at that moment #loadingWrap is hidden anyway, so nothing is lost.
+    // as the content bundle lands -- while the reveal still waits on the skybox
+    // (Promise.all([gsplatLoad, skyboxLoad])). Left alone, the running-max clamp
+    // would pin the bar at a finished-looking 100% for that whole window, which
+    // reads as a hang. The display is therefore held below 100 until the scene
+    // is actually revealed; at that moment .sse-loadingWrap gains .sse-hidden
+    // anyway, so nothing is lost.
     it('holds the display below 100 until the scene is actually revealed', () => {
         const host = makeHost();
         attach(host);
@@ -415,155 +342,6 @@ describe('loading-bar companion: never goes backwards', () => {
     });
 });
 
-describe('loading-bar companion: collision download', () => {
-    const withBin = (host: ReturnType<typeof makeHost>, url = './index.voxel.bin') => {
-        const bin = makeStreamedResponse();
-        host.responses.set(url, bin.response);
-        return bin;
-    };
-
-    // The exporter bakes the RAW byte length of index.voxel.bin. The browser
-    // hands the stream back already decompressed, so counting stream bytes
-    // against the raw size is correct whether or not the CDN gzipped it --
-    // Content-Length would report the compressed size and skew the gauge 3.5x.
-    it('advances the bar as the collision binary streams in', async () => {
-        const host = makeHost();
-        const bin = withBin(host);
-        attach(host, 1000);
-
-        host.win.fetch('./index.voxel.bin');
-        await flush();
-        bin.push(500);
-        await flush();
-
-        expect(host.displayed()).toBe(25);   // half of collision, none of gsplat
-    });
-
-    it('weights the collision download and the gsplat blocks equally', async () => {
-        const host = makeHost();
-        const bin = withBin(host);
-        attach(host, 1000);
-        host.win.fetch('./index.voxel.bin');
-        await flush();
-
-        bin.push(1000);
-        await flush();
-        expect(host.displayed()).toBe(50);   // collision done, gsplat untouched
-
-        host.frameReady(4);
-        host.frameReady(0);
-
-        expect(host.displayed()).toBe(99);   // both done, still capped below 100
-    });
-
-    it('does not touch window.fetch at all when the export has no collision', () => {
-        const host = makeHost();
-        attach(host, 0);
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-    });
-
-    it('restores the original fetch as soon as the collision request is seen', async () => {
-        const host = makeHost();
-        withBin(host);
-        attach(host, 1000);
-        expect(host.win.fetch).not.toBe(host.baseFetch);
-
-        host.win.fetch('./index.voxel.bin');
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-    });
-
-    it('passes unrelated requests straight through', async () => {
-        const host = makeHost();
-        const meta = { ok: true, body: null, clone: () => ({}) };
-        host.responses.set('./lod-meta.json', meta);
-        attach(host, 1000);
-
-        const got = await host.win.fetch('./lod-meta.json');
-
-        expect(got).toBe(meta);
-        expect(host.requested).toEqual(['./lod-meta.json']);
-    });
-
-    // A ?collision= override points the viewer at a different voxel file, whose
-    // size the exporter cannot know -- so the baked total would be wrong.
-    it('drops the collision term when a ?collision override is present', () => {
-        const host = makeHost('?collision=other.voxel.json');
-        attach(host, 1000);
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-
-        host.frameReady(4);
-        host.frameReady(2);
-
-        expect(host.displayed()).toBe(50);   // gsplat alone owns the whole range
-    });
-
-    // The single most dangerous regression available here: reading the response
-    // the viewer was handed, instead of a clone(), disturbs its body. The
-    // viewer's arrayBuffer() then rejects, collisionLoad rejects, the gating
-    // Promise.all rejects -- and the scene never reveals at all.
-    it('leaves the response body intact for the viewer to consume', async () => {
-        const host = makeHost();
-        const bin = withBin(host);
-        attach(host, 1000);
-
-        const fetched = await host.win.fetch('./index.voxel.bin');
-        await flush();                       // companion clones here
-        const consumed = fetched.arrayBuffer();   // loadVoxelCollision's own read
-
-        bin.push(600);
-        bin.push(400);
-        bin.end();
-        await flush();
-
-        await expect(consumed).resolves.toBe(1000);
-        expect(host.displayed()).toBe(50);   // and the companion still counted every byte
-    });
-
-    it('forwards every argument and the receiver to the original fetch', async () => {
-        const host = makeHost();
-        attach(host, 1000);
-        const init = { headers: { 'x-test': '1' } };
-
-        await host.win.fetch('./lod-meta.json', init);
-
-        expect(host.calls).toEqual([{ input: './lod-meta.json', init, self: host.win }]);
-    });
-
-    it('recognises the collision request given a Request object', () => {
-        const host = makeHost();
-        attach(host, 1000);
-
-        host.win.fetch({ url: './index.voxel.bin' });
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-    });
-
-    it('recognises the collision request given a URL object', () => {
-        const host = makeHost();
-        attach(host, 1000);
-
-        host.win.fetch(new URL('https://export.test/index.voxel.bin'));
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-    });
-
-    it('keeps the gsplat gauge working when the collision request fails', async () => {
-        const host = makeHost();
-        host.responses.set('./index.voxel.bin', { ok: false, body: null, clone: () => ({}) });
-        attach(host, 1000);
-        host.win.fetch('./index.voxel.bin');
-        await flush();
-
-        host.frameReady(4);
-        host.frameReady(0);
-
-        expect(host.displayed()).toBe(50);   // gsplat half of the blend, collision stuck at 0
-    });
-});
-
 describe('loading-bar companion: teardown', () => {
     it('detaches from frame:ready once the scene is revealed', () => {
         const host = makeHost();
@@ -576,106 +354,30 @@ describe('loading-bar companion: teardown', () => {
         expect(host.gsplat.count('frame:ready')).toBe(0);
     });
 
-    it('restores fetch at the reveal even if the collision binary never arrived', () => {
+    it('stops polling once attached, since frame:ready and progress:changed take over', () => {
         const host = makeHost();
-        attach(host, 1000);
-        expect(host.win.fetch).not.toBe(host.baseFetch);
-
-        host.events.fire('loaded:changed', true);
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-    });
-
-    // A collision JSON that 404s means loadVoxelCollision throws before it ever
-    // requests the .bin, so neither the request-sighting nor loaded:changed can
-    // ever fire. The wrapper must still not outlive its usefulness.
-    it('restores fetch after attaching when the collision request never comes', () => {
-        const host = makeHost();
-        attach(host, 1000);
-        expect(host.win.fetch).not.toBe(host.baseFetch);
-
-        let frames = 0;
-        while (host.pendingRaf() > 0 && frames < 40000) {
-            host.flushRaf();
-            frames++;
-        }
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-        expect(frames).toBeLessThan(40000);
-    });
-
-    it('stops polling as soon as it has attached and handed fetch back', async () => {
-        const host = makeHost();
-        host.responses.set('./index.voxel.bin', makeStreamedResponse().response);
-        attach(host, 1000);
-        host.win.fetch('./index.voxel.bin');
-
-        host.flushRaf();
+        attach(host);
 
         expect(host.pendingRaf()).toBe(0);
-    });
-
-    it('restores fetch when the viewer handle never appears at all', () => {
-        const host = makeHost();
-        runCompanion(host, 1000);
-        expect(host.win.fetch).not.toBe(host.baseFetch);
-
-        let frames = 0;
-        while (host.pendingRaf() > 0 && frames < 40000) {
-            host.flushRaf();
-            frames++;
-        }
-
-        expect(host.win.fetch).toBe(host.baseFetch);
-    });
-});
-
-describe('loading-bar companion: whole load', () => {
-    // The two defects together: the bar must be paintable from the first frame
-    // AND must never step backwards, including across the ready gate where the
-    // viewer's own gauge restarts from a fresh watermark.
-    it('never decreases across a full load, gate and post-peak requeue included', async () => {
-        const host = makeHost();
-        const bin = makeStreamedResponse();
-        host.responses.set('./index.voxel.bin', bin.response);
-        attach(host, 1000);
-        host.win.fetch('./index.voxel.bin');
-        await flush();
-
-        const settled: number[] = [];
-        const mark = () => settled.push(host.displayed() ?? 0);
-
-        host.frameReady(0);       mark();   // nothing discovered yet
-        bin.push(250);            await flush(); mark();
-        host.frameReady(8);       mark();   // octree resolved, coarse blocks queued
-        bin.push(250);            await flush(); mark();
-        host.frameReady(4);       mark();
-        bin.push(500);            await flush(); mark();   // collision complete
-        host.frameReady(0);       mark();   // coarse level complete
-        host.state.progress = 0;  mark();   // ready gate: viewer's fresh watermark
-        host.frameReady(16, true);          // post-reveal refinement floods back in
-        mark();
-        host.state.progress = 100; mark();  // still gated: held at 99
-
-        expect(Math.max(...settled)).toBeLessThanOrEqual(99);
-
-        host.events.fire('loaded:changed', true);
-        host.state.progress = 100; mark();
-
-        expect(settled).toEqual([...settled].sort((a, b) => a - b));
-        expect(settled[settled.length - 1]).toBe(100);
     });
 });
 
 describe('buildLoadingBarInjection', () => {
+    it('carries no collision term: supersplat-viewer >= 1.32 reveals without waiting for collision', () => {
+        const out = buildLoadingBarInjection();
+        expect(out).not.toContain('COLLISION_BYTES');
+        expect(out).not.toContain('voxel.bin');
+        expect(out).not.toContain('window.fetch');
+    });
+
     it('emits the runtime as a script tag', () => {
-        const out = buildLoadingBarInjection(0);
+        const out = buildLoadingBarInjection();
         expect(out.startsWith('<script>')).toBe(true);
         expect(out.endsWith('</script>')).toBe(true);
     });
 
     it('is template-cooking safe: ES5 only, no backslash escapes at all', () => {
-        const out = buildLoadingBarInjection(1234);
+        const out = buildLoadingBarInjection();
         // companion templates cook backslash escapes away at build time
         expect(out).not.toMatch(/\\/);
         expect(out).not.toContain('=>');

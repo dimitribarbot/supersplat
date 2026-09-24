@@ -1,8 +1,9 @@
 // The one language resolver every fork companion shares.
 //
 // The exported viewer already localizes its OWN chrome: it reads `?lang=`,
-// resolves it against nine locale dictionaries and sets
-// document.documentElement.lang. This module reproduces that resolution rule
+// resolves it against nine locale dictionaries and sets the `lang` of its own
+// `.sse-viewer` root (supersplat-viewer >= 1.32; earlier versions set
+// document.documentElement.lang). This module reproduces that resolution rule
 // exactly, so authored content and viewer chrome can never disagree about which
 // language the visitor is in.
 //

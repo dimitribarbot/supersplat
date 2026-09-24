@@ -9,9 +9,8 @@ type AnyAnnotation = {
 // One baked table entry. Deliberately the exact shape sent back to the host in
 // annotation.list.result / annotation.goto.result, so replies need no field
 // stripping. `index` is the join key back into the live viewer array
-// (viewer.global.settings.annotations): the viewer's internal scriptMap is keyed
-// by object identity, so annotation.navigate must be fired with the viewer's own
-// annotation object, not a copy.
+// (viewer.global.settings.annotations) and into viewer.selectAnnotation(index),
+// which selects by position -- no object-identity matching needed.
 type AnnotationEntry = {
     index: number,
     id: string,
@@ -130,20 +129,21 @@ const localizeAnnotationTable = (table: AnnotationEntry[], lang: string): Annota
 
 // The runtime bridge. Kept as a plain string so it is injected verbatim.
 //
-// The exported viewer keeps its app, camera and annotation objects in a private
+// The exported viewer keeps its app, camera and annotation state in a private
 // module closure, so the bridge reaches them through window.__supersplatViewer,
-// published from the viewer bootstrap by splat-export-core (injectDeviceFallback
-// runs unconditionally, so the handle is always there).
+// published by the engine patch right after the internal Viewer is constructed
+// (well before the splat finishes loading; see isLoaded() below).
 //
-// Navigation reuses the viewer's own path: firing 'annotation.navigate' with an
-// annotation object shows its tooltip, which fires 'annotation.activate', which
-// makes the camera manager switch to orbit and fly to the baked pose -- and which
-// the portals companion separately listens for to swap portal scene. So a
-// cross-scene jump needs nothing here beyond firing the event.
+// Navigation reuses the viewer's own path: calling viewer.selectAnnotation(index)
+// shows the annotation's tooltip and makes the camera manager switch to orbit
+// and fly to the baked pose -- the same call the UI's prev/next chevrons,
+// hotspot clicks and deselect-on-click all make, and which the portals
+// companion separately observes to swap portal scene. So a cross-scene jump
+// needs nothing here beyond calling it.
 //
-// The annotation argument must be object-identical to an entry of
-// global.settings.annotations: the viewer's internal scriptMap is keyed by
-// identity. The baked table's `index` is the join key.
+// selectAnnotation throws until the viewer has finished loading (state.loaded);
+// see isLoaded() below. The baked table's `index` is the join key into
+// global.settings.annotations, passed straight to selectAnnotation.
 //
 // NOTE: this is a template literal -- backslash escapes are consumed at build
 // time. String operations only: no regex literals, no escape sequences.
@@ -193,37 +193,38 @@ const companionRuntime = `
     return window.__supersplatViewer || null;
   }
 
+  function getGlobal() {
+    var v = getViewer();
+    return (v && v.global) || null;
+  }
+
   function getEvents() {
-    var v = getViewer();
-    return (v && v.global && v.global.events) || null;
+    var g = getGlobal();
+    return (g && g.events) || null;
   }
 
-  // The real signal that navigation can do anything: the viewer's Annotations
-  // object, which is what registers the annotation.navigate listener. main()
-  // returns -- and publishes window.__supersplatViewer -- well before the
-  // splat finishes loading, and this object is only constructed in the
-  // viewer's post-gsplatLoad continuation (never at all under config.noui).
-  // Checked live everywhere it matters (not cached) so a request arriving
-  // after a slow-but-real load finally finishes still succeeds.
-  function hasAnnotations() {
-    var v = getViewer();
-    return !!(v && v.annotations);
+  // The real signal that navigation can do anything. supersplat-viewer >= 1.32
+  // publishes its handle at construction, long before the splat loads, and its
+  // selectAnnotation throws until state.loaded (requireLoaded). Checked live
+  // everywhere it matters (not cached), so a request arriving after a slow but
+  // real load finally finishes still succeeds.
+  function isLoaded() {
+    var g = getGlobal();
+    return !!(g && g.state && g.state.loaded);
   }
 
-  // config.noui skips constructing the annotations object forever. Detected
-  // directly so a noui host gets an honest, immediate readiness signal
-  // instead of waiting out the watchdog for something that will never come --
-  // annotation.list and ping need no annotations object to answer correctly.
+  // ?noui (config.ui === false): navigation stays reported as unavailable, as it
+  // was on viewers <= 1.31, where noui skipped the annotation UI entirely. It is
+  // detected directly so a noui host gets an immediate readiness signal.
   function isNoUi() {
-    var v = getViewer();
-    return !!(v && v.global && v.global.config && v.global.config.noui);
+    var g = getGlobal();
+    return !!(g && g.config && g.config.ui === false);
   }
 
-  // The viewer's own annotation array -- the objects annotation.navigate expects.
+  // The viewer's own annotation array, in the same order as the export table.
   function liveAnnotations() {
-    var v = getViewer();
-    var settings = v && v.global && v.global.settings;
-    var list = settings && settings.annotations;
+    var g = getGlobal();
+    var list = g && g.settings && g.settings.annotations;
     return (list && list.length) ? list : null;
   }
 
@@ -233,22 +234,23 @@ const companionRuntime = `
       post(req.source, req.origin, { type: 'supersplat:annotation.goto.result', requestId: req.requestId, ok: false, reason: res.reason });
       return;
     }
-    // Navigation only works once the viewer's own Annotations object exists to
-    // hear annotation.navigate -- checked here regardless of how ready ended
-    // up true (a real load completing, the watchdog backstop, or noui), so a
-    // premature or permanently-unavailable request reports honestly instead of
-    // firing into the void and claiming ok: true.
-    if (!hasAnnotations()) {
-      post(req.source, req.origin, { type: 'supersplat:annotation.goto.result', requestId: req.requestId, ok: false, reason: 'unavailable' });
-      return;
-    }
+    // Navigation only works once the viewer has loaded; checked here
+    // regardless of how ready became true (a real load completing, the
+    // watchdog backstop, or noui), so a premature or permanently-unavailable
+    // request reports honestly instead of calling into a viewer that would
+    // throw, or claiming ok: true when nothing happened.
+    var v = getViewer();
     var list = liveAnnotations();
-    var ev = getEvents();
-    if (!ev || !list || !list[res.index]) {
+    if (!isLoaded() || isNoUi() || !v || typeof v.selectAnnotation !== 'function' || !list || !list[res.index]) {
       post(req.source, req.origin, { type: 'supersplat:annotation.goto.result', requestId: req.requestId, ok: false, reason: 'unavailable' });
       return;
     }
-    ev.fire('annotation.navigate', list[res.index]);
+    try {
+      v.selectAnnotation(res.index);
+    } catch (err) {
+      post(req.source, req.origin, { type: 'supersplat:annotation.goto.result', requestId: req.requestId, ok: false, reason: 'unavailable' });
+      return;
+    }
     post(req.source, req.origin, { type: 'supersplat:annotation.goto.result', requestId: req.requestId, ok: true, annotation: table[res.index] });
   }
 
@@ -297,31 +299,47 @@ const companionRuntime = `
     if (!ev) { requestAnimationFrame(start); return; }
     if (!bound) {
       bound = true;
-      // Fires for every activation whatever the cause: a host goto, a hotspot
-      // click, or the viewer's own prev/next chevrons -- which is what lets host
-      // UI keep the right button highlighted.
-      ev.on('annotation.activate', function (ann) {
-        var list = liveAnnotations();
-        var idx = list ? list.indexOf(ann) : -1;
-        var entry = (idx >= 0) ? table[idx] : null;
-        if (!entry) return;
-        notify({ type: 'supersplat:annotation.activated', index: entry.index, id: entry.id, title: entry.title, scene: entry.scene });
-      });
-      ev.on('annotation.deactivate', function () {
-        notify({ type: 'supersplat:annotation.deactivated' });
-      });
+      // Every selection -- a host goto, a hotspot click, the viewer's own
+      // prev/next chevrons, a deselecting click -- goes through the internal
+      // Viewer's selectAnnotation (the UI calls it through the public handle,
+      // which looks it up on the instance at call time). Wrapping it, rather
+      // than listening to selectedAnnotation:changed, keeps the old
+      // "activated on every activation" contract: re-selecting the current
+      // annotation flies the camera but changes no state, so it fires no event.
+      //
+      // 1.35 keeps state.selectedAnnotation set when only the tooltip is
+      // hidden (Show Annotations off, walk/gaming modes, pointer capture), so
+      // unlike 1.31 those paths send no deactivated here either -- the bridge
+      // deliberately mirrors the viewer's own selection state rather than its
+      // tooltip visibility, the same thing the viewer's own navigator does.
+      var v0 = getViewer();
+      var original = v0 && v0.selectAnnotation;
+      if (typeof original === 'function') {
+        v0.selectAnnotation = function (index) {
+          var result = original.apply(this, arguments);
+          if (index === null || index === undefined) {
+            notify({ type: 'supersplat:annotation.deactivated' });
+          } else {
+            var entry = table[index] || null;
+            if (entry) {
+              notify({ type: 'supersplat:annotation.activated', index: entry.index, id: entry.id, title: entry.title, scene: entry.scene });
+            }
+          }
+          return result;
+        };
+      }
       // Ready-gate watchdog, mirroring the portals companion's ready-gate
       // watchdog (src/viewer-companion/portals.ts). getEvents() above resolves
       // as soon as the viewer publishes its handle -- long before the splat
       // finishes loading -- so it is not a safe readiness signal on its own;
-      // see hasAnnotations()/isNoUi() below, which are. Without a bound, a
-      // load that never finishes (or a bug in that detection) would strand
-      // every queued goto/list request forever and keep this rAF loop ticking
-      // every frame indefinitely. ~15s grace mirrors the portals watchdog's
-      // cadence; after that this is purely a backstop -- it reports readiness
-      // honestly (ping/list still answer fine with no annotations object) but
-      // never manufactures a successful goto, since doGoto checks
-      // hasAnnotations() itself regardless of how ready became true.
+      // see isLoaded()/isNoUi() below, which are. Without a bound, a load that
+      // never finishes (or a bug in that detection) would strand every queued
+      // goto/list request forever and keep this rAF loop ticking every frame
+      // indefinitely. ~15s grace mirrors the portals watchdog's cadence; after
+      // that this is purely a backstop -- it reports readiness honestly
+      // (ping/list still answer fine before the viewer has loaded) but never
+      // manufactures a successful goto, since doGoto checks isLoaded() itself
+      // regardless of how ready became true.
       var watchdogTicks = 0;
       var watchdogTimer = setInterval(function () {
         if (ready) { clearInterval(watchdogTimer); return; }
@@ -331,11 +349,14 @@ const companionRuntime = `
         onReady();
       }, 5000);
     }
-    // The real navigation-ready signal (see hasAnnotations() above). noui
-    // exports skip constructing it forever, so detect that directly rather
-    // than making every noui host wait out the watchdog for something that
-    // will never arrive.
-    if (hasAnnotations() || isNoUi()) { onReady(); return; }
+    // The real navigation-ready signal (see isLoaded() above). state.loaded
+    // still flips true under ?noui -- firstFrame sets it with no dependency
+    // on the UI -- so isLoaded() alone would eventually go true there too.
+    // isNoUi() is checked directly anyway so a noui host gets an immediate
+    // readiness signal instead of waiting on a load it has no UI reason to
+    // wait for; doGoto() then separately keeps isNoUi() in its own gate (see
+    // above) so navigation itself stays unavailable there, matching <= 1.31.
+    if (isLoaded() || isNoUi()) { onReady(); return; }
     if (!ready) requestAnimationFrame(start);
   }
 

@@ -154,8 +154,9 @@ const companionRuntime = `
   var transitionReducer = ${transitionReducer.toString()};
   var loadingText = resolveLoadingMessage('', data.loadingDefaults || {}, window.__ssLang || 'en');
 
-  // Live pc.AppBase handle (primary path confirmed by the Task 8 spike, navCursor fallback).
-  function getApp(v) { return (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.app) || (v && v.navCursor && v.navCursor.app) || null; }
+  // Live pc.AppBase handle: the internal Viewer's global.app, published at
+  // construction by the engine patch (viewer-engine-patch.ts).
+  function getApp(v) { return (v && v.global && v.global.app) || null; }
 
   var entities = [];                       // scene index -> gsplat Entity (index 0 = start)
   var comps = [];                           // scene index -> gsplat component (for per-scene lodRange control)
@@ -251,13 +252,14 @@ const companionRuntime = `
   // while an annotation jump / reset / frame is lerping the camera to its new
   // pose, so that flight cannot be read as free navigation through a doorway.
   var teleportGuard = { target: null, until: 0 };
-  var TELEPORT_GUARD_MS = 1250;             // the viewer's transition is a fixed 1s lerp (transitionSpeed 1.0) + margin for the frame it lands on
+  var TELEPORT_GUARD_MS = 1250;             // reset / frame: the viewer's default 1s easeOut transition + margin for the frame it lands on
+  var ANNOTATION_GUARD_MS = 2650;           // annotation flights last 1.2-2.4s (ANNOTATION_MIN/MAX_DURATION, supersplat-viewer 1.35) + the same 250ms margin
   function nowMs() {
     try { return performance.now(); } catch (e) { return Date.now(); }
   }
   function getState() {
     var v = window.__supersplatViewer;
-    return (v && v.global && v.global.state) || (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.state) || null;
+    return (v && v.global && v.global.state) || null;
   }
   // Active scene for cursor time t (seconds), from the baked timeline. Linear
   // scan: timeline has one entry per crossing (small).
@@ -889,18 +891,19 @@ const companionRuntime = `
 
   // Assert idx as the active scene for a viewer-driven camera jump (annotation
   // activation, reset, frame) and open the transition guard that covers the
-  // flight. The viewer LERPS the camera to the new pose over ~1s, so without the
-  // guard the flight path is read as free navigation and any portal quad it
-  // punches through overrides this assertion (and plays the tile transition) -
-  // the reported "annotation A -> B lands in the wrong scene" bug.
+  // flight. The viewer LERPS the camera to the new pose -- annotation flights
+  // ease over 1.2-2.4s, reset/frame over 1s -- so without the guard the flight
+  // path is read as free navigation and any portal quad it punches through
+  // overrides this assertion (and plays the tile transition) - the reported
+  // "annotation A -> B lands in the wrong scene" bug.
   //
   // A cover already dismantling is aborted: when it closed it would re-resolve
   // the OLD crossing from the frozen lastSafe and dispatch that portal's target
   // on top of the jump. lastSafe is cleared as well so the pose discontinuity
   // can never be read as a crossing if a later frame does reach the free-nav
   // branch (e.g. the guard was closed by the anim timeline taking over).
-  function beginTeleport(idx) {
-    teleportGuard = beginTeleportGuard(idx, nowMs(), TELEPORT_GUARD_MS);
+  function beginTeleport(idx, durationMs) {
+    teleportGuard = beginTeleportGuard(idx, nowMs(), durationMs || TELEPORT_GUARD_MS);
     lastSafe = null;
     if (transState.phase !== 'idle') { transDispatch({ type: 'abort' }); }
   }
@@ -923,6 +926,7 @@ const companionRuntime = `
   var voxelLoading = [];                   // scene index -> voxel fetch in flight
   var snapshotIdx = data.portalStart || 0; // scene whose field-set is the live-instance snapshot; retained all session (it is the restore source for walking back to the start and was captured, not fetched)
   var snapshotTaken = false;               // set once initCollisions captures the pristine start snapshot
+  var liveScene = data.portalStart || 0;   // scene whose field-set the shared collision instance currently HOLDS (updated as swapCollision mutates it in place); read by adoptOverlay to attribute a viewer-built overlay it has not seen yet to the right scene
   function liveCollision() {
     var v = window.__supersplatViewer;
     return (v && v.inputController && v.inputController.collision) || null;
@@ -1010,6 +1014,7 @@ const companionRuntime = `
     if (!live) { requestAnimationFrame(initCollisions); return; }
     voxels[snapshotIdx] = snapshot(live);
     snapshotTaken = true;
+    liveScene = snapshotIdx;
     // If the user already crossed while we were waiting for the live instance,
     // bring collision in sync with the visuals now.
     if (activeIndex !== snapshotIdx && voxels[activeIndex]) { swapCollision(activeIndex); }
@@ -1045,7 +1050,11 @@ const companionRuntime = `
     // initCollisions re-applies the active voxel right after snapshotting, so a
     // crossing during the startup poll still ends up in sync.
     if (!snapshotTaken || !live || !voxels[idx]) return;
+    // Attribute any overlay the viewer built behind our back to the scene the
+    // instance holds RIGHT NOW, before this call mutates it to idx.
+    adoptOverlay();
     applyVoxel(live, voxels[idx]);
+    liveScene = idx;
     // Live-update the overlay only if it is currently shown; otherwise it is
     // refreshed lazily when the user enables it (see the listener in start()).
     if (overlayEnabled()) refreshOverlay();
@@ -1053,27 +1062,60 @@ const companionRuntime = `
 
   // The overlay's GPU buffers are uploaded once at construction, so an in-place
   // collision swap leaves them showing the previous scene. Track which scene the
-  // overlay buffers represent and rebuild from the live (already-swapped)
-  // collision when needed. overlayScene starts at the scene the viewer built the
-  // overlay from (the start scene).
+  // overlay buffers represent (overlayScene) and rebuild from the live
+  // (already-swapped) collision when it goes stale.
+  //
+  // On 1.35 the overlay is built LAZILY (only once "Show collision" is turned
+  // on) and collision itself loads asynchronously, so the viewer's own
+  // collisionOverlayEnabled handler (registered inside attachCollision,
+  // whenever collisionLoad resolves) can run either before OR after this
+  // module's start() -- with a large .voxel.bin, collision routinely resolves
+  // AFTER start(), so it is not safe to assume this file's overlayScene
+  // bookkeeping ever saw the overlay get created. knownOverlay tracks the
+  // overlay object this module last saw or built; adoptOverlay() notices a
+  // v.voxelOverlay it has never seen (i.e. the viewer just built it, from
+  // whatever scene the shared instance held at that moment == liveScene) and
+  // adopts it without an unnecessary rebuild. Called before every place that
+  // either reads or is about to invalidate overlayScene, so a viewer-built
+  // overlay is always attributed to the right scene before it is judged stale.
   var overlayScene = data.portalStart || 0;
+  var knownOverlay = null;                 // the VoxelDebugOverlay this module last saw (viewer-built, adopted, or built by refreshOverlay)
   function overlayEnabled() {
     var v = window.__supersplatViewer;
     return !!(v && v.voxelOverlay && v.voxelOverlay.enabled);
   }
+  // A v.voxelOverlay this module has not seen before was built by the viewer
+  // itself, directly from the live collision instance -- so it already shows
+  // whatever scene the instance held at that moment (liveScene), not
+  // necessarily overlayScene's stale idea of it.
+  function adoptOverlay() {
+    var v = window.__supersplatViewer;
+    var ov = v && v.voxelOverlay;
+    if (ov && ov !== knownOverlay) {
+      knownOverlay = ov;
+      overlayScene = liveScene;
+    }
+  }
   function refreshOverlay() {
+    adoptOverlay();
     var v = window.__supersplatViewer;
     var ov = v && v.voxelOverlay;
     var live = liveCollision();
-    if (!ov || !ov.constructor || !live || overlayScene === activeIndex) return;
+    // Compare against liveScene, not activeIndex: the shared collision instance
+    // (and its buffers) always reflect liveScene, which can lag or lead
+    // activeIndex during a tile/defocus dismantle window (see collisionScene()
+    // above). Rebuilding against activeIndex there would re-upload buffers that
+    // already match, or skip a rebuild that is actually needed.
+    if (!ov || !ov.constructor || !live || overlayScene === liveScene) return;
     try {
       var app = getApp(v);
       var nv = new ov.constructor(app, live, ov.camera);  // re-uploads nodes/leafData buffers from the live collision
       nv.mode = ov.mode;
       nv.enabled = ov.enabled;
       v.voxelOverlay = nv;                                 // prerender reads this.voxelOverlay live, so the swap is seen next frame
+      knownOverlay = nv;
       ov.destroy();
-      overlayScene = activeIndex;
+      overlayScene = liveScene;
       if (app) app.renderNextFrame = true;
     } catch (e) {
       console.warn('portal overlay refresh failed:', e);
@@ -1122,7 +1164,19 @@ const companionRuntime = `
       // small, coarsest-only) initial load and stall the bar. Reconcile right
       // after so scene 0's own pins (strictly firstFrame-gated) get applied.
       ev.on('firstFrame', function () { viewerReady = true; reconcileFrontier(); });
-      ev.on('collisionOverlayEnabled:changed', function (on) { if (on) refreshOverlay(); });
+      // Deferred one frame: the viewer's own handler for this same event
+      // (registered inside attachCollision, whenever collisionLoad resolves --
+      // see the overlayScene comment above) may not have run yet and builds
+      // v.voxelOverlay synchronously from the live collision instance. Waiting
+      // a frame lets that handler run first, so adoptOverlay() sees the
+      // freshly-built overlay instead of racing it.
+      ev.on('collisionOverlayEnabled:changed', function (on) {
+        if (!on) { return; }
+        requestAnimationFrame(function () {
+          adoptOverlay();
+          refreshOverlay();
+        });
+      });
       // The R shortcut and the viewer's reset menu both fire inputEvent 'reset',
       // returning the camera to its spawn pose. free-nav crossing detection
       // can't see the move as a doorway crossing, so force the matching scene
@@ -1160,31 +1214,43 @@ const companionRuntime = `
           beginTeleport(activeIndex);
         }
       });
-      // The annotation navigator chevrons and a hotspot click both end at
-      // 'annotation.activate', fired with the RAW settings annotation -- so
-      // extras.scene (baked at export from the annotation's splat) says which
-      // scene the pose it flies to actually lives in. Route it through the
-      // reducer so a not-yet-resident target reuses the normal loading overlay.
+      // An annotation selection routes through the internal Viewer's
+      // selectAnnotation(index): the navigator chevrons and hotspot clicks call
+      // it through the public handle, which looks it up on the instance at call
+      // time, so wrapping it here sees every selection, including a re-select
+      // of the current annotation, which flies the camera but fires no
+      // selectedAnnotation:changed. extras.scene (baked at export from the
+      // annotation's splat) says which scene the destination pose lives in.
+      // Route it through the reducer so a not-yet-resident target reuses the
+      // normal loading overlay.
       //
-      // The fly-to is NOT a teleport (this companion assumed it was, which is
-      // what made an annotation jump land in the wrong scene): the viewer lerps
-      // the camera to the new pose over ~1s, and free-nav crossing detection
-      // reads that flight as real movement, so every doorway the straight line
-      // happens to punch through overrode the scene asserted here. beginTeleport
-      // guards the whole flight -- including a jump WITHIN the active scene,
-      // whose flight can cross a doorway just as easily.
-      ev.on('annotation.activate', function (ann) {
-        var idx = ann && ann.extras && ann.extras.scene;
-        // NaN is typeof 'number' and fails every ordering comparison, so idx < 0
-        // and idx >= length would both be false for it without this isFinite check.
-        var known = (typeof idx === 'number' && isFinite(idx) && idx >= 0 && idx < data.portalScenes.length);
-        // With no baked scene (an older export) the flight still has to be
-        // guarded; it just asserts the scene we are already in.
-        beginTeleport(known ? idx : activeIndex);
-        if (known && idx !== activeIndex) {
-          dispatch({ type: 'crossing', target: idx, loaded: !!(entities[idx] || sceneLoading[idx]), ready: sceneReady(idx) });
-        }
-      });
+      // The fly-to is NOT a teleport: the viewer eases the camera to the new
+      // pose over 1.2-2.4s, and free-nav crossing detection would read that
+      // flight as real movement, so beginTeleport guards the whole flight,
+      // including a jump WITHIN the active scene.
+      var v0 = viewer;
+      var originalSelect = v0.selectAnnotation;
+      if (typeof originalSelect === 'function') {
+        v0.selectAnnotation = function (index) {
+          var result = originalSelect.apply(this, arguments);
+          var list = v0.global && v0.global.settings && v0.global.settings.annotations;
+          var ann = (index === null || index === undefined || !list) ? null : list[index];
+          if (ann) {
+            var idx = ann.extras && ann.extras.scene;
+            // NaN is typeof 'number' and fails every ordering comparison, so
+            // idx < 0 and idx >= length would both be false for it without
+            // this isFinite check.
+            var known = (typeof idx === 'number' && isFinite(idx) && idx >= 0 && idx < data.portalScenes.length);
+            // With no baked scene (an older export) the flight still has to be
+            // guarded; it just asserts the scene we are already in.
+            beginTeleport(known ? idx : activeIndex, ANNOTATION_GUARD_MS);
+            if (known && idx !== activeIndex) {
+              dispatch({ type: 'crossing', target: idx, loaded: !!(entities[idx] || sceneLoading[idx]), ready: sceneReady(idx) });
+            }
+          }
+          return result;
+        };
+      }
       // walk/fly resetToSpawn restores the pose captured on mode ENTRY, so the
       // scene active at entry is the scene that spawn pose lives in. Record it
       // for the reset handler above. (value, prev) fires on every mode change.

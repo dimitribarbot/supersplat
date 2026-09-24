@@ -1,11 +1,18 @@
 // Optional brand override for the exported viewer.
 //
 // The stock viewer identifies itself as SuperSplat in three places: the
-// document <title>, the overlay badge (`#viewerBranding`, only revealed when
-// the viewer is embedded cross-origin) and the info panel's header
-// (`#viewerTitle`). When the export server is configured with VIEWER_BRAND_NAME
-// / VIEWER_BRAND_ICON_URL / VIEWER_BRAND_FONT_NAME + VIEWER_BRAND_FONT_URL it
-// fetches the assets, stores them beside index.html and swaps all three here.
+// document <title>, the overlay badge (`.sse-viewerBranding`, only revealed
+// when the viewer is embedded cross-origin) and the info panel's header
+// (`.sse-viewerTitle`). When the export server is configured with
+// VIEWER_BRAND_NAME / VIEWER_BRAND_ICON_URL / VIEWER_BRAND_FONT_NAME +
+// VIEWER_BRAND_FONT_URL it fetches the assets, stores them beside index.html
+// and swaps all three here.
+//
+// supersplat-viewer >= 1.32 builds its badge and info-panel markup from a JS
+// string (`var uiHtml = "…"` in index.js) rather than baking it into the page,
+// so the override has two halves: injectBrand patches the page (the <title>
+// and the injected <style>), injectBrandJs patches index.js's uiHtml literal
+// (the badge and panel markup).
 //
 // The brand belongs to the deployment, not to a capture or an editing session,
 // so it is configured once on the server (like VIEWER_FAVICON_URL) rather than
@@ -15,11 +22,6 @@
 // The three overrides are independent -- a name with no icon keeps the stock
 // logos, an icon with no name keeps the stock labels -- because each one is
 // fetched and validated separately on the server and any of them may drop out.
-//
-// Upstream's info-panel logo is `<use href="#supersplatIcon" />` twice over a
-// symbol that is defined NOWHERE in the shipped viewer, so that header renders
-// text-only today. Replacing it with a real <img> is therefore a repair as well
-// as a rebrand -- do not read the dead <use> as evidence of a symbol to match.
 //
 // Environment-agnostic (compiled for the export server via dist-shared):
 // string operations only.
@@ -31,22 +33,19 @@ const HEAD_CLOSE = '</head>';
 // (mirrors the other companions' soft no-op posture).
 const MARKER = '<!-- viewer brand applied -->';
 
-// The five anchors in the baked viewer's html. Each one is unique in that
-// document, and test/viewer-html-anchors.test.ts asserts they still are --
-// a failure there means an upstream bump moved a seam.
+// The <title> is the one brand surface left in the page itself.
 const DOC_TITLE = '<title>SuperSplat Viewer</title>';
+
+// supersplat-viewer >= 1.32 builds its UI from a JS string (`var uiHtml = "…"`
+// in index.js). These anchors are written in HTML form for readability; the JS
+// pass searches for their jsString() form, which is how they appear in the file.
 const BADGE_LOGO_OPEN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="64 64 384 384" role="img" aria-label="SuperSplat">';
 const BADGE_LABEL = '<span>SuperSplat</span>';
-const PANEL_LOGO_OPEN = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 32 32">';
-const PANEL_LABEL = '<span class="title-name">SuperSplat Viewer</span>';
-const PANEL_SECTIONS = '<div id="infoPanels">';
+const PANEL_LOGO_OPEN = '<svg class="sse-viewerLogo" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">';
+const PANEL_LABEL = '<span class="sse-title-name">SuperSplat Viewer</span>';
+const PANEL_SECTIONS = '<div class="sse-infoGpu">';
 
 const SVG_CLOSE = '</svg>';
-
-// Cosmetic only -- an html comment nobody renders. Scrubbed on a best-effort
-// basis (no warning if upstream reworded it) so that "view source" on a
-// white-labelled export does not still announce the stock brand.
-const BADGE_COMMENT = '<!-- SuperSplat Branding -->';
 
 // Attribution shown under the rebranded panel header. Placed in the info panel
 // because that is where a viewer looks to find out what they are looking at,
@@ -83,8 +82,25 @@ const escapeCssString = (text: string): string => text
 .replace(/\\/g, '\\\\')
 .replace(/'/g, '\\\'');
 
+// Built by code point so no backslash escape appears in this file's source.
+const BACKSLASH = String.fromCharCode(92);
+
+// Escape an HTML fragment for a double-quoted JS string literal, exactly as the
+// bundler wrote uiHtml: backslash, double quote, and every character that is a
+// JS LineTerminator (LF, CR, U+2028, U+2029) -- any of these, left raw, would
+// break the string literal (a pre-ES2019 engine even treats a raw U+2028/2029
+// as a syntax error). split/join, not String.replace, so a `$` in brand text
+// is never read as a pattern.
+const jsString = (html: string): string => html
+.split(BACKSLASH).join(BACKSLASH + BACKSLASH)
+.split('"').join(`${BACKSLASH}"`)
+.split('\n').join(`${BACKSLASH}n`)
+.split('\r').join(`${BACKSLASH}r`)
+.split(String.fromCharCode(0x2028)).join(`${BACKSLASH}u2028`)
+.split(String.fromCharCode(0x2029)).join(`${BACKSLASH}u2029`);
+
 const skip = (what: string): void => {
-    console.warn(`brand: ${what} not found in the exported viewer html; leaving it unbranded`);
+    console.warn(`brand: ${what} not found in the exported viewer; leaving it unbranded`);
 };
 
 // Never String.replace: a `$` in the replacement (a brand name is free text)
@@ -127,19 +143,20 @@ const styleBlock = (iconHref: string, font: { family: string; href: string; form
             `    src: url('${font.href}') format('${font.format}');`,
             '    font-display: swap;',
             '}',
-            '#viewerBranding > span,',
-            '#viewerTitle > .title-name {',
+            '.sse-viewer .sse-viewerBranding > span,',
+            '.sse-viewer .sse-infoPanel > .sse-infoPanelContent > .sse-viewerTitle > .sse-title-name {',
             `    font-family: '${family}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;`,
             '}'
         );
     }
 
-    // The stock rules size `#viewerBranding > svg` and `#viewerTitle > svg`;
-    // once those elements are <img>, nothing styles them, so restate the
-    // metrics (16px badge on its dark rounded backdrop, 20px panel icon).
+    // The stock rules size `.sse-viewerBranding > svg` (16px badge on its dark
+    // rounded backdrop) and `.sse-viewerLogo` (56px, in the info panel's
+    // column layout); once those elements are <img>, nothing styles them, so
+    // restate the same metrics.
     if (iconHref) {
         rules.push(
-            '#viewerBranding > img {',
+            '.sse-viewer .sse-viewerBranding > img {',
             '    height: 16px;',
             '    width: auto;',
             '    flex-shrink: 0;',
@@ -147,10 +164,14 @@ const styleBlock = (iconHref: string, font: { family: string; href: string; form
             '    border-radius: 6px;',
             '    background-color: rgba(0, 0, 0, 0.3);',
             '}',
-            '#viewerTitle > img {',
-            '    height: 20px;',
+            '.sse-viewer .sse-infoPanel > .sse-infoPanelContent > .sse-viewerTitle > img {',
+            '    height: 56px;',
             '    width: auto;',
-            '    flex-shrink: 0;',
+            // A very wide operator logo would otherwise overflow the panel's
+            // ~320px width (the stock svg has no such risk: it is drawn from a
+            // fixed viewBox).
+            '    max-width: 100%;',
+            '    margin-bottom: 6px;',
             '}'
         );
     }
@@ -174,6 +195,8 @@ const styleBlock = (iconHref: string, font: { family: string; href: string; form
     return `<style id="brandStyle">\n${rules.join('\n')}\n</style>`;
 };
 
+// The page half of the override: the <title> and the injected <style>. The
+// badge and info-panel markup live in index.js's uiHtml (see injectBrandJs).
 export const injectBrand = (html: string, brand: BrandInjection): string => {
     const name = (brand.name ?? '').trim();
     const iconHref = (brand.iconHref ?? '').trim();
@@ -203,50 +226,51 @@ export const injectBrand = (html: string, brand: BrandInjection): string => {
         return html;
     }
 
-    // Attribution follows the *identity*: a font-only override still says
-    // "SuperSplat Viewer" in full, so there is nothing to attribute.
-    const attribution = !!name || !!iconHref;
-
     let out = html;
 
     if (name) {
         const escaped = escapeHtml(name);
         out = replaceOnce(out, DOC_TITLE, `<title>${escaped}</title>`, 'the document title');
-        out = replaceOnce(out, BADGE_LABEL, `<span>${escaped}</span>`, 'the overlay badge label');
-        out = replaceOnce(out, PANEL_LABEL, `<span class="title-name">${escaped}</span>`, 'the info panel label');
-    }
-
-    if (iconHref) {
-        // alt="" on both: each image sits next to a span carrying the brand
-        // name, so describing it again would just double up for a screen
-        // reader.
-        out = replaceSvg(out, BADGE_LOGO_OPEN, `<img id="brandBadgeIcon" src="${iconHref}" alt="" />`, 'the overlay badge logo');
-        out = replaceSvg(out, PANEL_LOGO_OPEN, `<img id="brandTitleIcon" src="${iconHref}" alt="" />`, 'the info panel logo');
-    }
-
-    if (attribution) {
-        out = replaceOnce(out, BADGE_COMMENT, '<!-- Branding -->');
-        const markup = `<div id="brandAttribution">Based on <a href="${ATTRIBUTION_URL}" target="_blank" rel="noopener noreferrer">PlayCanvas SuperSplat Viewer</a></div>`;
-        out = replaceOnce(out, PANEL_SECTIONS, `${markup}\n                    ${PANEL_SECTIONS}`, 'the info panel sections');
     }
 
     // Last, so the block lands after the viewer's own ./index.css link and
-    // wins the cascade at equal specificity. Re-read </head>: the replacements
+    // wins the cascade at equal specificity. Re-read </head>: the replacement
     // above may have moved it.
+    const attribution = !!name || !!iconHref;
     const style = styleBlock(iconHref, font, attribution);
     const end = out.indexOf(HEAD_CLOSE);
     return `${out.slice(0, end)}        ${MARKER}\n        ${style}\n    ${out.slice(end)}`;
 };
 
-// Every literal injectBrand reaches into the exported document for.
-// test/viewer-html-anchors.test.ts asserts each of these still occurs exactly
-// once in the viewer splat-transform actually ships, so an upstream bump that
-// moves a seam fails loudly instead of silently un-branding every export.
-export const BRAND_ANCHORS = [
-    DOC_TITLE,
-    BADGE_LOGO_OPEN,
-    BADGE_LABEL,
-    PANEL_LOGO_OPEN,
-    PANEL_LABEL,
-    PANEL_SECTIONS
-];
+// The uiHtml half of the override, applied to index.js. Idempotent by the
+// attribution id, which the first pass always inserts when there is anything to
+// rebrand here (a font-only override touches only the page's <style>).
+export const injectBrandJs = (js: string, brand: BrandInjection): string => {
+    const name = (brand.name ?? '').trim();
+    const iconHref = (brand.iconHref ?? '').trim();
+    if (!name && !iconHref) {
+        return js;
+    }
+    if (js.includes('brandAttribution')) {
+        return js;
+    }
+    let out = js;
+    if (name) {
+        const escaped = escapeHtml(name);
+        out = replaceOnce(out, jsString(BADGE_LABEL), jsString(`<span>${escaped}</span>`), 'the overlay badge label');
+        out = replaceOnce(out, jsString(PANEL_LABEL), jsString(`<span class="sse-title-name">${escaped}</span>`), 'the info panel label');
+    }
+    if (iconHref) {
+        out = replaceSvg(out, jsString(BADGE_LOGO_OPEN), jsString(`<img id="brandBadgeIcon" src="${iconHref}" alt="" />`), 'the overlay badge logo');
+        out = replaceSvg(out, jsString(PANEL_LOGO_OPEN), jsString(`<img id="brandTitleIcon" src="${iconHref}" alt="" />`), 'the info panel logo');
+    }
+    const markup = `<div id="brandAttribution">Based on <a href="${ATTRIBUTION_URL}" target="_blank" rel="noopener noreferrer">PlayCanvas SuperSplat Viewer</a></div>\n            `;
+    out = replaceOnce(out, jsString(PANEL_SECTIONS), jsString(markup + PANEL_SECTIONS), 'the info panel sections');
+    return out;
+};
+
+// Every literal the override reaches into the exported viewer for.
+// test/viewer-html-anchors.test.ts asserts each still occurs exactly once in the
+// viewer splat-transform ships: the html one in the page, the rest in index.js.
+export const BRAND_HTML_ANCHORS = [DOC_TITLE];
+export const BRAND_JS_ANCHORS = [BADGE_LOGO_OPEN, BADGE_LABEL, PANEL_LOGO_OPEN, PANEL_LABEL, PANEL_SECTIONS].map(jsString);

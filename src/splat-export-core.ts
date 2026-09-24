@@ -23,7 +23,7 @@ import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subse
 import { Events } from './events';
 import { buildAnnotationI18nInjection } from './viewer-companion/annotation-i18n';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
-import { injectBrand } from './viewer-companion/brand';
+import { injectBrand, injectBrandJs } from './viewer-companion/brand';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { buildEarlyLodClampInjection } from './viewer-companion/early-lod-clamp';
 import { injectFaviconLink } from './viewer-companion/favicon';
@@ -37,17 +37,19 @@ import { patchViewerBootstrap } from './viewer-companion/viewer-bootstrap';
 import { buildViewerLangInjection } from './viewer-companion/viewer-lang';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
 
-// Apply the engine patches (#8998 loader stall + #9011 unload race, see
-// viewer-engine-patch.ts) to the viewer bundle in memFs: 'index.js' for
-// unbundled exports. Warns when a pattern is missing (bundled engine changed
-// shape) -- the injected portal companion's ready-gate watchdog then remains
-// the runtime fallback.
+// Apply the fork's viewer patches (see viewer-engine-patch.ts) to the viewer
+// bundle in memFs: 'index.js' for unbundled exports. A missing optional pattern
+// only warns; a missing viewer-handle publish throws, because every injected
+// companion depends on window.__supersplatViewer.
 const patchEngineLoaderInMemFs = (memFs: { results: Map<string, Uint8Array> }): void => {
     const raw = memFs.results.get('index.js');
     if (!raw) {
         return;
     }
-    const { source, patched } = patchViewerEngine(new TextDecoder().decode(raw));
+    const { source, patched, handlePublished } = patchViewerEngine(new TextDecoder().decode(raw));
+    if (!handlePublished) {
+        throw new Error('Viewer export failed: could not publish the viewer handle (the bundled supersplat-viewer changed shape)');
+    }
     if (patched < VIEWER_ENGINE_PATCH_COUNT) {
         console.warn(`Viewer engine patch: ${patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`);
     }
@@ -138,6 +140,15 @@ const applyBrand = (
     }
     if (brand.font) {
         memFs.results.set(brand.font.asset.filename, brand.font.asset.data);
+    }
+    const rawJs = memFs.results.get('index.js');
+    if (rawJs) {
+        memFs.results.set('index.js', new TextEncoder().encode(injectBrandJs(new TextDecoder().decode(rawJs), {
+            name: brand.name ?? undefined,
+            iconHref: brand.icon ? `./${brand.icon.filename}` : undefined
+        })));
+    } else {
+        console.warn('brand: no index.js in the export; the badge and info panel keep the stock branding');
     }
     return injectBrand(html, {
         name: brand.name ?? undefined,
@@ -268,9 +279,8 @@ const injectAnnotationI18n = (html: string, viewerSettingsJson: any): string => 
 // injected, unlike the annotation-link companion: a host page embedding a scene
 // that happens to have no annotations should still receive a ready broadcast and
 // an empty list rather than silence. It needs no bootstrap soft-replace of its
-// own -- injectDeviceFallback runs unconditionally on every path below and
-// always publishes window.__supersplatViewer -- and the runtime polls for that
-// handle, so chain position does not matter.
+// own -- the engine patch publishes window.__supersplatViewer -- and the
+// runtime polls for that handle, so chain position does not matter.
 const injectIframeApi = (html: string, viewerSettingsJson: any): string => {
     const injection = buildIframeApiInjection(viewerSettingsJson?.annotations ?? []);
     return insertBeforeBodyClose(html, injection);
@@ -278,20 +288,14 @@ const injectIframeApi = (html: string, viewerSettingsJson: any): string => {
 
 // Inject the WebGPU->WebGL2 crash-fallback companion into an HTML string
 // before </body>. ALWAYS injected (every export benefits: field-observed
-// Adreno WebGPU device loss kills plain single-scene viewers too). Publishes
-// the viewer handle itself via the same bootstrap soft-replace as the zones
-// injector, because on a plain export no other companion runs to publish it
-// (a duplicate assignment when both run is harmless).
+// Adreno WebGPU device loss kills plain single-scene viewers too). The viewer
+// handle it polls for is published by the engine patch (viewer-engine-patch.ts).
 const injectDeviceFallback = (html: string): string => {
     const injection = buildDeviceFallbackInjection();
-    const bootstrap = 'const viewer = await main(canvas, settingsJson, config);';
-    const withHandle = html.includes(bootstrap) ?
-        html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
-        html;
-    if (withHandle.includes('</body>')) {
-        return withHandle.replace('</body>', `${injection}</body>`);
+    if (html.includes('</body>')) {
+        return html.replace('</body>', `${injection}</body>`);
     }
-    return withHandle + injection;
+    return html + injection;
 };
 
 // Inject the quality-mode companion into an HTML string before </body>.
@@ -299,41 +303,33 @@ const injectDeviceFallback = (html: string): string => {
 // and the engine patch's budget() reads globals this publishes. It needs no
 // viewer handle at parse time (it resolves the mode from localStorage and
 // device signals alone) but its UI and watchdog phase reaches for
-// window.__supersplatViewer, which injectDeviceFallback already publishes
-// unconditionally on every path.
+// window.__supersplatViewer, which the engine patch (viewer-engine-patch.ts)
+// publishes unconditionally on every path.
 const injectQualityMode = (html: string): string => {
     return insertBeforeBodyClose(html, buildQualityModeInjection());
 };
 
 // Inject the early-LOD-clamp companion into an HTML string before </body>.
 // STREAMING EXPORTS ONLY: it exists to stop the engine requesting the whole LOD
-// pyramid before the viewer's own coarse-only clamp lands (which waits behind
-// the collision binary), and only a streaming export has an octree at all --
-// SOG/PLY package and single-file HTML exports have no LOD levels for it to act
-// on. Like the quality-mode injector it needs no viewer handle at parse time:
-// it polls for window.__supersplatViewer, which injectDeviceFallback publishes
-// unconditionally on every path, so chain position does not matter.
+// pyramid before the viewer's own coarse-only clamp lands, and only a streaming
+// export has an octree at all -- SOG/PLY package and single-file HTML exports
+// have no LOD levels for it to act on. Like the quality-mode injector it needs
+// no viewer handle at parse time: it polls for window.__supersplatViewer, which
+// the engine patch (viewer-engine-patch.ts) publishes unconditionally on every
+// path, so chain position does not matter.
 const injectEarlyLodClamp = (html: string): string => {
     return insertBeforeBodyClose(html, buildEarlyLodClampInjection());
 };
 
-// Raw byte length of the start scene's collision binary, or 0 when the export
-// has none. The loading-bar companion turns this download into progress, and it
-// needs the RAW length: the publish path gzips .voxel.bin (server/src/s3.ts), so
-// the browser's Content-Length reports the compressed size while the stream it
-// hands back is already decompressed.
-const collisionBinaryBytes = (memFs: MemoryFileSystem | null): number => {
-    return memFs?.results.get('index.voxel.bin')?.length ?? 0;
-};
-
 // Inject the loading-bar companion into an HTML string before </body>. ALWAYS
 // injected: the instant-0% paint and the never-goes-backwards clamp apply to
-// every export, and the collision term simply drops out when collisionBytes is
-// 0. Like the quality-mode injector it needs no viewer handle at parse time --
-// it polls for window.__supersplatViewer, which injectDeviceFallback publishes
-// unconditionally on every path -- so chain position does not matter.
-const injectLoadingBar = (html: string, collisionBytes: number): string => {
-    return insertBeforeBodyClose(html, buildLoadingBarInjection(collisionBytes));
+// every export. The reveal gates on splats + skybox only (supersplat-viewer
+// >= 1.32); there is no collision term to feed. Like the quality-mode injector
+// it needs no viewer handle at parse time -- it polls for
+// window.__supersplatViewer, which the engine patch publishes -- so chain
+// position does not matter.
+const injectLoadingBar = (html: string): string => {
+    return insertBeforeBodyClose(html, buildLoadingBarInjection());
 };
 
 // Inject the off-limits-zones companion into an HTML string before </body>.
@@ -346,35 +342,17 @@ const injectOffLimitsZones = (html: string, viewerSettingsJson: any): string => 
     if (!injection) {
         return html;
     }
-    // The exported viewer keeps its PlayCanvas app + camera in a private module
-    // closure (no `pc`/app global), so the companion cannot reach the camera on
-    // its own. Publish the viewer instance from its own bootstrap line; the
-    // companion then clamps the camera via viewer.cameraManager. Soft replace:
-    // if this anchor ever changes upstream the companion just no-ops (blocking
-    // disabled) rather than corrupting the export.
-    const bootstrap = 'const viewer = await main(canvas, settingsJson, config);';
-    const withHandle = html.includes(bootstrap) ?
-        html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
-        html;
-    return insertBeforeBodyClose(withHandle, injection);
+    return insertBeforeBodyClose(html, injection);
 };
 
 // Inject the portals companion into an HTML string before </body>.
-// No-op (returns the input) when there are no portals. Idempotent with
-// injectOffLimitsZones: if the viewer handle has already been published this
-// function skips the bootstrap replacement to avoid a double-publish.
+// No-op (returns the input) when there are no portals.
 const injectPortals = (html: string, viewerSettingsJson: any): string => {
     const injection = buildPortalsInjection(viewerSettingsJson);
     if (!injection) {
         return html;
     }
-    // Ensure the viewer handle is published (idempotent: only inject if not
-    // already present, since injectOffLimitsZones may have added it first).
-    const bootstrap = 'const viewer = await main(canvas, settingsJson, config);';
-    const withHandle = (html.includes(bootstrap) && !html.includes('window.__supersplatViewer = viewer;')) ?
-        html.replace(bootstrap, `${bootstrap} window.__supersplatViewer = viewer;`) :
-        html;
-    return insertBeforeBodyClose(withHandle, injection);
+    return insertBeforeBodyClose(html, injection);
 };
 
 // Bridge splat-transform progress events to supersplat's events.
@@ -992,8 +970,7 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     const withZones = injectOffLimitsZones(withAnnotations, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
     const withCompanions = injectLoadingBar(
-        injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals))),
-        collisionBinaryBytes(memFs)
+        injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals)))
     );
     const withApi = injectIframeApi(withCompanions, settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(withApi, favicon, memFs), brand, memFs)));
@@ -1090,12 +1067,12 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
             }
             // Single-file output: the poster is inlined as a data URI (no memFs).
             const withPoster = applyPoster(new TextDecoder().decode(raw), viewerSettingsJson, posterBytes, null);
-            // Single-file HTML: no collision file exists on this path, so the
-            // companion's collision term drops out and the gsplat blocks own
-            // the whole range.
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), 0), viewerSettingsJson);
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson)))), viewerSettingsJson);
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
+            if (!enginePatch.handlePublished) {
+                throw new Error('HTML export failed: could not publish the viewer handle (the bundled supersplat-viewer changed shape)');
+            }
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
                 console.warn(`Viewer engine patch (html): ${enginePatch.patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`);
             }
@@ -1137,7 +1114,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), sogSettings), sogSettings), sogSettings), sogSettings))), collisionBinaryBytes(memFs)), sogSettings);
+            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), sogSettings), sogSettings), sogSettings), sogSettings)))), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(injected, favicon, memFs), brand, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);

@@ -5,8 +5,8 @@
 // corrects a wrong guess downward with a passive frame-time watchdog.
 //
 // Injected into EVERY export as a classic <script>, so it executes at parse
-// time -- BEFORE the deferred <script type="module"> bootstrap calls main().
-// That ordering is load-bearing: the stock viewer reads
+// time -- BEFORE the deferred <script type="module"> bootstrap calls
+// createViewer(). That ordering is load-bearing: the stock viewer reads
 // localStorage.performanceMode synchronously while building its state, so the
 // mode must be resolved before then. It is also why the heuristic is
 // synchronous: WebGPU adapter.info would be a better mobile signal but needs an
@@ -40,22 +40,19 @@ import { pickQualityClass, pickAutoMode, hdBudgetFor, demoteQuality, resolveQual
 // white control surfaces, the 34px control height) rather than inheriting
 // it, because the popup floats above the panel on its own surface.
 //
-// Two rules are scoped through #settingsPanel > .settingsRow > div.ssQ
-// rather than a bare .ssQ class. The viewer's own (separately loaded)
-// stylesheet already targets #settingsPanel > .settingsRow > div at
-// specificity (1,1,1), with padding: 0 8px and color: #AAA, which beats any
-// plain class selector. Left alone, that padding would land on the wrapper
-// and throw off the trigger's position -- so this one selector is written
-// with the same id-scoped prefix to win. The 34px height that same stock
-// rule sets is left standing; it is exactly the control height wanted here.
-// The trigger button itself is a GRANDCHILD of the row (wrapped inside
-// .ssQ), never a direct child, so the stock #settingsPanel > .settingsRow >
-// button rule (flex-grow: 1; padding: 0 20px) never matches it at all --
-// nothing needs to fight that one. Everything else below (the trigger, the
-// popup, its items, the dot, the caret) has no such collision and stays a
-// plain class selector.
+// The stock rule is .sse-viewer .sse-settingsPanel > .sse-settingsGroup > .sse-settingsRow > div
+// at specificity (0,4,1), with padding: 0 8px and color: #AAA, which beats any
+// plain .ssQ class selector. Left alone, that padding would land on the wrapper
+// and throw off the trigger's position -- so the .ssQ override is written
+// with (0,5,1) specificity to win. The 34px height that same stock rule sets
+// is left standing; it is exactly the control height wanted here. The trigger
+// button itself is a GRANDCHILD of the row (wrapped inside .ssQ), never a
+// direct child, so the stock .sse-viewer .sse-settingsPanel > .sse-settingsGroup >
+// .sse-settingsRow > button rule never matches it at all -- nothing needs to
+// fight that one. Everything else below (the trigger, the popup, its items, the
+// dot, the caret) has no such collision and stays a plain class selector.
 const companionStyle = `
-#settingsPanel > .settingsRow > div.ssQ { padding: 0; position: relative; }
+.sse-viewer .sse-settingsPanel > .sse-settingsGroup > .sse-settingsRow > div.ssQ { padding: 0; position: relative; }
 
 .ssQRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
@@ -296,18 +293,17 @@ const companionRuntime = `
   window.__ssQualityOnChange = function (mode) { paint(mode); };
 
   function buildControl() {
-    // Wait for the viewer handle before touching the DOM at all. The settings
-    // panel -- #performanceModeRow included -- is STATIC markup in the exported
-    // page, present at parse time; initUI() does not build it, it CAPTURES it by
-    // id, and it does so only after main()'s awaits (settings fetch, then
-    // createApp's WebGPU adapter). The handle is published immediately after
-    // main() RESOLVES, so its presence proves the capture already happened.
-    // Replacing the row any earlier strips the id initUI looks up, which makes
-    // dom.performanceModeRow undefined, throws inside initUI, rejects main() and
-    // takes the whole viewer down with it -- device fallback, portals and the
-    // iframe API included.
+    // Wait for the viewer handle before touching the DOM at all. In 1.35
+    // createViewer() inserts the settings panel markup itself, via
+    // root.innerHTML = uiHtml, well before initUI runs.
+    // The engine patch publishes the handle synchronously inside createViewer(),
+    // immediately before initUI runs, with no await between them
+    // (src/viewer-engine-patch.ts:315-322). Both execute in the same macrotask.
+    // This companion's setInterval poll is a later macrotask, so the handle can
+    // never be visible until after initUI has already captured .sse-performanceModeRow.
+    // Replacing the row any earlier would break initUI.
     if (!getViewer()) { return false; }
-    var row = document.getElementById('performanceModeRow');
+    var row = document.querySelector('.sse-viewer .sse-performanceModeRow');
     if (!row || wrapEl) { return !!wrapEl; }
     var t = labels();
     labelsT = { perf: t.perf, normal: t.normal, hd: t.hd };
@@ -318,17 +314,17 @@ const companionRuntime = `
     // which then points at a detached node -- its classList.toggle is a
     // harmless no-op.
     var fresh = row.cloneNode(false);
-    fresh.className = 'settingsRow ssQRow';
-    fresh.removeAttribute('id');
+    fresh.className = 'sse-settingsRow ssQRow';
     var label = document.createElement('div');
     label.textContent = t.q;
     fresh.appendChild(label);
 
-    // .ssQ is the dropdown wrapper. It is matched by the stock #settingsPanel
-    // > .settingsRow > div rule (see the companionStyle comment above), which
-    // is neutralised by the id-scoped override there; everything inside it
-    // (the trigger button, the popup and its items) is a GRANDCHILD of the
-    // row or deeper, so the stock ...> button rule never reaches the trigger.
+    // .ssQ is the dropdown wrapper. It is matched by the stock
+    // .sse-viewer .sse-settingsPanel > .sse-settingsGroup > .sse-settingsRow > div
+    // rule (see the companionStyle comment above), which is beaten by the
+    // (0,5,1) .ssQ override there; everything inside it (the trigger button,
+    // the popup and its items) is a GRANDCHILD of the row or deeper, so the
+    // stock .sse-viewer ... > button rule never reaches the trigger.
     var wrap = document.createElement('div');
     wrap.className = 'ssQ';
 
@@ -466,10 +462,12 @@ const companionRuntime = `
     return true;
   }
 
-  // The settings panel is static markup in the exported page; initUI() merely
-  // captures it by id, after main()'s awaits. So poll for the VIEWER HANDLE the
-  // way device-fallback does -- the handle appears only once main() has
-  // resolved, which guarantees the replacement can never precede that capture.
+  // createViewer() inserts the settings panel markup itself (root.innerHTML =
+  // uiHtml) before initUI() runs; initUI() merely captures it by id. So poll
+  // for the VIEWER HANDLE the way device-fallback does -- the handle is
+  // published synchronously inside createViewer(), immediately before
+  // initUI() runs, which guarantees the replacement can never precede that
+  // capture.
   // 240 tries x 500ms = 2 minutes, then give up (the stock toggle simply stays).
   var uiTries = 0;
   var uiTimer = setInterval(function () {
@@ -655,8 +653,8 @@ const companionRuntime = `
     // ever run -- the original bug) and NOT on readyTries alone once a
     // deadline is pending (readyTries > 240 is a "give up waiting for the
     // viewer handle" cap; applying it unconditionally would cut off a
-    // fallback deadline that lands later than that, on a main() that
-    // resolves later than ~90s after parse). A pinned user is added here so
+    // fallback deadline that lands later than that, when the viewer handle
+    // appears later than ~90s after parse). A pinned user is added here so
     // the interval stops promptly instead of spinning for the full 240
     // ticks and calling armWatchdog() every tick past the 30s mark for
     // nothing -- armWatchdog() already no-ops for a pinned user, but that

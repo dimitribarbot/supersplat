@@ -10,7 +10,7 @@
 // `hasFailed(url)` (PR #8998) and `inst.octree.destroyed` (PR #9011). The nine
 // engine backport patches are therefore obsolete and have been removed.
 //
-// What remains are eight fork-specific patches (NOT upstream backports) that
+// What remains are nine fork-specific patches (NOT upstream backports) that
 // add viewer-APP behaviour absent from any upstream engine version:
 //
 //   1. A spawn-preserving `reseat()` method on the viewer's CameraManager.
@@ -26,6 +26,8 @@
 //   8. The perf-settings budget table is chosen by the companion's device
 //      capability class instead of the mobile/desktop user-agent split, plus
 //      an HD tier reading a companion-published gaussian budget.
+//   9. A publish of the internal Viewer as `window.__supersplatViewer` plus
+//      the `__ssOnViewer` hook (required: exports fail without it).
 //
 // These target the exported viewer app (4-/8-space indented), not the engine,
 // so they are unaffected by the engine bump; each search string was re-verified
@@ -48,7 +50,7 @@
 // so a second pass is a no-op. Pure and environment-agnostic (also compiled for
 // the export server via dist-shared).
 
-type EnginePatchResult = { source: string; patched: number };
+type EnginePatchResult = { source: string; patched: number; handlePublished: boolean };
 
 type EnginePatch = {
     search: string;
@@ -58,6 +60,10 @@ type EnginePatch = {
     // for the other patches)
     applied?: string;
 };
+
+// The line the handle-publish patch adds. It doubles as that patch's `applied`
+// marker and as the handlePublished check.
+const HANDLE_PUBLISH = '    window.__supersplatViewer = viewer;\n';
 
 const PATCHES: EnginePatch[] = [
     // --- fork: spawn-preserving reseat() for the off-limits camera clamp ---
@@ -146,22 +152,22 @@ const PATCHES: EnginePatch[] = [
     },
     // --- fork: publish the engine classes the portal-marker companion needs ---
     // The exported viewer bundles engine + app into one unminified ESM module
-    // whose only export is `main`, and the injected companions are classic
-    // scripts, so there is no way to reach Entity/Mesh/StandardMaterial/...
-    // from a companion. Prepend a window publish at module scope, where every
-    // class is in lexical scope under its real name (verified against the
-    // splat-transform 3.1.7 bundle).
+    // whose only export is `createViewer` (was `main` up to supersplat-viewer
+    // 1.31), and the injected companions are classic scripts, so there is no
+    // way to reach Entity/Mesh/StandardMaterial/... from a companion. Prepend
+    // a window publish at module scope, where every class is in lexical scope
+    // under its real name (verified against the splat-transform 3.1.7 bundle).
     //
     // Wrapped in try/catch on purpose: if a future bundle renames a symbol
     // (rollup appends $1 on collisions), the free identifier throws a
     // ReferenceError at module evaluation -- which would kill the ENTIRE
     // viewer. Catching it degrades to "no portal icons" instead.
     //
-    // `export { main };` survives its own replacement, so this patch needs the
-    // `applied` marker to stay idempotent on a second pass (the other patches
-    // self-destruct because their search text does not reappear).
+    // `export { createViewer };` survives its own replacement, so this patch
+    // needs the `applied` marker to stay idempotent on a second pass (the
+    // other patches self-destruct because their search text does not reappear).
     {
-        search: 'export { main };',
+        search: 'export { createViewer };',
         replace:
             'try { window.__ssPc = {\n' +
             '    Entity: Entity, Layer: Layer, Mesh: Mesh, MeshInstance: MeshInstance,\n' +
@@ -172,7 +178,7 @@ const PATCHES: EnginePatch[] = [
             '    BLENDMODE_ONE: BLENDMODE_ONE, BLENDMODE_SRC_ALPHA: BLENDMODE_SRC_ALPHA,\n' +
             '    BLENDMODE_ONE_MINUS_SRC_ALPHA: BLENDMODE_ONE_MINUS_SRC_ALPHA\n' +
             '}; } catch (ssPcErr) { console.warn(\'portal markers unavailable:\', ssPcErr); }\n' +
-            'export { main };',
+            'export { createViewer };',
         applied: 'window.__ssPc = {'
     },
     // --- fork: a click on a portal marker opens its tooltip and nothing else ---
@@ -291,6 +297,26 @@ const PATCHES: EnginePatch[] = [
         replace:
             '                    const quality = (window.__ssQualityClass === \'weak\') ? budgets.mobile : budgets.desktop;\n' +
             '                    return (window.__ssQualityMode === \'hd\') ? (window.__ssHdBudget || 14) : (state.performanceMode ? quality.low : quality.high);\n'
+    },
+    // --- fork: publish the internal Viewer for every companion ---
+    // supersplat-viewer >= 1.32 replaced `main()` with `createViewer()`, whose
+    // page bootstrap discards the result, and whose result is a slim public
+    // handle without the internals the companions need (cameraManager,
+    // inputController, voxelOverlay, cameraFrame). Publish the internal Viewer
+    // itself, at construction. createViewer runs initUI SYNCHRONOUSLY right after
+    // this line, and initUI copies every annotation's title/text out of
+    // global.settings -- so window.__ssOnViewer (see annotation-i18n.ts) is the
+    // one chance to adjust settings before the UI is built. The hook must not
+    // touch the DOM: initUI has not captured it yet. Wrapped so a throwing hook
+    // cannot take createViewer down.
+    //
+    // REQUIRED: every companion dies without the handle, so export paths throw
+    // when handlePublished is false (see splat-export-core.ts).
+    {
+        search: '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n',
+        replace:
+            `    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n${HANDLE_PUBLISH}    if (typeof window.__ssOnViewer === 'function') { try { window.__ssOnViewer(viewer); } catch (ssHookErr) { console.warn('viewer hook failed:', ssHookErr); } }\n`,
+        applied: HANDLE_PUBLISH
     }
 ];
 
@@ -305,7 +331,7 @@ const patchViewerEngine = (source: string): EnginePatchResult => {
             patched++;
         }
     }
-    return { source: out, patched };
+    return { source: out, patched, handlePublished: out.includes(HANDLE_PUBLISH) };
 };
 
 export { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT };

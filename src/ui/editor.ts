@@ -251,7 +251,7 @@ class EditorUI {
         const annotationTranslationsDialog = new AnnotationTranslationsDialog(events);
 
         // about popup
-        const aboutPopup = new AboutPopup();
+        const aboutPopup = new AboutPopup(events);
 
         topContainer.append(popup);
         topContainer.append(exportPopup);

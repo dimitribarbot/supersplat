@@ -75,7 +75,8 @@ describe('injectPoster', () => {
     describe('mobile canvas keepalive', () => {
         it('keeps the canvas composited on mobile (opacity 1 under the opaque poster)', () => {
             const out = injectPoster(HTML, {}, './poster.jpg');
-            expect(out).toContain('#application-canvas { opacity: 1 !important; }');
+            expect(out).toContain('.sse-viewer > canvas { opacity: 1 !important; }');
+            expect(out).toContain('.sse-viewer .sse-poster { top: -80px !important;');
             expect(out).toContain('android|iphone');
             // classic script before </body>: runs ahead of the deferred viewer module
             expect(out.indexOf('opacity: 1 !important')).toBeLessThan(out.indexOf('</body>'));
@@ -100,7 +101,7 @@ describe('injectPoster', () => {
 
         it('applies to the solid fallback too', () => {
             const out = injectPoster(HTML, { background: { color: [0, 0, 0] } }, null);
-            expect(out).toContain('#application-canvas { opacity: 1 !important; }');
+            expect(out).toContain('.sse-viewer > canvas { opacity: 1 !important; }');
         });
 
         it('does not inject anything when the anchor is absent (soft no-op)', () => {

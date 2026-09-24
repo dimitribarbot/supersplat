@@ -26,12 +26,14 @@
 //   - The gsplat entity is created inside the asset's 'load' callback -- an HTTP
 //     macrotask, which cannot interrupt a synchronous frame tick -- so the
 //     component always appears BETWEEN ticks, never mid-frame.
-//   - main() kicks off the loads and returns `new Viewer(...)` synchronously;
-//     Viewer's constructor assigns this.global first. So
-//     window.__supersplatViewer.global.app is in hand long before the octree
-//     asset lands. Do NOT reach for the app via debugPanel._global.app or
-//     navCursor.app the way device-fallback/portals do: both of those are built
-//     INSIDE the very Promise.all this companion exists to get ahead of.
+//   - createViewer() kicks off the loads and constructs `new Viewer(...)`
+//     synchronously; Viewer's constructor assigns this.global first, and the
+//     engine patch publishes that instance as window.__supersplatViewer right
+//     after construction. So window.__supersplatViewer.global.app is in hand
+//     long before the octree asset lands -- the same global.app that
+//     device-fallback and portals now also read off window.__supersplatViewer,
+//     rather than reaching into anything built INSIDE the Promise.all this
+//     companion exists to get ahead of.
 //
 // Belt and braces on the hook: this script is classic (parse-time), so its rAF
 // poll is registered before app.start() registers the engine tick, and rAF

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { gzipSync } from 'node:zlib';
-import { Column, DataTable, Transform, writeFile, writeCompressedPly, readFile, createChunkDataPool, materializeToDataTable, MemoryFileSystem, MemoryReadFileSystem } from '@playcanvas/splat-transform';
+import { Column, DataTable, Transform, writePly, writeCompressedPly, readFile, createChunkDataPool, materializeToDataTable, MemoryFileSystem, MemoryReadFileSystem } from '@playcanvas/splat-transform';
 import { runExport } from '../src/run-export.js';
 
 const NAMES = ['x', 'y', 'z', 'scale_0', 'scale_1', 'scale_2', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
@@ -15,7 +15,7 @@ describe('server compressed PLY parity', () => {
     const n = 1024;
     const cols = NAMES.map((name, i) => new Column(name, Float32Array.from({ length: n }, (_, r) => Math.fround(Math.sin(i + r * 0.01)))));
     const memFs = new MemoryFileSystem();
-    await writeFile({ filename: 'p.ply', outputFormat: 'ply', dataTable: new DataTable(cols, Transform.PLY), options: {} }, memFs);
+    await writePly({ filename: 'p.ply', plyData: { comments: [], elements: [{ name: 'vertex', dataTable: new DataTable(cols, Transform.PLY) }] } }, memFs);
     const ply = Buffer.from(memFs.results.get('p.ply')!);
     const plyGz = Buffer.from(gzipSync(ply));
 

@@ -7,7 +7,7 @@ import { buildAnnotationLinksInjection, buildLinkTable } from '../src/viewer-com
 // it is to run the string the exporter actually emits. These fakes cover just
 // the DOM/viewer surface the companion touches -- enough to reproduce the
 // exported viewer's *shared tooltip*, which is the whole source of the bug this
-// suite pins: one .pc-annotation element is reused for every annotation, so
+// suite pins: one .sse-annotation element is reused for every annotation, so
 // anything appended to it survives until something removes it.
 
 class FakeEl {
@@ -91,12 +91,12 @@ class FakeEl {
 // Mirrors the exported viewer: one shared tooltip whose title/text are rewritten
 // on every activation (see Annotation.showTooltip, which writes textContent on
 // the title/text children and then fires 'show').
-const makeViewer = () => {
+const makeViewer = (annotations: any[] = []) => {
     const root = new FakeEl('div');
     const host = new FakeEl('div');
     host.className = 'annotations';
     const tooltip = new FakeEl('div');
-    tooltip.className = 'pc-annotation';
+    tooltip.className = 'sse-annotation';
     host.appendChild(tooltip);
     root.appendChild(host);
 
@@ -122,7 +122,7 @@ const makeViewer = () => {
 
     const window = {
         __supersplatAnnotationLinks: [] as any[],
-        __supersplatViewer: { global: { events } },
+        __supersplatViewer: { global: { events, settings: { annotations } } },
         location: { href: 'https://viewer.test/index.html' }
     };
 
@@ -154,6 +154,10 @@ const runCompanion = (annotations: any[], viewer: ReturnType<typeof makeViewer>)
 
 const linkIn = (viewer: ReturnType<typeof makeViewer>) => viewer.tooltip.querySelector('.ss-annotation-link');
 
+// supersplat-viewer >= 1.32 selection: fired with the index (null = none).
+const select = (viewer: ReturnType<typeof makeViewer>, index: number | null) =>
+    viewer.events.fire('selectedAnnotation:changed', index, null);
+
 describe('buildLinkTable', () => {
     it('emits one 1-based entry per annotation carrying a url', () => {
         expect(buildLinkTable([
@@ -178,10 +182,10 @@ describe('annotation link companion runtime', () => {
     ];
 
     it('injects the link when an annotation carrying a url is activated', () => {
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         expect(runCompanion(annotations, viewer)).toBe(true);
 
-        viewer.events.fire('annotation.activate', annotations[0]);
+        select(viewer, 0);
 
         const link = linkIn(viewer);
         expect(link).not.toBeNull();
@@ -194,33 +198,43 @@ describe('annotation link companion runtime', () => {
     // the nav chevrons never fires a hotspot click, which was the only thing
     // that used to clear it.
     it('clears the link when an annotation with no url is activated next', () => {
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
 
-        viewer.events.fire('annotation.activate', annotations[0]);
+        select(viewer, 0);
         expect(linkIn(viewer)).not.toBeNull();
-        viewer.events.fire('annotation.activate', annotations[1]);
+        select(viewer, 1);
 
         expect(linkIn(viewer)).toBeNull();
     });
 
     it('never stacks two links in the shared tooltip', () => {
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
 
-        viewer.events.fire('annotation.activate', annotations[0]);
-        viewer.events.fire('annotation.activate', annotations[0]);
+        select(viewer, 0);
+        select(viewer, 0);
 
         expect(viewer.tooltip.querySelectorAll('.ss-annotation-link')).toHaveLength(1);
     });
 
     it('rejects a non-http(s) url rather than injecting it', () => {
         const hostile = [{ title: 'x', extras: { url: 'javascript:alert(1)' } }];
-        const viewer = makeViewer();
+        const viewer = makeViewer(hostile);
         expect(runCompanion(hostile, viewer)).toBe(true);
 
-        viewer.events.fire('annotation.activate', hostile[0]);
+        select(viewer, 0);
 
+        expect(linkIn(viewer)).toBeNull();
+    });
+
+    it('clears the chip when the selection is cleared', () => {
+        const annotations = [{ title: 'A', extras: { url: 'https://a.test/' } }];
+        const viewer = makeViewer(annotations);
+        runCompanion(annotations, viewer);
+        select(viewer, 0);
+        expect(linkIn(viewer)).not.toBeNull();
+        select(viewer, null);
         expect(linkIn(viewer)).toBeNull();
     });
 
@@ -268,10 +282,10 @@ describe('annotation chip precedence', () => {
 
     it('shows a gallery chip for an image annotation', () => {
         const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         expect(runCompanion(annotations, viewer)).toBe(true);
 
-        viewer.events.fire('annotation.activate', annotations[0]);
+        select(viewer, 0);
 
         const chip = linkIn(viewer);
         expect(chip).not.toBeNull();
@@ -280,9 +294,9 @@ describe('annotation chip precedence', () => {
 
     it('opens the carousel when the chip is clicked', () => {
         const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
-        viewer.events.fire('annotation.activate', annotations[0]);
+        select(viewer, 0);
 
         linkIn(viewer).dispatch('click');
 
@@ -293,9 +307,9 @@ describe('annotation chip precedence', () => {
     // still resolve deterministically if a hand-edited export carries both.
     it('prefers the gallery when an annotation carries both', () => {
         const annotations = [{ title: 'a', text: '', extras: { url: 'https://a.test', images: gallery } }];
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
-        viewer.events.fire('annotation.activate', annotations[0]);
+        select(viewer, 0);
 
         linkIn(viewer).dispatch('click');
 
@@ -304,12 +318,12 @@ describe('annotation chip precedence', () => {
 
     it('closes an open carousel when the annotation is deactivated', () => {
         const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
-        viewer.events.fire('annotation.activate', annotations[0]);
+        select(viewer, 0);
         linkIn(viewer).dispatch('click');
 
-        viewer.events.fire('annotation.deactivate');
+        select(viewer, null);
 
         expect(viewer.root.querySelector('.ss-gallery')).toBeNull();
     });
@@ -319,11 +333,11 @@ describe('annotation chip precedence', () => {
             { title: 'a', text: '', extras: { images: gallery } },
             { title: 'b', text: '', extras: { url: 'https://b.test' } }
         ];
-        const viewer = makeViewer();
+        const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
 
-        viewer.events.fire('annotation.activate', annotations[0]);
-        viewer.events.fire('annotation.activate', annotations[1]);
+        select(viewer, 0);
+        select(viewer, 1);
 
         expect(viewer.tooltip.querySelectorAll('.ss-annotation-link')).toHaveLength(1);
         expect(linkIn(viewer).href).toBe('https://b.test/');

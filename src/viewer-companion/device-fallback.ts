@@ -154,7 +154,7 @@ const companionRuntime = `
   }
   function arm() {
     var v = window.__supersplatViewer;
-    var app = (v && v.debugPanel && v.debugPanel._global && v.debugPanel._global.app) || (v && v.navCursor && v.navCursor.app) || null;
+    var app = (v && v.global && v.global.app) || null;
     var gd = app && app.graphicsDevice;
     if (!gd || !gd.on) { return false; }
     if (gd.deviceType !== 'webgpu') { return true; }   // already on webgl: never loop a lost GL context into reloads
@@ -178,10 +178,8 @@ const companionRuntime = `
 `;
 
 // Produce the HTML fragment to inject before </body>. Always injected: the
-// fallback is wanted in every export. The viewer handle used by arm() is
-// published by the off-limits/portals injectors when present; when neither
-// runs (plain export), injectDeviceFallback's own bootstrap soft-replace in
-// splat-export-core publishes it.
+// fallback is wanted in every export. The viewer handle arm() polls for is
+// published by the engine patch (viewer-engine-patch.ts).
 const buildDeviceFallbackInjection = (): string => {
     return `<script>${companionRuntime}</script>`;
 };

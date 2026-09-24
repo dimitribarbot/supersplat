@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Column, DataTable, Transform, writeFile, readFile, MemoryFileSystem, MemoryReadFileSystem, createChunkDataPool, materializeToDataTable } from '@playcanvas/splat-transform';
+import { Column, DataTable, Transform, writePly, readFile, MemoryFileSystem, MemoryReadFileSystem, createChunkDataPool, materializeToDataTable } from '@playcanvas/splat-transform';
 
 const READ_OPTS = { iterations: 10, lodSelect: [0], unbundled: false, lodChunkCount: 512, lodChunkExtent: 16 };
 
@@ -11,7 +11,7 @@ describe('extract -> PLY -> readback parity', () => {
     const src = new DataTable(cols, Transform.PLY);
 
     const memFs = new MemoryFileSystem();
-    await writeFile({ filename: 'p.ply', outputFormat: 'ply', dataTable: src, options: {} }, memFs);
+    await writePly({ filename: 'p.ply', plyData: { comments: [], elements: [{ name: 'vertex', dataTable: src }] } }, memFs);
     const bytes = memFs.results.get('p.ply');
     expect(bytes && bytes.length).toBeGreaterThan(0);
 
@@ -32,7 +32,7 @@ describe('extract -> PLY -> readback parity', () => {
       .map((n, i) => new Column(n, Float32Array.from({ length: 4 }, (_, r) => i + r * 0.25)));
     const src = new DataTable(cols, Transform.PLY);
     const memFs = new MemoryFileSystem();
-    await writeFile({ filename: 'p.ply', outputFormat: 'ply', dataTable: src, options: {} }, memFs);
+    await writePly({ filename: 'p.ply', plyData: { comments: [], elements: [{ name: 'vertex', dataTable: src }] } }, memFs);
     const rfs = new MemoryReadFileSystem();
     rfs.set('p.ply', memFs.results.get('p.ply'));
     const sources = await readFile({ filename: 'p.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: rfs });

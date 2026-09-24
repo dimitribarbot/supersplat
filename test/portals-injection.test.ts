@@ -453,8 +453,12 @@ describe('buildPortalsInjection', () => {
             portalScenes: ['', 'scenes/1/scene.sog'],
             portalStart: 0
         });
-        expect(out).toContain('annotation.activate');
-        expect(out).toContain("ev.on('annotation.activate'");
+        expect(out).not.toContain('annotation.activate');
+        expect(out).toContain('v0.selectAnnotation = function (index)');
+        expect(out).toContain('var ANNOTATION_GUARD_MS = 2650;');
+        expect(out).toContain('var TELEPORT_GUARD_MS = 1250;');
+        expect(out).not.toContain('debugPanel');
+        expect(out).not.toContain('navCursor');
         expect(out).toContain('idx >= data.portalScenes.length');
     });
 
@@ -469,12 +473,50 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('var tickTeleportGuard =');
         // every viewer-driven camera lerp opens the guard: annotation jump,
         // reset (R / menu) and frame all goto + startTransition
-        expect(out).toContain('function beginTeleport(idx)');
-        expect(out).toContain('beginTeleport(known ? idx : activeIndex)');
+        expect(out).toContain('function beginTeleport(idx, durationMs)');
+        expect(out).toContain('beginTeleport(known ? idx : activeIndex, ANNOTATION_GUARD_MS)');
         expect(out).toContain('beginTeleport(sIdx)');
         expect(out).toContain("name === 'frame'");
+        // reset/frame keep the default duration; only annotation flights override it
+        expect(out).toContain('durationMs || TELEPORT_GUARD_MS');
         // and the guard is consulted before free-nav detection each frame
         expect(out).toContain('tickTeleportGuard(teleportGuard');
+    });
+
+    it('adopts a lazily-built, late-collision overlay instead of assuming it started at scene 0', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0,
+            portalCollision: ['', 'scenes/1/collision.voxel.json']
+        });
+        // liveScene tracks what the shared instance actually holds, independent
+        // of overlayScene's (possibly stale) idea of it
+        expect(out).toContain('var liveScene = data.portalStart || 0;');
+        expect(out).toContain('liveScene = snapshotIdx;');
+        expect(out).toContain('liveScene = idx;');
+        // adoptOverlay recognizes a viewer-built overlay it has not seen yet and
+        // attributes it to liveScene rather than rebuilding it
+        expect(out).toContain('var knownOverlay = null;');
+        expect(out).toContain('function adoptOverlay()');
+        expect(out).toContain('if (ov && ov !== knownOverlay)');
+        expect(out).toContain('overlayScene = liveScene;');
+        // called before the instance is mutated (attributes the PRE-swap scene)
+        // and at the top of refreshOverlay
+        expect(out).toContain('adoptOverlay();\n    applyVoxel(live, voxels[idx]);');
+        expect(out).toContain('function refreshOverlay() {\n    adoptOverlay();');
+        // refreshOverlay's own rebuild also updates knownOverlay
+        expect(out).toContain('knownOverlay = nv;');
+        // refreshOverlay compares against liveScene (what the shared collision
+        // instance actually holds), not activeIndex, since the two can diverge
+        // during a tile/defocus dismantle window -- and re-attributes the
+        // rebuilt overlay to liveScene, not activeIndex
+        expect(out).toContain('if (!ov || !ov.constructor || !live || overlayScene === liveScene) return;');
+        expect(out).toContain('ov.destroy();\n      overlayScene = liveScene;\n      if (app) app.renderNextFrame = true;');
+        // the enable-overlay handler waits a frame for the viewer's own
+        // (possibly later-registered) handler to build the overlay first
+        expect(out).toContain("ev.on('collisionOverlayEnabled:changed', function (on) {");
+        expect(out).toContain('requestAnimationFrame(function () {\n          adoptOverlay();\n          refreshOverlay();\n        });');
     });
 
     it('ships the transition helpers, CSS and payload flag', () => {

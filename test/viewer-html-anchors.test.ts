@@ -4,7 +4,8 @@ import { dirname, join } from 'path';
 
 import { describe, it, expect } from 'vitest';
 
-import { BRAND_ANCHORS, injectBrand } from '../src/viewer-companion/brand';
+import { BRAND_HTML_ANCHORS, BRAND_JS_ANCHORS, injectBrand, injectBrandJs } from '../src/viewer-companion/brand';
+import { VIEWER_LOCALES } from '../src/viewer-companion/viewer-lang';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from '../src/viewer-engine-patch';
 
 // Drift guard against the REAL baked viewer, not a fixture.
@@ -69,21 +70,37 @@ const extractLiteralAround = (marker: string): string => {
     return JSON.parse(bundle.slice(start, end + 1)) as string;
 };
 
-// The first `sse-bootstrap` in the bundle is the shipped document's own block;
-// the second is renderViewerHtml's replacement template.
 const htmlSource = extractLiteralAround('id=\\"sse-bootstrap\\"');
-const jsSource = extractLiteralAround('export { main };');
+const jsSource = extractLiteralAround('export { createViewer };');
+
+// Decode index.js's `var uiHtml = "…";` literal, ending at its first UNESCAPED
+// closing quote (a naive '";' search can stop inside the markup).
+const uiHtmlOf = (js: string): string => {
+    const start = js.indexOf('var uiHtml = "') + 'var uiHtml = '.length;
+    expect(start).toBeGreaterThan('var uiHtml = '.length - 1);
+    let i = start + 1;
+    while (i < js.length) {
+        if (js[i] === BACKSLASH) {
+            i += 2;
+            continue;
+        }
+        if (js[i] === '"') {
+            break;
+        }
+        i++;
+    }
+    return JSON.parse(js.slice(start, i + 1)) as string;
+};
 
 const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
 
 describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () => {
     it('extracted the two documents the fork injects into', () => {
         expect(htmlSource).toContain('<html');
-        expect(jsSource).toContain('export { main };');
+        expect(jsSource).toContain('export { createViewer };');
     });
 
-    // src/viewer-companion/viewer-bootstrap.ts -- the seam the poster default,
-    // the streaming content url and any future export-time default go through.
+    // viewer-bootstrap.ts / poster.ts / streaming repoint
     it('renders exactly one sse-bootstrap json block', () => {
         expect(occurrences(htmlSource, '<script type="application/json" id="sse-bootstrap">')).toBe(1);
         expect(htmlSource).toContain("JSON.parse(document.getElementById('sse-bootstrap').textContent)");
@@ -95,81 +112,131 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
         expect(htmlSource).toContain('bootstrap.collisionUrl');
     });
 
-    // The streaming export leaves contentFilename unset on purpose, so that a
-    // `?content=` override drives the parser as well as the fetch (the viewer
-    // picks the parser off the url's basename). Guard that it still works that
-    // way -- a bootstrap.contentFilename that survived an override would pin
-    // every override to the sog parser.
     it('ignores a bootstrap contentFilename when ?content= overrides the url', () => {
         expect(htmlSource).toContain("url.searchParams.has('content') ? null : (bootstrap.contentFilename ?? null)");
     });
 
-    // src/splat-export-core.ts repointCollisionUrl -- appends the bundled voxel
-    // file as a further fallback on this exact expression.
     it('keeps the collision url query chain repointCollisionUrl extends', () => {
         expect(occurrences(htmlSource, "url.searchParams.get('collision') ?? url.searchParams.get('voxel')")).toBe(1);
     });
 
-    // src/splat-export-core.ts injectDeviceFallback -- soft-replaces this line
-    // to publish window.__supersplatViewer, which every companion polls for.
-    it('keeps the viewer-handle line the companions are published from', () => {
-        expect(occurrences(htmlSource, 'const viewer = await main(canvas, settingsJson, config);')).toBe(1);
+    // portal-markers.ts reads window.sse.options.ui; loading-bar/iframe-api read ?noui
+    it('publishes window.sse.options with ui driven by ?noui', () => {
+        expect(htmlSource).toContain('window.sse = {');
+        expect(htmlSource).toContain('options: sseOptions,');
+        expect(htmlSource).toContain("ui: !url.searchParams.has('noui')");
     });
 
-    // src/splat-export-core.ts insertBeforeBodyClose -- every companion lands here.
-    it('closes its body tag', () => {
+    it('closes its head and body tags once', () => {
+        expect(occurrences(htmlSource, '</head>')).toBe(1);
         expect(occurrences(htmlSource, '</body>')).toBe(1);
     });
 
-    // src/viewer-engine-patch.ts -- the 8 fork patches, applied to the baked
-    // index.js of every export. The sibling viewer-engine-patch.test.ts pins
-    // their behaviour on snippets; this pins that they still MATCH.
-
-    it('matches every engine patch, and re-applying them is a no-op', () => {
+    // viewer-engine-patch.ts -- all nine patches, including the required handle publish
+    it('matches every engine patch, publishes the handle, and re-applying is a no-op', () => {
         const once = patchViewerEngine(jsSource);
         expect(once.patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
+        expect(once.handlePublished).toBe(true);
         expect(patchViewerEngine(once.source).patched).toBe(0);
     });
-    // src/viewer-companion/brand.ts -- the deployment brand override rewrites
-    // the document title, both stock logos and both stock labels, and inserts
-    // its attribution ahead of the info panel's sections. Asserting against the
-    // module's own exported anchors (rather than copies) means the test cannot
-    // drift away from what the injector actually searches for.
-    it('keeps every brand surface injectBrand rewrites', () => {
-        for (const anchor of BRAND_ANCHORS) {
-            expect(occurrences(htmlSource, anchor), anchor).toBe(1);
+
+    // The __ssOnViewer hook must run before initUI copies annotation title/text
+    // (annotation-i18n.ts). Pin that createViewer constructs the Viewer and then
+    // reaches initUI with no await in between.
+    it('builds the UI synchronously after constructing the Viewer', () => {
+        const at = jsSource.indexOf('const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);');
+        const ui = jsSource.indexOf('initUI(global, handle', at);
+        expect(at).toBeGreaterThan(-1);
+        expect(ui).toBeGreaterThan(at);
+        expect(jsSource.slice(at, ui)).not.toContain('await');
+    });
+
+    // Runtime fields and methods the companions read on the internal Viewer.
+    it('keeps the internal Viewer surface the companions use', () => {
+        expect(jsSource).toContain('this.global = global;');
+        expect(jsSource).toContain('this.cameraManager = new CameraManager(global, sceneBound);');
+        expect(jsSource).toContain('this.inputController.collision = collision;');
+        expect(jsSource).toContain('this.voxelOverlay = new VoxelDebugOverlay(app, collision, camera);');
+        expect(jsSource).toContain('selectAnnotation(index) {');
+        expect(jsSource).toContain('state.selectedAnnotation = index;');
+        expect(jsSource).toContain('selectAnnotation: (index) => viewer.selectAnnotation(index)');
+        expect(jsSource).toContain("script.on('select', () => viewer.selectAnnotation(i));");
+    });
+
+    // VoxelCollision private fields portals.ts's snapshot()/applyVoxel() read
+    // and write directly (a scene-swap collision snapshot/restore, bypassing
+    // the class's public getters, which are read-only). A rename here breaks
+    // that companion silently -- pin every field's constructor assignment.
+    it('keeps the VoxelCollision private fields portals.ts snapshots and restores', () => {
+        for (const field of ['_gridMinX', '_gridMinY', '_gridMinZ', '_numVoxelsX', '_numVoxelsY', '_numVoxelsZ', '_voxelResolution', '_leafSize', '_treeDepth', '_nodes', '_leafData']) {
+            expect(jsSource, field).toContain(`this.${field} = `);
         }
     });
 
-    // src/viewer-companion/annotation-i18n.ts -- the companion overwrites these
-    // three nodes to show an annotation in the visitor's language. A rename
-    // upstream would silently ship untranslated tooltips, so pin them here
-    // against the real bundle rather than against a fixture.
-    it('keeps the annotation tooltip and navigator nodes the i18n companion writes', () => {
-        expect(jsSource).toContain("className = 'pc-annotation-title'");
-        expect(jsSource).toContain("className = 'pc-annotation-text'");
-        expect(jsSource).toContain('annotationNavTitle');
+    // iframe-api.ts's readiness gate (isLoaded/isNoUi, ~lines 211-222) reads
+    // global.state.loaded and global.config.ui === false directly, rather than
+    // through a method, so pin the two fields it depends on at their source:
+    // the load gate the bridge mirrors, and how config.ui is resolved from the
+    // caller's options and then gates whether the built-in UI is even built.
+    it('keeps the loaded/config.ui fields the iframe-api readiness gate reads', () => {
+        expect(jsSource).toContain('if (!this.global.state.loaded) {');
+        expect(jsSource).toContain('state.loaded = true;');
+        expect(jsSource).toContain('ui: options.ui ?? true,');
+        expect(jsSource).toContain('const disposeUI = config.ui ? initUI(global, handle, () => viewer.picker) : null;');
     });
 
-    // The same companion, and annotation-links.ts, depend on the viewer firing
-    // 'annotation.activate' AFTER it has written those divs.
-    it('fires annotation.activate from the annotation show handler', () => {
-        expect(jsSource).toContain("fire('annotation.activate'");
+    it('keeps the events the companions listen to', () => {
+        for (const name of ['selectedAnnotation:changed', 'progress:changed', 'loaded:changed', 'firstFrame', 'collisionOverlayEnabled:changed', 'cameraMode:changed', 'gamingControls:changed', 'performanceMode:changed', 'inputEvent']) {
+            expect(jsSource, name).toContain(`'${name}'`);
+        }
+        expect(jsSource).toContain("'frame:ready'");
     });
 
-    it('leaves one deliberate SuperSplat mention once a full brand is applied', () => {
-        const branded = injectBrand(htmlSource, {
-            name: 'Acme',
-            iconHref: './brand-icon.png',
-            fontFamily: 'Acme Sans',
-            fontHref: './brand-font.woff2',
-            fontFormat: 'woff2'
-        });
-        expect(branded).toContain('<title>Acme</title>');
-        expect(branded).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
-        expect(branded).toContain('<img id="brandTitleIcon" src="./brand-icon.png" alt="" />');
-        // Only the attribution line survives; nothing else still says SuperSplat.
-        expect(occurrences(branded, 'SuperSplat')).toBe(1);
-        expect(branded).toContain('PlayCanvas SuperSplat Viewer</a>');
+    // DOM classes the companions query or style (all live in uiHtml now)
+    it('keeps the sse- classes the companions touch', () => {
+        for (const cls of ['sse-annotation', 'sse-annotation-title', 'sse-annotation-text', 'sse-performanceModeRow', 'sse-settingsGroup', 'sse-settingsRow', 'sse-loadingWrap', 'sse-loadingBar', 'sse-loadingText', 'sse-poster', 'sse-viewerBranding', 'sse-viewerTitle', 'sse-title-name', 'sse-infoGpu']) {
+            expect(jsSource, cls).toContain(cls);
+        }
+        expect(jsSource).toContain("root.className = 'sse-viewer';");
+        expect(jsSource).toContain("root.style.setProperty('--canvas-opacity', '0');");
+    });
+
+    // annotation-i18n.ts relies on the viewer copying title/text out of settings
+    it('copies annotation title and text from the settings when building the UI', () => {
+        expect(jsSource).toContain('script.title = ann.title;');
+        expect(jsSource).toContain('script.text = ann.text;');
+    });
+
+    // viewer-lang.ts reproduces the viewer's locale rule over the same nine keys
+    it('ships dictionaries for exactly the locales viewer-lang resolves against', () => {
+        const start = jsSource.indexOf('const dictionaries = {');
+        const block = jsSource.slice(start, jsSource.indexOf('};', start));
+        // keys appear as `de: deJson,`, `'pt-BR': ptBRJson,` or shorthand `en,`
+        const hasKey = (code: string) => block.includes(`    ${code}:`) || block.includes(`    '${code}':`) || block.includes(`    ${code},`) || block.includes(`    ${code}\n`);
+        for (const code of VIEWER_LOCALES) {
+            expect(hasKey(code), code).toBe(true);
+        }
+    });
+
+    it('keeps every brand surface the override rewrites', () => {
+        for (const anchor of BRAND_HTML_ANCHORS) {
+            expect(occurrences(htmlSource, anchor), anchor).toBe(1);
+        }
+        for (const anchor of BRAND_JS_ANCHORS) {
+            expect(occurrences(jsSource, anchor), anchor).toBe(1);
+        }
+    });
+
+    it('leaves one deliberate SuperSplat mention in the UI once a full brand is applied', () => {
+        const brand = { name: 'Acme', iconHref: './brand-icon.png', fontFamily: 'Acme Sans', fontHref: './brand-font.woff2', fontFormat: 'woff2' };
+        const html = injectBrand(htmlSource, brand);
+        expect(html).toContain('<title>Acme</title>');
+        const ui = uiHtmlOf(injectBrandJs(jsSource, brand));
+        expect(ui).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
+        expect(ui).toContain('<img id="brandTitleIcon" src="./brand-icon.png" alt="" />');
+        expect(ui).toContain('PlayCanvas SuperSplat Viewer</a>');
+        // Only the attribution line still says SuperSplat inside the UI markup.
+        // (The <symbol id="supersplatIcon"> id is an identifier, not branding.)
+        expect(occurrences(ui.split('id="supersplatIcon"').join(''), 'SuperSplat')).toBe(1);
     });
 });

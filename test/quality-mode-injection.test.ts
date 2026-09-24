@@ -54,20 +54,20 @@ describe('buildQualityModeInjection', () => {
 describe('buildQualityModeInjection settings control', () => {
     it('targets the stock performance-mode row', () => {
         const out = buildQualityModeInjection();
-        expect(out).toContain('performanceModeRow');
+        expect(out).toContain("querySelector('.sse-viewer .sse-performanceModeRow')");
     });
 
     it('gates the control build on the viewer handle before touching the DOM', () => {
-        // #performanceModeRow is static markup that initUI() CAPTURES by id after
-        // main()'s awaits. The handle is published only once main() resolves, so
-        // waiting for it is what guarantees the capture already happened --
-        // replacing the row earlier strips the id and throws inside initUI,
-        // killing the whole viewer.
+        // The engine patch publishes the handle synchronously inside createViewer(),
+        // immediately before initUI runs, with no await between them. Both execute in
+        // the same macrotask. This companion's setInterval poll is a later macrotask,
+        // so the handle can never be visible until after initUI has already captured
+        // .sse-performanceModeRow. Replacing the row any earlier would break initUI.
         const out = buildQualityModeInjection();
         expect(out).toContain('function buildControl() {');
         const body = out.slice(out.indexOf('function buildControl() {'));
         const gate = body.indexOf('if (!getViewer()) { return false; }');
-        const firstDomRead = body.indexOf('document.getElementById');
+        const firstDomRead = body.indexOf("document.querySelector('.sse-viewer .sse-performanceModeRow')");
         expect(gate).toBeGreaterThan(-1);
         expect(firstDomRead).toBeGreaterThan(gate);
     });
@@ -78,6 +78,7 @@ describe('buildQualityModeInjection settings control', () => {
         const out = buildQualityModeInjection();
         expect(out).toContain('cloneNode');
         expect(out).toContain('replaceChild');
+        expect(out).toContain("fresh.className = 'sse-settingsRow ssQRow';");
     });
 
     it('builds a dropdown trigger and a popup with three exclusive items, not a segmented control', () => {
@@ -168,20 +169,21 @@ describe('buildQualityModeInjection settings control', () => {
         expect(out).toContain('.ssQ-item');
     });
 
-    it('scopes the wrapper override through #settingsPanel to beat the stock (1,1,1) row rule', () => {
-        // #settingsPanel > .settingsRow > div is (1,1,1) specificity in the
-        // viewer's own stylesheet (padding: 0 8px; color: #AAA; height: 34px)
-        // and outranks a plain .ssQ class selector. Left unneutralised, that
-        // padding would land on the wrapper and throw off the trigger/popup
-        // position, so this one rule must carry the id-scoped prefix to win.
+    it('scopes the wrapper override through .sse-viewer .sse-settingsPanel to beat the stock (0,4,1) row rule', () => {
+        // .sse-viewer .sse-settingsPanel > .sse-settingsGroup > .sse-settingsRow > div
+        // is (0,4,1) specificity in the viewer's own stylesheet (padding: 0 8px;
+        // color: #AAA; height: 34px) and outranks a plain .ssQ class selector.
+        // Left unneutralised, that padding would land on the wrapper and throw off
+        // the trigger/popup position, so this override with (0,5,1) specificity must
+        // win. This <style> sits in the body after index.css, so that tie-break works.
         const out = buildQualityModeInjection();
-        expect(out).toContain('#settingsPanel > .settingsRow > div.ssQ { padding: 0; position: relative; }');
+        expect(out).toContain('.sse-viewer .sse-settingsPanel > .sse-settingsGroup > .sse-settingsRow > div.ssQ { padding: 0; position: relative; }');
         // Nothing else needs it: the trigger is a grandchild of the row (never
         // matched by the stock > button rule) and the popup/items are deeper
-        // still, so exactly one id-scoped selector should exist in the sheet.
+        // still, so exactly one such selector should exist in the sheet.
         const styleOut = out.slice(out.indexOf('<style>'), out.indexOf('</style>'));
-        const idScopedCount = styleOut.split('#settingsPanel').length - 1;
-        expect(idScopedCount).toBe(1);
+        const scopedCount = styleOut.split('.sse-viewer .sse-settingsPanel').length - 1;
+        expect(scopedCount).toBe(1);
     });
 
     it('anchors the popup upward from the row, with an entrance transform that rises into place', () => {

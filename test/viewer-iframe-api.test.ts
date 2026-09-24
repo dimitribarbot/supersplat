@@ -117,19 +117,30 @@ const makeViewer = (annotations: any[]) => {
             (handlers[name] ?? []).forEach(fn => fn(...args));
         }
     };
-    const state = { loaded: false };
+    const state: any = { loaded: false, selectedAnnotation: null };
     const parent = makeHost();
     const messageListeners: ((e: any) => void)[] = [];
 
     const window: any = {
         parent,
         __supersplatIframeApi: [] as any[],
-        // `annotations` mirrors the real viewer's own field: null until its
-        // post-gsplatLoad continuation constructs the Annotations object (see
-        // hasAnnotations() in iframe-api.ts). Tests flip it to simulate that
-        // continuation completing. `config` mirrors global.config; noui tests
-        // set config.noui directly.
-        __supersplatViewer: { global: { events, settings: { annotations }, state, config: {} }, annotations: null },
+        // The 1.35 internal Viewer: selectAnnotation throws until state.loaded
+        // (requireLoaded) and fires selectedAnnotation:changed on a change only.
+        __supersplatViewer: {
+            global: { events, settings: { annotations }, state, config: { ui: true } },
+            selected: [] as (number | null)[],
+            selectAnnotation(index: number | null) {
+                if (!state.loaded) {
+                    throw new Error('selectAnnotation: viewer not loaded');
+                }
+                this.selected.push(index);
+                const prev = (state as any).selectedAnnotation ?? null;
+                (state as any).selectedAnnotation = index;
+                if (prev !== index) {
+                    events.fire('selectedAnnotation:changed', index, prev);
+                }
+            }
+        },
         addEventListener: (name: string, fn: any) => {
             if (name === 'message') {
                 messageListeners.push(fn);
@@ -173,12 +184,12 @@ const runBridge = (annotations: any[], v: ReturnType<typeof makeViewer>) => {
 };
 
 // Run the bridge and drive it past the real navigation-ready signal: the
-// viewer's Annotations object appearing (see hasAnnotations() in
-// iframe-api.ts). Most tests want this -- only the readiness-gating tests
-// below care about the state *before* it appears.
+// viewer's state.loaded flipping true (see isLoaded() in iframe-api.ts). Most
+// tests want this -- only the readiness-gating tests below care about the
+// state *before* it happens.
 const runReadyBridge = (annotations: any[], v: ReturnType<typeof makeViewer>) => {
     const { tick } = runBridge(annotations, v);
-    v.window.__supersplatViewer.annotations = {};
+    v.state.loaded = true;
     tick();
     return { tick };
 };
@@ -204,34 +215,37 @@ const runTableScript = (injection: string): any => {
 };
 
 describe('iframe api runtime', () => {
-    it('broadcasts ready to the parent once the viewer constructs its annotations object', () => {
+    it('broadcasts ready to the parent once the viewer finishes loading', () => {
         const v = makeViewer(ANNOTATIONS);
         const { tick } = runBridge(ANNOTATIONS, v);
 
         expect(messagesOf(v.parent, 'supersplat:ready')).toHaveLength(0);
-        v.window.__supersplatViewer.annotations = {};
+        v.state.loaded = true;
         tick();
 
         expect(messagesOf(v.parent, 'supersplat:ready')).toHaveLength(1);
         expect(v.parent.sent[0].origin).toBe('*');
     });
 
-    it('does not become ready from firstFrame or state.loaded alone -- the annotations object is the real signal', () => {
+    it('does not become ready from firstFrame alone -- state.loaded is the real signal', () => {
         const v = makeViewer(ANNOTATIONS);
         const { tick } = runBridge(ANNOTATIONS, v);
 
-        // Both fire routinely well before the viewer's post-gsplatLoad
-        // continuation constructs Annotations; readiness must not jump the gun
-        // on either, or a queued goto gets flushed with no listener registered
-        // to hear it (the CRITICAL bug this test guards against).
+        // On 1.35, firstFrame is exactly the handler that sets state.loaded
+        // (new.js ~93424-93426) -- so the bridge must gate on state.loaded
+        // itself, not on any event, or it couples to viewer internals that
+        // can change independently of what state.loaded actually means (the
+        // CRITICAL bug this test guards against).
         v.events.fire('firstFrame');
+        tick();
+        expect(messagesOf(v.parent, 'supersplat:ready')).toHaveLength(0);
+
         v.state.loaded = true;
         tick();
-
-        expect(messagesOf(v.parent, 'supersplat:ready')).toHaveLength(0);
+        expect(messagesOf(v.parent, 'supersplat:ready')).toHaveLength(1);
     });
 
-    it('declares ready via a bounded watchdog when the annotations object never appears, flushing queued list/ping requests', () => {
+    it('declares ready via a bounded watchdog when the viewer never finishes loading, flushing queued list/ping requests', () => {
         vi.useFakeTimers();
         try {
             const v = makeViewer(ANNOTATIONS);
@@ -265,8 +279,6 @@ describe('iframe api runtime', () => {
         try {
             const v = makeViewer(ANNOTATIONS);
             runBridge(ANNOTATIONS, v);
-            const navigated: any[] = [];
-            v.events.on('annotation.navigate', (ann: any) => navigated.push(ann));
 
             const host = makeHost();
             v.send(host, { type: 'supersplat:annotation.goto', name: 'Bedroom', requestId: 'g1' });
@@ -274,7 +286,7 @@ describe('iframe api runtime', () => {
 
             vi.advanceTimersByTime(15000);
 
-            expect(navigated).toHaveLength(0);
+            expect(v.window.__supersplatViewer.selected).toHaveLength(0);
             expect(host.sent[0].message).toEqual({
                 type: 'supersplat:annotation.goto.result',
                 requestId: 'g1',
@@ -286,7 +298,7 @@ describe('iframe api runtime', () => {
         }
     });
 
-    it('replies unavailable (not ok: true) for a goto received after the watchdog backstop fires without annotations', () => {
+    it('replies unavailable (not ok: true) for a goto received after the watchdog backstop fires without the viewer having loaded', () => {
         vi.useFakeTimers();
         try {
             const v = makeViewer(ANNOTATIONS);
@@ -310,7 +322,7 @@ describe('iframe api runtime', () => {
         }
     });
 
-    it('a goto succeeds once the annotations object appears after the watchdog backstop already fired ready', () => {
+    it('a goto succeeds once the viewer finishes loading after the watchdog backstop already fired ready', () => {
         vi.useFakeTimers();
         try {
             const v = makeViewer(ANNOTATIONS);
@@ -320,26 +332,27 @@ describe('iframe api runtime', () => {
             expect(messagesOf(v.parent, 'supersplat:ready')).toHaveLength(1);
 
             // A real (if very slow) load finally finishes after the backstop
-            // already declared ready. doGoto checks hasAnnotations() live, not a
+            // already declared ready. doGoto checks isLoaded() live, not a
             // cached flag, so this is not permanently stuck at unavailable.
-            v.window.__supersplatViewer.annotations = {};
+            v.state.loaded = true;
             tick();
-            const navigated: any[] = [];
-            v.events.on('annotation.navigate', (ann: any) => navigated.push(ann));
 
             const host = makeHost();
             v.send(host, { type: 'supersplat:annotation.goto', name: 'Bedroom', requestId: 'g3' });
 
-            expect(navigated).toEqual([ANNOTATIONS[0]]);
-            expect(host.sent[0].message.ok).toBe(true);
+            // Filter to the goto reply: the selectAnnotation wrap also
+            // notifies this now-subscribed host of the activation.
+            expect(v.window.__supersplatViewer.selected).toEqual([0]);
+            const [result] = messagesOf(host, 'supersplat:annotation.goto.result');
+            expect(result.message.ok).toBe(true);
         } finally {
             vi.useRealTimers();
         }
     });
 
-    it('reports ready immediately under config.noui (no annotations object will ever be constructed)', () => {
+    it('reports ready immediately under ?noui (config.ui === false)', () => {
         const v = makeViewer(ANNOTATIONS);
-        v.window.__supersplatViewer.global.config.noui = true;
+        v.window.__supersplatViewer.global.config.ui = false;
         runBridge(ANNOTATIONS, v);
 
         // No tick() needed: isNoUi() is detected on the very first poll, which
@@ -348,9 +361,9 @@ describe('iframe api runtime', () => {
         expect(messagesOf(v.parent, 'supersplat:ready')).toHaveLength(1);
     });
 
-    it('keeps goto unavailable under config.noui even after ready, since annotations never exist there', () => {
+    it('keeps goto unavailable under ?noui before the viewer has loaded', () => {
         const v = makeViewer(ANNOTATIONS);
-        v.window.__supersplatViewer.global.config.noui = true;
+        v.window.__supersplatViewer.global.config.ui = false;
         runBridge(ANNOTATIONS, v);
 
         const host = makeHost();
@@ -364,9 +377,35 @@ describe('iframe api runtime', () => {
         });
     });
 
-    it('still answers list and ping under config.noui', () => {
+    it('keeps goto unavailable under ?noui even once the viewer has finished loading, matching <= 1.31 parity', () => {
         const v = makeViewer(ANNOTATIONS);
-        v.window.__supersplatViewer.global.config.noui = true;
+        v.window.__supersplatViewer.global.config.ui = false;
+        const { tick } = runBridge(ANNOTATIONS, v);
+
+        // The realistic noui case: state.loaded does eventually flip true --
+        // firstFrame sets it with no dependency on the UI -- so isLoaded()
+        // alone would go true here too. isNoUi() in doGoto's gate is the only
+        // thing keeping navigation unavailable once that happens; deleting it
+        // as "redundant" with isLoaded() would silently break <= 1.31 parity
+        // for exactly this, the realistic, case.
+        v.state.loaded = true;
+        tick();
+
+        const host = makeHost();
+        v.send(host, { type: 'supersplat:annotation.goto', name: 'Bedroom', requestId: 'g5' });
+
+        expect(host.sent[0].message).toEqual({
+            type: 'supersplat:annotation.goto.result',
+            requestId: 'g5',
+            ok: false,
+            reason: 'unavailable'
+        });
+        expect(v.window.__supersplatViewer.selected).toHaveLength(0);
+    });
+
+    it('still answers list and ping under ?noui', () => {
+        const v = makeViewer(ANNOTATIONS);
+        v.window.__supersplatViewer.global.config.ui = false;
         runBridge(ANNOTATIONS, v);
 
         const host = makeHost();
@@ -377,36 +416,35 @@ describe('iframe api runtime', () => {
         expect(messagesOf(host, 'supersplat:ready')).toHaveLength(1);
     });
 
-    it('navigates to an annotation by name with the viewer own annotation object', () => {
+    it('navigates to an annotation by name via viewer.selectAnnotation', () => {
         const v = makeViewer(ANNOTATIONS);
         runReadyBridge(ANNOTATIONS, v);
-        const navigated: any[] = [];
-        v.events.on('annotation.navigate', (ann: any) => navigated.push(ann));
 
         const host = makeHost();
         v.send(host, { type: 'supersplat:annotation.goto', name: 'kitchen', requestId: 'r1' });
 
-        expect(navigated).toHaveLength(1);
-        expect(navigated[0]).toBe(ANNOTATIONS[1]);
-        expect(host.sent[0].message).toEqual({
+        // The selectAnnotation wrap also notifies the host (now subscribed
+        // via the goto request itself) of the activation before the goto
+        // reply is posted -- filter to the reply specifically.
+        expect(v.window.__supersplatViewer.selected).toEqual([1]);
+        const [result] = messagesOf(host, 'supersplat:annotation.goto.result');
+        expect(result.message).toEqual({
             type: 'supersplat:annotation.goto.result',
             requestId: 'r1',
             ok: true,
             annotation: { index: 1, id: 'annotation_1', title: 'Kitchen', text: '', scene: 1 }
         });
-        expect(host.sent[0].origin).toBe('https://host.test');
+        expect(result.origin).toBe('https://host.test');
     });
 
     it('reports not-found for an unknown annotation and navigates nowhere', () => {
         const v = makeViewer(ANNOTATIONS);
         runReadyBridge(ANNOTATIONS, v);
-        const navigated: any[] = [];
-        v.events.on('annotation.navigate', (ann: any) => navigated.push(ann));
 
         const host = makeHost();
         v.send(host, { type: 'supersplat:annotation.goto', name: 'Garage' });
 
-        expect(navigated).toHaveLength(0);
+        expect(v.window.__supersplatViewer.selected).toHaveLength(0);
         expect(host.sent[0].message.ok).toBe(false);
         expect(host.sent[0].message.reason).toBe('not-found');
     });
@@ -459,18 +497,16 @@ describe('iframe api runtime', () => {
     it('queues a goto sent before ready and flushes the last one', () => {
         const v = makeViewer(ANNOTATIONS);
         const { tick } = runBridge(ANNOTATIONS, v);
-        const navigated: any[] = [];
-        v.events.on('annotation.navigate', (ann: any) => navigated.push(ann));
 
         const host = makeHost();
         v.send(host, { type: 'supersplat:annotation.goto', name: 'Bedroom' });
         v.send(host, { type: 'supersplat:annotation.goto', name: 'Kitchen' });
-        expect(navigated).toHaveLength(0);
+        expect(v.window.__supersplatViewer.selected).toHaveLength(0);
 
-        v.window.__supersplatViewer.annotations = {};
+        v.state.loaded = true;
         tick();
 
-        expect(navigated).toEqual([ANNOTATIONS[1]]);
+        expect(v.window.__supersplatViewer.selected).toEqual([1]);
     });
 
     it('queues a list request sent before ready', () => {
@@ -481,7 +517,7 @@ describe('iframe api runtime', () => {
         v.send(host, { type: 'supersplat:annotation.list' });
         expect(host.sent).toHaveLength(0);
 
-        v.window.__supersplatViewer.annotations = {};
+        v.state.loaded = true;
         tick();
 
         expect(messagesOf(host, 'supersplat:annotation.list.result')).toHaveLength(1);
@@ -493,8 +529,8 @@ describe('iframe api runtime', () => {
         const host = makeHost();
         v.send(host, { type: 'supersplat:ping' });
 
-        v.events.fire('annotation.activate', ANNOTATIONS[0]);
-        v.events.fire('annotation.deactivate');
+        v.window.__supersplatViewer.selectAnnotation(0);
+        v.window.__supersplatViewer.selectAnnotation(null);
 
         expect(messagesOf(host, 'supersplat:annotation.activated')[0].message).toEqual({
             type: 'supersplat:annotation.activated',
@@ -506,12 +542,47 @@ describe('iframe api runtime', () => {
         expect(messagesOf(host, 'supersplat:annotation.deactivated')).toHaveLength(1);
     });
 
+    it('reports activated for a host goto that re-selects the current annotation', () => {
+        const v = makeViewer(ANNOTATIONS);
+        runReadyBridge(ANNOTATIONS, v);
+        const host = makeHost();
+        v.send(host, { type: 'supersplat:annotation.goto', index: 0, requestId: 'a' });
+        v.send(host, { type: 'supersplat:annotation.goto', index: 0, requestId: 'b' });
+        // the second select changes nothing, so the viewer fires no event,
+        // yet the old viewer re-activated and hosts rely on the message
+        expect(messagesOf(host, 'supersplat:annotation.activated')).toHaveLength(2);
+    });
+
+    it('reports deactivated when the viewer clears the selection', () => {
+        const v = makeViewer(ANNOTATIONS);
+        runReadyBridge(ANNOTATIONS, v);
+        const host = makeHost();
+        v.send(host, { type: 'supersplat:ping' });
+        v.window.__supersplatViewer.selectAnnotation(1);
+        v.window.__supersplatViewer.selectAnnotation(null);
+        expect(messagesOf(host, 'supersplat:annotation.activated')).toHaveLength(1);
+        expect(messagesOf(host, 'supersplat:annotation.deactivated')).toHaveLength(1);
+    });
+
+    it('answers goto with unavailable under ?noui (config.ui === false), without throwing', () => {
+        const v = makeViewer(ANNOTATIONS);
+        const { tick } = runBridge(ANNOTATIONS, v);
+        const host = makeHost();
+        // noui makes the bridge ready while the viewer is still not loaded
+        v.window.__supersplatViewer.global.config.ui = false;
+        tick();
+        v.send(host, { type: 'supersplat:annotation.goto', index: 0, requestId: 'x' });
+        const [res] = messagesOf(host, 'supersplat:annotation.goto.result');
+        expect(res.message.ok).toBe(false);
+        expect(res.message.reason).toBe('unavailable');
+    });
+
     it('does not notify a window that has never messaged the viewer', () => {
         const v = makeViewer(ANNOTATIONS);
         runReadyBridge(ANNOTATIONS, v);
         const silent = makeHost();
 
-        v.events.fire('annotation.activate', ANNOTATIONS[0]);
+        v.window.__supersplatViewer.selectAnnotation(0);
 
         expect(silent.sent).toHaveLength(0);
     });
@@ -522,7 +593,7 @@ describe('iframe api runtime', () => {
         const hosts = Array.from({ length: 9 }, () => makeHost());
         hosts.forEach(h => v.send(h, { type: 'supersplat:ping' }));
 
-        v.events.fire('annotation.activate', ANNOTATIONS[0]);
+        v.window.__supersplatViewer.selectAnnotation(0);
 
         expect(messagesOf(hosts[0], 'supersplat:annotation.activated')).toHaveLength(0);
         expect(messagesOf(hosts[8], 'supersplat:annotation.activated')).toHaveLength(1);

@@ -33,7 +33,7 @@ const INITXR_SNIPPET =
 const EXPORT_SNIPPET =
     'console.log(`SuperSplat Viewer`);\n' +
     '\n' +
-    'export { main };\n';
+    'export { createViewer };\n';
 
 // NavInteraction._onPointerUp, mouse click-to-navigate branch (fork patch: a
 // click on a portal icon shows its tooltip and must not also move the camera).
@@ -73,13 +73,20 @@ const BUDGET_SNIPPET =
     '                    const quality = platform.mobile ? budgets.mobile : budgets.desktop;\n' +
     '                    return state.performanceMode ? quality.low : quality.high;\n';
 
-const BUNDLE = CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET + NAV_CURSOR_SNIPPET + BUDGET_SNIPPET + EXPORT_SNIPPET;
+// createViewer's construction of the internal Viewer (fork patch: publish it as
+// window.__supersplatViewer and call the __ssOnViewer hook, synchronously
+// before initUI). 4-space indented.
+const VIEWER_SNIPPET =
+    '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n' +
+    '    viewer.onDestroy(persistPreferences(events));\n';
+
+const BUNDLE = CAMERA_MANAGER_SNIPPET + INITXR_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET + NAV_CURSOR_SNIPPET + BUDGET_SNIPPET + VIEWER_SNIPPET + EXPORT_SNIPPET;
 
 describe('patchViewerEngine', () => {
     it('applies the fork viewer feature patches to the baked bundle', () => {
         const { source, patched } = patchViewerEngine(BUNDLE);
         expect(patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
-        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(8);
+        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(9);
 
         // fork patch: spawn-preserving reseat() inserted next to snap(), using
         // goto() (re-seat only) instead of onEnter() (grounds + stores spawn)
@@ -122,7 +129,7 @@ describe('patchViewerEngine', () => {
         expect(source).toContain('Quat: Quat');
         expect(source).toContain('BLENDMODE_ONE_MINUS_SRC_ALPHA: BLENDMODE_ONE_MINUS_SRC_ALPHA');
         // the original export is preserved after it
-        expect(source.indexOf('window.__ssPc')).toBeLessThan(source.indexOf('export { main };'));
+        expect(source.indexOf('window.__ssPc')).toBeLessThan(source.indexOf('export { createViewer };'));
 
         // fork patch: a click that lands on a portal icon opens the marker
         // tooltip and must not also drive the camera. Guarding the viewer's own
@@ -197,5 +204,59 @@ describe('patchViewerEngine', () => {
         const { source } = patchViewerEngine(BUDGET_SNIPPET);
         expect(source).toContain('(window.__ssQualityClass === \'weak\') ? budgets.mobile : budgets.desktop');
         expect(source).toContain('(state.performanceMode ? quality.low : quality.high)');
+    });
+});
+
+describe('viewer handle publish', () => {
+    it('publishes the internal Viewer and calls the hook right after construction', () => {
+        const { source, handlePublished } = patchViewerEngine(VIEWER_SNIPPET);
+        expect(handlePublished).toBe(true);
+        expect(source).toContain(
+            '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n' +
+            '    window.__supersplatViewer = viewer;\n' +
+            '    if (typeof window.__ssOnViewer === \'function\') { try { window.__ssOnViewer(viewer); } catch (ssHookErr) { console.warn(\'viewer hook failed:\', ssHookErr); } }\n' +
+            '    viewer.onDestroy(persistPreferences(events));\n'
+        );
+    });
+
+    it('is idempotent', () => {
+        const once = patchViewerEngine(VIEWER_SNIPPET);
+        const twice = patchViewerEngine(once.source);
+        expect(twice.source).toBe(once.source);
+        expect(twice.handlePublished).toBe(true);
+    });
+
+    it('reports handlePublished=false when the anchor is missing', () => {
+        expect(patchViewerEngine('const x = 1;').handlePublished).toBe(false);
+        expect(patchViewerEngine(CAMERA_MANAGER_SNIPPET).handlePublished).toBe(false);
+    });
+
+    it('runs the published hook with the viewer and survives a throwing hook', () => {
+        const { source } = patchViewerEngine(VIEWER_SNIPPET);
+        const seen: any[] = [];
+        const win: any = { __ssOnViewer: (v: any) => seen.push(v) };
+        const viewerObj = { onDestroy: () => {} };
+        // eslint-disable-next-line no-new-func
+        new Function('window', 'Viewer', 'global', 'gsplatLoad', 'skyboxLoad', 'collisionLoad', 'persistPreferences', 'events', 'console', source)(
+            win, function () { return viewerObj; }, {}, null, null, null, () => {}, {}, { warn: () => {} }
+        );
+        expect(win.__supersplatViewer).toBe(viewerObj);
+        expect(seen).toEqual([viewerObj]);
+
+        const throwing: any = { __ssOnViewer: () => { throw new Error('boom'); } };
+        // eslint-disable-next-line no-new-func
+        expect(() => new Function('window', 'Viewer', 'global', 'gsplatLoad', 'skyboxLoad', 'collisionLoad', 'persistPreferences', 'events', 'console', source)(
+            throwing, function () { return viewerObj; }, {}, null, null, null, () => {}, {}, { warn: () => {} }
+        )).not.toThrow();
+        expect(throwing.__supersplatViewer).toBe(viewerObj);
+    });
+});
+
+describe('export guard contract', () => {
+    it('a bundle without the Viewer construction line is detectable before writing', () => {
+        const stale = CAMERA_MANAGER_SNIPPET + EXPORT_SNIPPET;
+        const { handlePublished, patched } = patchViewerEngine(stale);
+        expect(patched).toBeGreaterThan(0);
+        expect(handlePublished).toBe(false);
     });
 });

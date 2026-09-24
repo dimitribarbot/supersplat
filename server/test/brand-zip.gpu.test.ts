@@ -8,6 +8,31 @@ const FONT_URL = 'https://brand.example.com/acme.woff2';
 const ICON = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10]);
 const FONT = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 1, 2, 3, 4]);
 
+// Decode index.js's `var uiHtml = "…";` literal, ending at its first UNESCAPED
+// closing quote (a naive '";' search can stop inside the markup). Copied from
+// test/viewer-html-anchors.test.ts's uiHtmlOf -- that file targets the
+// installed splat-transform package's bundle, not this server's exported
+// index.js, so it is not imported here.
+const BACKSLASH = String.fromCharCode(92);
+const uiHtmlOf = (js: string): string => {
+    const start = js.indexOf('var uiHtml = "') + 'var uiHtml = '.length;
+    expect(start).toBeGreaterThan('var uiHtml = '.length - 1);
+    let i = start + 1;
+    while (i < js.length) {
+        if (js[i] === BACKSLASH) {
+            i += 2;
+            continue;
+        }
+        if (js[i] === '"') {
+            break;
+        }
+        i++;
+    }
+    return JSON.parse(js.slice(start, i + 1)) as string;
+};
+
+const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
 describe('runExport packageViewer brand override (GPU)', () => {
     let gpu = false;
     let pkg: RunResult | undefined;
@@ -84,17 +109,43 @@ describe('runExport packageViewer brand override (GPU)', () => {
         expect(Uint8Array.from(zipReadEntry(zip, 'brand-icon.png'))).toEqual(ICON);
         expect(Uint8Array.from(zipReadEntry(zip, 'brand-font.woff2'))).toEqual(FONT);
 
+        // index.html: the page half of the override (injectBrand) -- <title>,
+        // the injected <style id="brandStyle"> with its @font-face rule. The
+        // badge/panel markup moved into index.js's uiHtml string (see below).
         const html = zipReadEntry(zip, 'index.html').toString('utf8');
         expect(html).toContain('<title>Acme</title>');
-        expect(html).toContain('<span>Acme</span>');
-        expect(html).toContain('<span class="title-name">Acme</span>');
-        expect(html).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
-        expect(html).toContain('<img id="brandTitleIcon" src="./brand-icon.png" alt="" />');
+        expect(html).not.toContain('<title>SuperSplat');
+        expect(html).toContain('<style id="brandStyle">');
         expect(html).toContain("src: url('./brand-font.woff2') format('woff2');");
-        expect(html).toContain('id="brandAttribution"');
-        expect(html).toContain('href="https://superspl.at/"');
-        // The attribution is the only SuperSplat mention left in the document.
-        expect(html.split('SuperSplat').length - 1).toBe(1);
+
+        const js = zipReadEntry(zip, 'index.js').toString('utf8');
+        // Proves the handle-publish patch (viewer-engine-patch.ts) ran AFTER
+        // branding on the same memFs 'index.js' entry: applyBrand runs before
+        // patchEngineLoaderInMemFs in splat-export-core.ts, both read-modify-
+        // write the same map entry, so this only holds if both landed.
+        expect(js).toContain('window.__supersplatViewer = viewer;');
+
+        // index.js: the uiHtml half of the override (injectBrandJs) -- the
+        // overlay badge, the info-panel header and the attribution line.
+        const ui = uiHtmlOf(js);
+        expect(ui).toContain('<span>Acme</span>');
+        expect(ui).toContain('<span class="sse-title-name">Acme</span>');
+        expect(ui).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
+        expect(ui).toContain('<img id="brandTitleIcon" src="./brand-icon.png" alt="" />');
+        expect(ui).toContain('id="brandAttribution"');
+        expect(ui).toContain('href="https://superspl.at/"');
+        // The attribution sits right before the info panel's GPU/renderer row.
+        const attributionAt = ui.indexOf('id="brandAttribution"');
+        const infoGpuAt = ui.indexOf('<div class="sse-infoGpu">');
+        expect(attributionAt).toBeGreaterThan(-1);
+        expect(infoGpuAt).toBeGreaterThan(attributionAt);
+
+        // Only the attribution line still says SuperSplat inside the UI markup.
+        // Strip the lowercase id="supersplatIcon" identifier first (mirrors
+        // test/viewer-html-anchors.test.ts's equivalent check) in case a future
+        // icon symbol also carries the capitalized brand text; today it does not,
+        // so this is a no-op guard rather than a live dependency.
+        expect(occurrences(ui.split('id="supersplatIcon"').join(''), 'SuperSplat')).toBe(1);
     };
 
     it('bakes the brand into a package ZIP', () => {

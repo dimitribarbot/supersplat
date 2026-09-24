@@ -22,16 +22,17 @@ const buildLinkTable = (annotations: AnyAnnotation[]): { label: number, url: str
 // The runtime companion. Kept as a plain string so it is injected verbatim.
 //
 // The exported viewer renders annotations with a single shared tooltip
-// (.pc-annotation, holding .pc-annotation-title/.pc-annotation-text) whose
-// title/text are rewritten on every activation. The tooltip itself is
+// (.sse-annotation, holding .sse-annotation-title/.sse-annotation-text) whose
+// title/text are rewritten on every selection. The tooltip itself is
 // pointer-events:none, so any link inside it must re-enable pointer events
 // (see .ss-annotation-link in companionStyle).
 //
-// This companion listens for 'annotation.activate' and injects, refreshes or
-// clears a clickable link in that shared tooltip from the activated
-// annotation's own extras. Reading extras directly means there is no
-// "Nth hotspot = Nth annotation" ordering assumption to violate. URLs are
-// sanitised to http(s).
+// This companion listens for the published viewer handle's
+// 'selectedAnnotation:changed' (index: number | null) and injects, refreshes
+// or clears a clickable link in that shared tooltip from the selected
+// annotation's own extras (read from viewer.global.settings.annotations).
+// Reading extras directly means there is no "Nth hotspot = Nth annotation"
+// ordering assumption to violate. URLs are sanitised to http(s).
 //
 // The runtime reads nothing from the baked window.__supersplatAnnotationLinks
 // table: whether this companion is injected at all is decided at build time by
@@ -79,7 +80,7 @@ const companionRuntime = `
   // Inject (or refresh) the action chip inside the shared tooltip for the given
   // annotation. Passing null just clears any previously injected chip.
   function injectChip(ann) {
-    var tip = document.querySelector('.pc-annotation');
+    var tip = document.querySelector('.sse-annotation');
     if (!tip) return;
     var existing = tip.querySelector('.ss-annotation-link');
     if (existing) existing.remove();
@@ -113,24 +114,24 @@ const companionRuntime = `
     tip.appendChild(a);
   }
 
-  // Refresh the link on every activation. Both the nav chevrons and a hotspot
-  // click end at 'annotation.activate', which showTooltip fires AFTER writing
-  // the shared tooltip's title/text -- so appending here is correctly ordered.
-  // Binding the hotspot click instead (as this companion first did) missed
-  // chevron navigation entirely: the viewer rewrites title/text on the *shared*
-  // tooltip but never touches our appended link, so the previous annotation's
-  // link stayed on screen and read as if it belonged to the new one.
+  // Refresh the chip whenever the selection changes. supersplat-viewer >= 1.32
+  // keeps the selection in state.selectedAnnotation and fires
+  // 'selectedAnnotation:changed' with the index (null = deselected). The
+  // viewer's own tooltip listener is registered in initUI, synchronously after
+  // the handle is published, and this rAF poll only sees the handle after that,
+  // so the viewer has already rewritten the shared tooltip's title/text when
+  // this runs. The chip is a sibling of those nodes, so the viewer's own
+  // repaints (textContent writes) never remove it.
   function start() {
     var viewer = window.__supersplatViewer;
-    var ev = viewer && viewer.global && viewer.global.events;
+    var global = viewer && viewer.global;
+    var ev = global && global.events;
     if (!ev || !ev.on) { requestAnimationFrame(start); return; }
-    ev.on('annotation.activate', function (ann) {
+    ev.on('selectedAnnotation:changed', function (index) {
       closeGallery();
+      var list = global.settings && global.settings.annotations;
+      var ann = (index === null || index === undefined || !list) ? null : (list[index] || null);
       injectChip(ann);
-    });
-    ev.on('annotation.deactivate', function () {
-      closeGallery();
-      injectChip(null);
     });
   }
 

@@ -40,20 +40,22 @@ const buildPosterFallbackUrl = (viewerSettingsJson: any): string => {
 };
 
 // Mobile canvas keepalive. With a poster active the stock viewer holds the
-// CANVAS at opacity 0 until `loaded` (--canvas-opacity: 0). A fully
-// transparent WebGL canvas layer is optimized out of compositing on
-// Android, leaving the context producing frames nothing consumes -- field
-// case (Redmi Note 9S / Adreno 618, WebGL2, 2026-07-05): the GL context was
-// lost seconds into the load with the poster active, loaded clean with
-// `?poster=` empty, and the engine vram tracker showed only 36MB at loss
-// (the pressure is browser-side, invisible to it). Forcing the canvas
-// composited fixed it (user-verified) and is visually free: the DOM places
-// #ui > #poster (opaque JPEG/SVG cover) above the canvas, and `loaded`
-// hides the poster. The stock progressive unblur
+// CANVAS at opacity 0 until `loaded` (--canvas-opacity: 0, set on the
+// .sse-viewer root by initPoster). A fully transparent WebGL canvas layer is
+// optimized out of compositing on Android, leaving the context producing
+// frames nothing consumes -- field case (Redmi Note 9S / Adreno 618, WebGL2,
+// 2026-07-05): the GL context was lost seconds into the load with the poster
+// active, loaded clean with `?poster=` empty, and the engine vram tracker
+// showed only 36MB at loss (the pressure is browser-side, invisible to it).
+// Forcing the canvas composited fixed it (user-verified) and is visually
+// free: the DOM places .sse-viewer .sse-poster (opaque JPEG/SVG cover) above
+// the canvas, and `loaded` hides the poster. The root (.sse-viewer) has
+// overflow: hidden, so the 80px oversize below is clipped at the root, which
+// fills the viewport. The stock progressive unblur
 // (style.filter = blur((100 - progress) * 0.4px)) stays ENABLED: the loss
 // reproduced with the blur disabled, so it is exonerated as the crash
 // cause -- if a mobile regression ever points back at it, re-add
-// `#poster { filter: none !important; }` to the rule below.
+// `.sse-poster { filter: none !important; }` to the rule below.
 //
 // Keeping the canvas composited exposes a second, cosmetic artifact: the
 // progressive blur fades the poster's outer ~40px (the blur radius at 0%
@@ -77,8 +79,8 @@ const POSTER_CANVAS_KEEPALIVE = `<script>
     ((navigator.maxTouchPoints || 0) > 1 && /mac/i.test(navigator.platform || ''));
   if (!mobile) { return; }
   var s = document.createElement('style');
-  s.textContent = '#application-canvas { opacity: 1 !important; }' +
-    ' #poster { top: -80px !important; left: -80px !important;' +
+  s.textContent = '.sse-viewer > canvas { opacity: 1 !important; }' +
+    ' .sse-viewer .sse-poster { top: -80px !important; left: -80px !important;' +
     ' width: calc(100% + 160px) !important; height: calc(100% + 160px) !important; }';
   (document.head || document.documentElement).appendChild(s);
 })();
