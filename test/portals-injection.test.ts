@@ -264,9 +264,26 @@ describe('buildPortalsInjection', () => {
         // the clamp survives the viewer's applyPerfSettings re-run (which
         // reopens the start component's lodRangeMin to 0 on this event)
         expect(out).toContain("'performanceMode:changed'");
+        // supersplat-viewer >= 1.37 re-runs applyPerfSettings on every XR
+        // enter/exit too, so the clamp must be restored on that event as well
+        expect(out).toContain("'xrMode:changed'");
         // ...and the toggle also re-reconciles pins under the NEW budget, so
         // a raised budget releases the clamp without waiting for a crossing
         expect(out).toContain('if (pinReady) { pinDesired(); }');
+    });
+
+    // supersplat-viewer 1.37's two-hand XR grab moves only the start scene's
+    // entity; portal scenes, markers, crossings and zones are world-anchored
+    // and would detach from what the user sees, so portal exports turn it off.
+    it('switches off the viewer XR grab when a session starts', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        expect(out).toContain("app.xr.on('start', disableXrGrab);");
+        expect(out).toContain("rig.script.get('xrManipulation')");
+        expect(out).toContain('grab.enabled = false;');
     });
 
     it('halts GPU-feeding work on devicelost and resumes on devicerestored', () => {

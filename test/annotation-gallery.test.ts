@@ -154,6 +154,30 @@ class FakeEl {
     }
 }
 
+// An image already in the cache: it loads as soon as it is given a src. The
+// runtime only puts an image on screen once its detached loader has loaded;
+// the waiting itself is covered in annotation-links.test.ts, so these
+// navigation tests see every image arrive at once.
+class CachedImg extends FakeEl {
+    private _src = '';
+
+    constructor(tagName: string) {
+        super(tagName);
+        // FakeEl's `src` field is an own property, which would shadow the
+        // accessor below
+        delete (this as any).src;
+    }
+
+    get src() {
+        return this._src;
+    }
+
+    set src(value: string) {
+        this._src = value;
+        this.dispatch('load');
+    }
+}
+
 // Execute the runtime and hand back its openGallery/closeGallery. `document`
 // is itself a FakeEl (tagName 'document') so that a real event dispatched
 // deep inside the modal bubbles, via the same parent chain as the DOM, all
@@ -166,7 +190,7 @@ const loadRuntime = () => {
     const document = Object.assign(documentNode, {
         body,
         activeElement: body,
-        createElement: (tag: string) => new FakeEl(tag)
+        createElement: (tag: string) => (tag === 'img' ? new CachedImg(tag) : new FakeEl(tag))
     });
     // eslint-disable-next-line no-new-func
     const factory = new Function('document', 'window', `${galleryRuntime}\nreturn { openGallery: openGallery, closeGallery: closeGallery };`);

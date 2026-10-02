@@ -86,6 +86,9 @@ const galleryRuntime = `
     var img = document.createElement('img');
     img.className = 'ss-gallery-img';
     frame.appendChild(img);
+    var spinner = document.createElement('div');
+    spinner.className = 'ss-gallery-spinner';
+    frame.appendChild(spinner);
 
     var prev = null;
     var next = null;
@@ -115,10 +118,40 @@ const galleryRuntime = `
       overlay.appendChild(dotRow);
     }
 
+    // Each image loads in a detached <img> and goes on screen only once it has
+    // arrived. While the scene streams, an image can take seconds, and a
+    // reused <img> shows nothing at first, then keeps the PREVIOUS image under
+    // the new caption until the new one lands. Meanwhile the frame shows a
+    // spinner over the hidden previous image (keeping its size, so the arrows
+    // stay put). loadToken drops a load the user has already moved past.
+    var loadToken = 0;
+
+    function setFrameState(state) {
+      frame.className = state ? 'ss-gallery-frame ss-gallery-' + state : 'ss-gallery-frame';
+      frame.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+    }
+
+    function loadImage(src) {
+      var token = ++loadToken;
+      setFrameState('loading');
+      var loader = document.createElement('img');
+      loader.addEventListener('load', function () {
+        if (token !== loadToken) return;
+        // already in the image cache, so it displays at once
+        img.src = src;
+        setFrameState(null);
+      });
+      loader.addEventListener('error', function () {
+        if (token !== loadToken) return;
+        setFrameState('error');
+      });
+      loader.src = src;
+    }
+
     function show(i) {
       index = i;
       var entry = images[i] || {};
-      img.src = entry.src || '';
+      loadImage(entry.src || '');
       // caption doubles as alt text; textContent (never innerHTML) because it
       // is user-authored
       img.alt = entry.caption || '';
@@ -227,6 +260,16 @@ const galleryStyle = `
 }
 .ss-gallery-frame { position: relative; display: flex; align-items: center; justify-content: center; max-width: 90vw; }
 .ss-gallery-img { max-width: 88vw; max-height: 70vh; border-radius: 3px; display: block; }
+.ss-gallery-loading, .ss-gallery-error { min-width: 240px; min-height: 160px; }
+.ss-gallery-loading .ss-gallery-img, .ss-gallery-error .ss-gallery-img { visibility: hidden; }
+.ss-gallery-spinner {
+  display: none; position: absolute; top: 50%; left: 50%;
+  width: 32px; height: 32px; margin: -16px 0 0 -16px;
+  border: 3px solid rgba(255,255,255,0.25); border-top-color: #fff; border-radius: 50%;
+  animation: ss-gallery-spin 0.8s linear infinite;
+}
+.ss-gallery-loading .ss-gallery-spinner { display: block; }
+@keyframes ss-gallery-spin { to { transform: rotate(360deg); } }
 .ss-gallery-caption { color: #e8e8e8; font-size: 14px; line-height: 1.45; text-align: center; max-width: 70ch; }
 .ss-gallery-counter { position: absolute; top: 14px; left: 16px; color: #fff; font-size: 13px; opacity: 0.7; }
 .ss-gallery-close {

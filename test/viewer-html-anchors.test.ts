@@ -182,7 +182,45 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
         expect(jsSource).toContain('if (!this.global.state.loaded) {');
         expect(jsSource).toContain('state.loaded = true;');
         expect(jsSource).toContain('ui: options.ui ?? true,');
-        expect(jsSource).toContain('const disposeUI = config.ui ? initUI(global, handle, () => viewer.picker) : null;');
+        expect(jsSource).toContain([
+            'const disposeUI = config.ui',
+            '        ? initUI(global, handle, () => viewer.picker, () => viewer.cameraManager?.transitionProgress() ?? 1)',
+            '        : null;'
+        ].join('\n'));
+    });
+
+    // portals.ts restores the start scene's LOD floor after every event the
+    // viewer re-runs applyPerfSettings on, because that reopens lodRangeMin.
+    // A new trigger here wipes the floor with nothing putting it back.
+    it('re-runs applyPerfSettings only on the events portals.ts re-clamps after', () => {
+        expect(jsSource).toContain('gsplatComponent.lodRangeMin = 0;');
+        const triggers = [...jsSource.matchAll(/events\.on\('([^']+)', applyPerfSettings\)/g)].map(m => m[1]);
+        expect(triggers.sort()).toEqual(['performanceMode:changed', 'xrMode:changed']);
+    });
+
+    // portals.ts switches the XR grab off by disabling the script on the
+    // camera rig (global.camera's parent) when a session starts. That only
+    // works while the grab is a Script created there, by that name, before XR
+    // can start, and acting in update() -- which a disabled script never runs.
+    it('keeps the XR grab script portals.ts disables', () => {
+        expect(jsSource).toContain("static scriptName = 'xrManipulation';");
+        expect(jsSource).toContain('const { app, events, state, camera, renderer, root } = global;');
+        expect(jsSource).toContain('const parent = camera.parent;');
+        expect(jsSource).toContain('manipulation = parent.script.create(XrManipulation, {');
+        expect(jsSource).toContain('this.xr.setManipulationTarget(results[0]);');
+        expect(jsSource).toContain('this._startGrab(target, left, right);');
+    });
+
+    // annotation-links.ts injects its chip when the shared tooltip is SHOWN
+    // (class sse-visible), not on selection: since 1.37 a selection only hides
+    // the tooltip and revealTooltip rewrites it once the camera lands. It
+    // looks the tooltip up once, so it must exist when the handle is published.
+    it('keeps the tooltip reveal the annotation chip waits for', () => {
+        expect(jsSource).toContain("this.tooltipDom.className = 'sse-annotation';");
+        expect(jsSource).toContain('const annotations = new Annotations(viewer, root, global.camera, getPicker, getCameraProgress);');
+        expect(jsSource).toContain('revealTooltip() {');
+        expect(jsSource).toContain("ctx.tooltipDom.classList.remove('sse-visible');");
+        expect(jsSource).toContain("tooltip.classList.add('sse-visible');");
     });
 
     it('keeps the events the companions listen to', () => {

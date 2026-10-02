@@ -1264,22 +1264,45 @@ const companionRuntime = `
       ev.on('gamingControls:changed', function () {
         refreshPortalMarkers();
       });
-      // The viewer's applyPerfSettings re-runs on this event: it reopens the
-      // start component's lodRangeMin to 0 (wiping the budget clamp) AND
-      // applies the new mode's splatBudget. A frame later (rAF: all listeners
-      // on the event run synchronously, so by then applyPerfSettings has
-      // definitely run), re-assert the clamp first, then re-reconcile the
-      // pins under the NEW budget -- without this, a raised budget would not
-      // release the clamp (or admit finer pin depths) until the next portal
-      // crossing, which may never come if the user lingers in one scene. The
-      // re-assert must precede pinDesired: its loop skips scenes whose
-      // assigned depth is unchanged, leaving the wiped floor unrepaired.
-      ev.on('performanceMode:changed', function () {
+      // The viewer's applyPerfSettings re-runs on these events (xrMode since
+      // supersplat-viewer 1.37): it reopens the start component's lodRangeMin
+      // to 0 (wiping the budget clamp) AND applies the new splatBudget (a
+      // standalone headset drops to its XR budget in a session). A frame later
+      // (rAF: all listeners on the event run synchronously, so by then
+      // applyPerfSettings has definitely run), re-assert the clamp first, then
+      // re-reconcile the pins under the NEW budget -- without this, a raised
+      // budget would not release the clamp (or admit finer pin depths) until
+      // the next portal crossing, which may never come if the user lingers in
+      // one scene. The re-assert must precede pinDesired: its loop skips
+      // scenes whose assigned depth is unchanged, leaving the wiped floor
+      // unrepaired.
+      var reassertAfterPerfSettings = function () {
         requestAnimationFrame(function () {
           if (startFloor !== null && comps[0]) { comps[0].lodRangeMin = (heldFloor[0] != null) ? Math.max(startFloor, heldFloor[0]) : startFloor; }
           if (pinReady) { pinDesired(); }
         });
-      });
+      };
+      ev.on('performanceMode:changed', reassertAfterPerfSettings);
+      ev.on('xrMode:changed', reassertAfterPerfSettings);
+    }
+
+    // supersplat-viewer 1.37 lets a two-hand grab drag, turn and scale the
+    // start scene's entity in XR. Portal scenes, portal markers, crossings and
+    // zones are all world-anchored and would not follow, detaching them from
+    // what the user sees, so portal exports switch the grab off. The viewer
+    // creates the script on the camera rig once the splat has loaded, which is
+    // before any session can start, and it only acts in update(), which a
+    // disabled script never runs. Disabled at every start, so nothing can
+    // re-enable it between sessions, and at once should a session already be
+    // running when this companion starts.
+    var rig = viewer.global && viewer.global.camera && viewer.global.camera.parent;
+    if (app.xr && app.xr.on && rig) {
+      var disableXrGrab = function () {
+        var grab = rig.script && rig.script.get('xrManipulation');
+        if (grab) { grab.enabled = false; }
+      };
+      app.xr.on('start', disableXrGrab);
+      if (app.xr.active) { disableXrGrab(); }
     }
 
     liveApp = app;
@@ -1328,7 +1351,7 @@ const companionRuntime = `
           out += ' envUrl=' + (oc.environmentUrl || 'none') + ' envLoaded=' + !!oc.environmentResource;
           var al = oc.assetLoader;
           if (al) {
-            out += ' loaderQueue=' + (al._loadQueue ? al._loadQueue.length : '?') +
+            out += ' loaderQueue=' + (al._loadQueue ? al._loadQueue.size : '?') +
                    ' loading=' + (al._currentlyLoading ? al._currentlyLoading.size : '?');
             if (al._retryCount && al._retryCount.size) {
               var retries = [];
@@ -1409,7 +1432,7 @@ const companionRuntime = `
               var al = oc && oc.assetLoader;
               if (!oc || !al) { return; }
               var busy = (al._currentlyLoading && al._currentlyLoading.size) ||
-                         (al._loadQueue && al._loadQueue.length);
+                         (al._loadQueue && al._loadQueue.size);
               if (busy) { return; }   // loader active -> not stuck, let it work
               // Kick a file whose asset the loader considers done but that
               // produced no resource: unload it so the instance's next
@@ -1961,12 +1984,16 @@ const companionRuntime = `
 
   // Per-scene pin pump: walk the scene's batches strictly in order (level-major,
   // coarsest first) and keep at most PIN_WAVE not-yet-loaded files in flight.
-  // The engine's per-scene block loader is a 2-concurrent FIFO with no
-  // prioritisation, so a small wave leaves it responsive to interactive
-  // requests instead of burying them behind the whole preload. A completed
-  // batch flagged markReady marks the scene ready (drops a pending overlay).
-  // While a crossing is loading (pendingIndex), pumps of the OTHER scenes yield
-  // so the destination scene gets the bandwidth. A reclaim bumps pinGen and the
+  // The engine's per-scene block loader runs 2 loads at a time, taking the
+  // highest-priority queued request first. ensureFileResource queues at
+  // priority 0, the engine's lowest (prefetch) tier, so its visible and
+  // LOD-switch requests go first, and the engine may withdraw a queued pin
+  // load when it drops its own request for the same file (the next pump
+  // re-queues it). A small wave still keeps the queue short, so the pins never
+  // bury the interactive requests. A completed batch flagged markReady marks
+  // the scene ready (drops a pending overlay). While a crossing is loading
+  // (pendingIndex), pumps of the OTHER scenes yield so the destination scene
+  // gets the bandwidth. A reclaim bumps pinGen and the
   // pump exits (pinBatches was cleared). Each batch's remaining set tracks
   // only its not-yet-resident files, swap-removed as they arrive, so per-frame
   // work shrinks to zero as loading completes. Re-polling a not-yet-resident

@@ -88,9 +88,10 @@ class FakeEl {
     }
 }
 
-// Mirrors the exported viewer: one shared tooltip whose title/text are rewritten
-// on every activation (see Annotation.showTooltip, which writes textContent on
-// the title/text children and then fires 'show').
+// Mirrors the exported viewer (supersplat-viewer >= 1.37): one shared tooltip
+// that a selection change hides at once (Annotations' update -> hideTooltip,
+// registered before any companion) and that is only rewritten and shown --
+// class 'sse-visible' -- once the camera has nearly landed (revealTooltip).
 const makeViewer = (annotations: any[] = []) => {
     const root = new FakeEl('div');
     const host = new FakeEl('div');
@@ -101,6 +102,7 @@ const makeViewer = (annotations: any[] = []) => {
     root.appendChild(host);
 
     const handlers: Record<string, ((...args: any[]) => void)[]> = {};
+    const observers: (() => void)[] = [];
     const events = {
         on: (name: string, fn: (...args: any[]) => void) => {
             (handlers[name] ??= []).push(fn);
@@ -110,13 +112,20 @@ const makeViewer = (annotations: any[] = []) => {
         }
     };
 
+    // every element the companion creates, attached or not: the gallery
+    // preloads each image in a detached <img>
+    const created: FakeEl[] = [];
     const document = {
         readyState: 'complete',
         body: root,
         getElementById: (id: string) => (id === 'annotations' ? host : null),
         querySelector: (s: string) => root.querySelector(s),
         querySelectorAll: (s: string) => root.querySelectorAll(s),
-        createElement: (tag: string) => new FakeEl(tag),
+        createElement: (tag: string) => {
+            const el = new FakeEl(tag);
+            created.push(el);
+            return el;
+        },
         addEventListener: () => {}
     };
 
@@ -126,7 +135,12 @@ const makeViewer = (annotations: any[] = []) => {
         location: { href: 'https://viewer.test/index.html' }
     };
 
-    return { root, host, tooltip, events, document, window };
+    // the viewer's own selection listener, registered before the companion's
+    events.on('selectedAnnotation:changed', () => {
+        tooltip.className = 'sse-annotation';
+    });
+
+    return { root, host, tooltip, events, observers, created, document, window };
 };
 
 // Pull the runtime out of the emitted fragment and execute it against the fakes.
@@ -140,8 +154,12 @@ const runCompanion = (annotations: any[], viewer: ReturnType<typeof makeViewer>)
     viewer.window.__ssLang = 'en';
     viewer.window.__supersplatAnnotationLinks = buildLinkTable(annotations);
     const MutationObserver = class {
-        constructor(_cb: any) {}
-        observe() {}
+        constructor(private cb: () => void) {}
+        observe(target: FakeEl) {
+            if (target === viewer.tooltip) {
+                viewer.observers.push(() => this.cb());
+            }
+        }
     };
     const requestAnimationFrame = (fn: () => void) => fn();
     // the last script is the runtime; the first only assigns the link table
@@ -157,6 +175,18 @@ const linkIn = (viewer: ReturnType<typeof makeViewer>) => viewer.tooltip.querySe
 // supersplat-viewer >= 1.32 selection: fired with the index (null = none).
 const select = (viewer: ReturnType<typeof makeViewer>, index: number | null) =>
     viewer.events.fire('selectedAnnotation:changed', index, null);
+
+// The camera has (nearly) landed: the viewer shows the tooltip. It re-adds the
+// class on every rendered frame, so the observer fires repeatedly.
+const reveal = (viewer: ReturnType<typeof makeViewer>) => {
+    viewer.tooltip.className = 'sse-annotation sse-visible';
+    viewer.observers.forEach(fn => fn());
+};
+
+const show = (viewer: ReturnType<typeof makeViewer>, index: number) => {
+    select(viewer, index);
+    reveal(viewer);
+};
 
 describe('buildLinkTable', () => {
     it('emits one 1-based entry per annotation carrying a url', () => {
@@ -185,7 +215,7 @@ describe('annotation link companion runtime', () => {
         const viewer = makeViewer(annotations);
         expect(runCompanion(annotations, viewer)).toBe(true);
 
-        select(viewer, 0);
+        show(viewer, 0);
 
         const link = linkIn(viewer);
         expect(link).not.toBeNull();
@@ -201,9 +231,9 @@ describe('annotation link companion runtime', () => {
         const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
 
-        select(viewer, 0);
+        show(viewer, 0);
         expect(linkIn(viewer)).not.toBeNull();
-        select(viewer, 1);
+        show(viewer, 1);
 
         expect(linkIn(viewer)).toBeNull();
     });
@@ -212,8 +242,8 @@ describe('annotation link companion runtime', () => {
         const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
 
-        select(viewer, 0);
-        select(viewer, 0);
+        show(viewer, 0);
+        show(viewer, 0);
 
         expect(viewer.tooltip.querySelectorAll('.ss-annotation-link')).toHaveLength(1);
     });
@@ -223,7 +253,7 @@ describe('annotation link companion runtime', () => {
         const viewer = makeViewer(hostile);
         expect(runCompanion(hostile, viewer)).toBe(true);
 
-        select(viewer, 0);
+        show(viewer, 0);
 
         expect(linkIn(viewer)).toBeNull();
     });
@@ -232,10 +262,53 @@ describe('annotation link companion runtime', () => {
         const annotations = [{ title: 'A', extras: { url: 'https://a.test/' } }];
         const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
-        select(viewer, 0);
+        show(viewer, 0);
         expect(linkIn(viewer)).not.toBeNull();
         select(viewer, null);
         expect(linkIn(viewer)).toBeNull();
+    });
+
+    // supersplat-viewer 1.37 rewrites the shared tooltip only once the camera
+    // has nearly landed. A chip injected on selection would sit, for the fade,
+    // inside the PREVIOUS annotation's tooltip, and open the new one's link.
+    it('waits for the tooltip to be revealed before injecting the chip', () => {
+        const viewer = makeViewer(annotations);
+        runCompanion(annotations, viewer);
+
+        select(viewer, 0);
+        expect(linkIn(viewer)).toBeNull();
+
+        reveal(viewer);
+        expect(linkIn(viewer)).not.toBeNull();
+    });
+
+    it('drops the previous chip at once when another annotation is selected', () => {
+        const two = [
+            { title: 'A', text: '', extras: { url: 'https://a.test/' } },
+            { title: 'B', text: '', extras: { url: 'https://b.test/' } }
+        ];
+        const viewer = makeViewer(two);
+        runCompanion(two, viewer);
+        show(viewer, 0);
+
+        select(viewer, 1);
+        expect(linkIn(viewer)).toBeNull();
+
+        reveal(viewer);
+        expect(linkIn(viewer).href).toBe('https://b.test/');
+    });
+
+    it('does not re-inject on every frame the viewer re-shows the tooltip', () => {
+        const viewer = makeViewer(annotations);
+        runCompanion(annotations, viewer);
+        show(viewer, 0);
+        const chip = linkIn(viewer);
+
+        reveal(viewer);
+        reveal(viewer);
+
+        expect(viewer.tooltip.querySelectorAll('.ss-annotation-link')).toHaveLength(1);
+        expect(linkIn(viewer)).toBe(chip);
     });
 
     it('is not injected at all when no annotation has a url', () => {
@@ -285,7 +358,7 @@ describe('annotation chip precedence', () => {
         const viewer = makeViewer(annotations);
         expect(runCompanion(annotations, viewer)).toBe(true);
 
-        select(viewer, 0);
+        show(viewer, 0);
 
         const chip = linkIn(viewer);
         expect(chip).not.toBeNull();
@@ -296,7 +369,7 @@ describe('annotation chip precedence', () => {
         const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
         const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
-        select(viewer, 0);
+        show(viewer, 0);
 
         linkIn(viewer).dispatch('click');
 
@@ -309,7 +382,7 @@ describe('annotation chip precedence', () => {
         const annotations = [{ title: 'a', text: '', extras: { url: 'https://a.test', images: gallery } }];
         const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
-        select(viewer, 0);
+        show(viewer, 0);
 
         linkIn(viewer).dispatch('click');
 
@@ -320,7 +393,7 @@ describe('annotation chip precedence', () => {
         const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
         const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
-        select(viewer, 0);
+        show(viewer, 0);
         linkIn(viewer).dispatch('click');
 
         select(viewer, null);
@@ -336,8 +409,8 @@ describe('annotation chip precedence', () => {
         const viewer = makeViewer(annotations);
         runCompanion(annotations, viewer);
 
-        select(viewer, 0);
-        select(viewer, 1);
+        show(viewer, 0);
+        show(viewer, 1);
 
         expect(viewer.tooltip.querySelectorAll('.ss-annotation-link')).toHaveLength(1);
         expect(linkIn(viewer).href).toBe('https://b.test/');
@@ -360,6 +433,77 @@ describe('annotation chip precedence', () => {
             extras: { images: [{ src: 'annotations/annimg_0.jpg', caption: '</script><b>$&' }] }
         }]);
         expect(injection).not.toContain('</script><b>');
+    });
+});
+
+// The gallery loads each image in a detached <img> and only puts it on screen
+// once it has arrived: while the scene streams, images can take seconds, and a
+// reused <img> shows nothing at first and then the PREVIOUS image under the
+// next one's caption until the next one lands.
+describe('gallery image loading', () => {
+    const gallery = [
+        { src: 'annotations/annimg_0.jpg', caption: 'one' },
+        { src: 'annotations/annimg_1.jpg', caption: 'two' }
+    ];
+    const annotations = [{ title: 'a', text: '', extras: { images: gallery } }];
+
+    const openGalleryOf = () => {
+        const viewer = makeViewer(annotations);
+        runCompanion(annotations, viewer);
+        show(viewer, 0);
+        linkIn(viewer).dispatch('click');
+        const frame = viewer.root.querySelector('.ss-gallery-frame');
+        const img = viewer.root.querySelector('.ss-gallery-img');
+        const loaderOf = (src: string) => viewer.created.filter(el => el.tagName === 'img' && el !== img && el.src === src).pop();
+        const next = () => viewer.root.querySelector('.ss-gallery-next').dispatch('click');
+        return { frame, img, loaderOf, next };
+    };
+
+    const isLoading = (frame: FakeEl) => frame.className.split(' ').includes('ss-gallery-loading');
+
+    it('shows a loading state, not an empty frame, until the image arrives', () => {
+        const { frame, img, loaderOf } = openGalleryOf();
+
+        expect(isLoading(frame)).toBe(true);
+        expect(img.src).toBe('');
+
+        loaderOf(gallery[0].src).dispatch('load');
+
+        expect(isLoading(frame)).toBe(false);
+        expect(img.src).toBe(gallery[0].src);
+    });
+
+    it('never shows the previous image while the next one loads', () => {
+        const { frame, img, loaderOf, next } = openGalleryOf();
+        loaderOf(gallery[0].src).dispatch('load');
+
+        next();
+
+        expect(isLoading(frame)).toBe(true);
+
+        loaderOf(gallery[1].src).dispatch('load');
+
+        expect(isLoading(frame)).toBe(false);
+        expect(img.src).toBe(gallery[1].src);
+    });
+
+    it('ignores a late load from an image the user has moved past', () => {
+        const { frame, img, loaderOf, next } = openGalleryOf();
+
+        next();
+        loaderOf(gallery[0].src).dispatch('load');
+
+        expect(isLoading(frame)).toBe(true);
+        expect(img.src).not.toBe(gallery[0].src);
+    });
+
+    it('stops the loading state when an image fails', () => {
+        const { frame, loaderOf } = openGalleryOf();
+
+        loaderOf(gallery[0].src).dispatch('error');
+
+        expect(isLoading(frame)).toBe(false);
+        expect(frame.className.split(' ')).toContain('ss-gallery-error');
     });
 });
 

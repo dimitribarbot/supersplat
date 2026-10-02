@@ -114,25 +114,42 @@ const companionRuntime = `
     tip.appendChild(a);
   }
 
-  // Refresh the chip whenever the selection changes. supersplat-viewer >= 1.32
-  // keeps the selection in state.selectedAnnotation and fires
-  // 'selectedAnnotation:changed' with the index (null = deselected). The
-  // viewer's own tooltip listener is registered in initUI, synchronously after
-  // the handle is published, and this rAF poll only sees the handle after that,
-  // so the viewer has already rewritten the shared tooltip's title/text when
-  // this runs. The chip is a sibling of those nodes, so the viewer's own
-  // repaints (textContent writes) never remove it.
+  // supersplat-viewer >= 1.32 keeps the selection in state.selectedAnnotation
+  // and fires 'selectedAnnotation:changed' with the index (null = deselected).
+  // Since 1.37 the shared tooltip is NOT rewritten on selection: the viewer's
+  // own listener (registered in initUI, before this rAF poll can see the
+  // handle) only hides it, and revealTooltip writes the new title/text and
+  // adds 'sse-visible' once the camera has nearly landed. So a selection only
+  // drops the old chip -- the tooltip fades out with the previous annotation's
+  // text, and a chip left in it would open the NEW annotation's link -- and
+  // the new chip goes in when the tooltip is shown. The viewer re-adds the
+  // class on every rendered frame, so the injection is a no-op while a chip is
+  // present. The chip is a sibling of the title/text nodes, so the viewer's
+  // own repaints (textContent writes) never remove it.
+  var selectedAnn = null;
+
+  function isShown(tip) {
+    return (' ' + tip.className + ' ').indexOf(' sse-visible ') >= 0;
+  }
+
   function start() {
     var viewer = window.__supersplatViewer;
     var global = viewer && viewer.global;
     var ev = global && global.events;
     if (!ev || !ev.on) { requestAnimationFrame(start); return; }
+    var tip = document.querySelector('.sse-annotation');
+    if (!tip) return;
     ev.on('selectedAnnotation:changed', function (index) {
       closeGallery();
       var list = global.settings && global.settings.annotations;
-      var ann = (index === null || index === undefined || !list) ? null : (list[index] || null);
-      injectChip(ann);
+      selectedAnn = (index === null || index === undefined || !list) ? null : (list[index] || null);
+      injectChip(null);
     });
+    new MutationObserver(function () {
+      if (selectedAnn && isShown(tip) && !tip.querySelector('.ss-annotation-link')) {
+        injectChip(selectedAnn);
+      }
+    }).observe(tip, { attributes: true, attributeFilter: ['class'] });
   }
 
   if (document.readyState === 'loading') {

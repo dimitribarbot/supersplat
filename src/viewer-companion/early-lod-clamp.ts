@@ -13,10 +13,13 @@
 // is 0 until applyPerfSettings runs at the ready gate), so the streaming is
 // unbounded -- on mobile that is the memory pressure as well as the data cost.
 //
-// Clamping LATE cannot undo it: of the blocks in flight, all but a couple sit in
-// the octree instance's prefetchPending, which has no range-driven removal path
-// and is re-issued through ensureFileResource on every poll until it lands. The
-// only fix is to clamp BEFORE the first selection.
+// Clamping LATE only undoes part of it. Since engine 2.23 each LOD pass clears
+// the octree instance's prefetchPending and withdraws queued block requests
+// nothing asks for any more (before 2.23 prefetchPending had no range-driven
+// removal path, so a late clamp undid nothing). But the loads already in flight
+// still complete, and every block requested before the clamp has competed with
+// the collision binary until then. Clamping BEFORE the first selection avoids
+// both.
 //
 // That race is winnable, and by construction rather than by luck:
 //   - App.tick fires 'frameupdate', then update(), then 'framerender'.
