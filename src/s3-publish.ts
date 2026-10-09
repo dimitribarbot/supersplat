@@ -74,7 +74,8 @@ const registerS3PublishEvents = (events: Events) => {
                 // S3PublishOptions.viewerExportSettings never carries poster or
                 // image bytes (they travel as their own multipart parts below)
                 viewerExportSettings: { ...options.viewerExportSettings, annotationImages: undefined as { path: string; data: Uint8Array }[] | undefined },
-                ...(upload ? { portalExtras: upload.portalExtras } : {})
+                ...(upload ? { portalExtras: upload.portalExtras } : {}),
+                ...(options.brandOverride ? { brandOverride: options.brandOverride } : {})
             };
             const collisionSizes = new Map<number, number>();
             const result = await runServerPublish(

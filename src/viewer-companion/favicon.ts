@@ -1,14 +1,14 @@
 // Favicon injection for the exported viewer.
 //
-// The stock viewer's <head> (from splat-transform's writeHtml) carries a title
-// and no icon link at all, so a browser showing an exported viewer asks the
-// hosting origin for /favicon.ico and falls back to a blank tab icon. When the
-// export server is configured with VIEWER_FAVICON_URL it fetches that icon,
-// embeds a copy beside index.html in the ZIP, and injects the link below.
+// The exported viewer's <head> has a <title> and no icon link at all, so a
+// browser showing an exported viewer asks the hosting origin for /favicon.ico
+// and falls back to a blank tab icon. The brand icon (VIEWER_BRAND_ICON_URL,
+// or a client's icon URL on an S3 publish) doubles as the favicon: the export
+// core calls this with the resolved icon href.
 //
-// The href is always an export-derived relative filename (favicon.<ext>, from a
-// fixed MIME allow-list) — never the configured URL — so no operator- or
-// network-supplied string is interpolated into the document.
+// The href is either an export-derived relative filename (./brand-icon.<ext>)
+// or a validated https: URL for a hotlinked client icon, whose type is not
+// known, so `mime` is optional. Both are escaped.
 //
 // Environment-agnostic (compiled for the export server via dist-shared):
 // string operations only.
@@ -19,7 +19,13 @@ const HEAD_CLOSE = '</head>';
 // injection idempotent (mirrors the other companions' soft no-op posture).
 const ICON_MARKER = 'rel="icon"';
 
-export const injectFaviconLink = (html: string, href: string, mime: string): string => {
+const escapeAttr = (text: string): string => text
+.replace(/&/g, '&amp;')
+.replace(/</g, '&lt;')
+.replace(/>/g, '&gt;')
+.replace(/"/g, '&quot;');
+
+export const injectFaviconLink = (html: string, href: string, mime?: string): string => {
     const headEnd = html.indexOf(HEAD_CLOSE);
     if (headEnd < 0) {
         console.warn('favicon: exported viewer HTML has no </head>; skipping the icon link');
@@ -33,6 +39,7 @@ export const injectFaviconLink = (html: string, href: string, mime: string): str
     if (html.slice(0, headEnd).includes(ICON_MARKER)) {
         return html;
     }
-    const tag = `<link rel="icon" type="${mime}" href="${href}">`;
+    const type = mime ? ` type="${escapeAttr(mime)}"` : '';
+    const tag = `<link rel="icon"${type} href="${escapeAttr(href)}">`;
     return `${html.slice(0, headEnd)}        ${tag}\n    ${html.slice(headEnd)}`;
 };

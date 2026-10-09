@@ -48,7 +48,7 @@ describe('runExport streaming packageViewer (GPU)', () => {
         const names = zipEntryNames(Buffer.from(res!.files[0].data));
         expect(names).toContain('lod-meta.json');
         expect(names.some(n => /^0_0\//.test(n))).toBe(true);
-        // VIEWER_FAVICON_URL is unset in this suite: no favicon entry should appear.
+        // VIEWER_BRAND_* is unset in this suite, so no brand assets are embedded.
         expect(names).not.toContain('favicon.png');
     });
 

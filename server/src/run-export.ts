@@ -12,7 +12,7 @@ import {
 } from '@playcanvas/splat-transform';
 import type { ProgressEvent, ProgressLoc } from './progress.js';
 import { loadBrand } from './brand.js';
-import { loadFavicon } from './favicon.js';
+import { resolveBrand, type BrandOverride } from './brand-resolve.js';
 
 export type ExportOptions = {
     fileType: 'ply' | 'compressedPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
@@ -22,6 +22,9 @@ export type ExportOptions = {
     viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number }; poster?: Uint8Array; annotationImages?: { path: string; data: Uint8Array }[] };
     // per-extra-scene metadata for a portal walkthrough (index-aligned to extraPlyGz)
     portalExtras?: { seed: [number, number, number]; environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number; collisionUrl: string | null; streaming: boolean }[];
+    // Per-publish client brand, already validated by /api/publish. Never set
+    // for /api/export: a ZIP download carries the operator's env brand alone.
+    brandOverride?: BrandOverride;
 };
 
 export type RunResult = {
@@ -280,13 +283,11 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // packageViewer
     const viewerType = options.viewerExportSettings!.streaming ? 'streaming' : 'package';
     const extraScenes = buildExtraScenes();
-    // Deployment-configured favicon (VIEWER_FAVICON_URL), ZIP exports only:
-    // null when unset or unreachable, in which case the export is unchanged.
-    const favicon = await loadFavicon();
-    // Deployment-configured brand (VIEWER_BRAND_*), ZIP exports only, on the
-    // same terms: null when unset, and each of its three parts drops out
-    // independently if its asset cannot be fetched.
-    const brand = await loadBrand();
+    // Operator brand (VIEWER_BRAND_*) merged with the S3 publish's client brand,
+    // ZIP exports only: null when nothing is configured, in which case the
+    // export keeps the stock viewer. Each operator asset that cannot be fetched
+    // drops out on its own.
+    const brand = resolveBrand(await loadBrand(), options.brandOverride);
     await writeViewerCore({
         dataTable,
         viewerSettingsJson: options.viewerExportSettings!.experienceSettings,
@@ -299,7 +300,6 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
         collision: options.viewerExportSettings!.collision,
         extraScenes,
         posterBytes,
-        favicon: favicon ?? undefined,
         brand: brand ?? undefined,
         annotationImages
     });

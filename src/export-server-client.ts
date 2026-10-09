@@ -122,7 +122,12 @@ export const runServerPublish = async (
         const body = await startRes.json().catch(() => ({ count: 0 }));
         throw new PublishExistsError(body.count ?? 0);
     }
-    if (!startRes.ok) throw new Error(`server publish failed to start (${startRes.status})`);
+    if (!startRes.ok) {
+        // A 400 carries the reason (e.g. an invalid brand URL); show it rather
+        // than a bare status code.
+        const body = await startRes.json().catch(() => ({}));
+        throw new Error(body.error ? `server publish failed to start: ${body.error}` : `server publish failed to start (${startRes.status})`);
+    }
     const { jobId } = await startRes.json();
     if (!jobId) throw new Error('server did not return a job id');
 

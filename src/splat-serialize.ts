@@ -792,8 +792,8 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
         extraScenes,
         posterBytes: options.poster,
         annotationImages: options.annotationImages
-        // no favicon and no brand: both are server-only (VIEWER_FAVICON_URL /
-        // VIEWER_BRAND_*), so a local browser export keeps the stock viewer.
+        // no brand: it is server-only (VIEWER_BRAND_* and the S3 publish's
+        // client brand), so a local browser export keeps the stock viewer.
     });
 };
 const serializeViewerSettings = async (

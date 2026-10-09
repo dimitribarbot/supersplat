@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 import { describe, it, expect } from 'vitest';
 
 import { BRAND_HTML_ANCHORS, BRAND_JS_ANCHORS, injectBrand, injectBrandJs } from '../src/viewer-companion/brand';
+import { renderUiHtml } from './ui-html';
 import { VIEWER_LOCALES } from '../src/viewer-companion/viewer-lang';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from '../src/viewer-engine-patch';
 
@@ -72,25 +73,6 @@ const extractLiteralAround = (marker: string): string => {
 
 const htmlSource = extractLiteralAround('id=\\"sse-bootstrap\\"');
 const jsSource = extractLiteralAround('export { createViewer };');
-
-// Decode index.js's `var uiHtml = "…";` literal, ending at its first UNESCAPED
-// closing quote (a naive '";' search can stop inside the markup).
-const uiHtmlOf = (js: string): string => {
-    const start = js.indexOf('var uiHtml = "') + 'var uiHtml = '.length;
-    expect(start).toBeGreaterThan('var uiHtml = '.length - 1);
-    let i = start + 1;
-    while (i < js.length) {
-        if (js[i] === BACKSLASH) {
-            i += 2;
-            continue;
-        }
-        if (js[i] === '"') {
-            break;
-        }
-        i++;
-    }
-    return JSON.parse(js.slice(start, i + 1)) as string;
-};
 
 const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
 
@@ -265,16 +247,37 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
         }
     });
 
-    it('leaves one deliberate SuperSplat mention in the UI once a full brand is applied', () => {
-        const brand = { name: 'Acme', iconHref: './brand-icon.png', fontFamily: 'Acme Sans', fontHref: './brand-font.woff2', fontFormat: 'woff2' };
-        const html = injectBrand(htmlSource, brand);
-        expect(html).toContain('<title>Acme</title>');
-        const ui = uiHtmlOf(injectBrandJs(jsSource, brand));
+    it('renders the stock uiHtml through the test helper', () => {
+        expect(renderUiHtml(jsSource)).toContain('<span>SuperSplat</span>');
+    });
+
+    it('never writes document.title (the brand name is read back from it)', () => {
+        expect(jsSource).not.toContain('document.title');
+    });
+
+    it('leaves one deliberate SuperSplat mention in the UI once an env brand is applied', () => {
+        const brand = { name: 'Acme', iconHref: './brand-icon.png', panelHref: 'https://acme.example/', badgeLink: true };
+        expect(injectBrand(htmlSource, brand)).toContain('<title data-brand-name>Acme</title>');
+        const ui = renderUiHtml(injectBrandJs(jsSource, brand), 'Acme');
+        expect(ui).toContain('<a class="sse-viewerBranding sse-hidden" title="Acme" target="_blank" rel="noopener noreferrer">');
         expect(ui).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
+        expect(ui).toContain('<a class="sse-viewerTitle" href="https://acme.example/" target="_blank" rel="noopener noreferrer">');
         expect(ui).toContain('<img id="brandTitleIcon" src="./brand-icon.png" alt="" />');
+        expect(ui).toContain('<span class="sse-title-name">Acme</span>');
         expect(ui).toContain('PlayCanvas SuperSplat Viewer</a>');
+        expect(ui).not.toContain('github.com/playcanvas/supersplat-viewer');
         // Only the attribution line still says SuperSplat inside the UI markup.
         // (The <symbol id="supersplatIcon"> id is an identifier, not branding.)
         expect(occurrences(ui.split('id="supersplatIcon"').join(''), 'SuperSplat')).toBe(1);
+    });
+
+    it('renders both brand elements as non-links in client mode', () => {
+        const brand = { name: 'Client Co', iconHref: 'https://cdn.example/client/icon.png', logoHref: 'https://cdn.example/client/logo.png', badgeLink: false, poweredBy: { name: 'Acme', href: 'https://acme.example/' } };
+        const ui = renderUiHtml(injectBrandJs(jsSource, brand), 'Client Co');
+        expect(ui).toContain('<div class="sse-viewerBranding sse-hidden" title="Client Co">');
+        expect(ui).toContain('<div class="sse-viewerTitle">');
+        expect(ui).toContain('<img id="brandTitleLogo" src="https://cdn.example/client/logo.png" alt="Client Co" />');
+        expect(ui).toContain('Powered by <a href="https://acme.example/" target="_blank" rel="noopener noreferrer">Acme</a>');
+        expect(ui).not.toContain('github.com/playcanvas/supersplat-viewer');
     });
 });

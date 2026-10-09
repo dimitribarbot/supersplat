@@ -46,7 +46,7 @@ describe('runExport package portal walkthrough, 2 scenes, non-streaming (GPU)', 
         if (!gpu) { console.warn('No GPU available; skipping package portal GPU test'); return; }
         const names = zipEntryNames(Buffer.from(res!.files[0].data));
         expect(names).toContain('scenes/1/scene.sog');
-        // VIEWER_FAVICON_URL is unset in this suite: no favicon entry should appear.
+        // VIEWER_BRAND_* is unset in this suite, so no brand assets are embedded.
         expect(names).not.toContain('favicon.png');
     });
 

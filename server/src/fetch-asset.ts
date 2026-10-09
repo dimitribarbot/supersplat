@@ -1,6 +1,6 @@
-// Shared loader for the small, optional, deployment-configured assets that get
-// baked into ZIP viewer exports: the favicon (VIEWER_FAVICON_URL) and the brand
-// icon / brand font (VIEWER_BRAND_ICON_URL, VIEWER_BRAND_FONT_URL).
+// Shared loader for the small, optional, deployment-configured images that get
+// baked into ZIP viewer exports: the brand icon and the brand logo
+// (VIEWER_BRAND_ICON_URL, VIEWER_BRAND_LOGO_URL).
 //
 // Fetch-and-embed rather than link-to-remote: the exported ZIP stays
 // self-contained (works offline, behind a firewall, and after the source URL
@@ -12,9 +12,9 @@ export type FetchedAsset = { mime: string; ext: string; data: Uint8Array };
 export type AssetSpec = {
     // Named in the warnings so a misconfiguration points at the var that caused it.
     envVar: string;
-    // Prefix on every warning line, e.g. "favicon", "brand icon".
+    // Prefix on every warning line, e.g. "brand icon".
     label: string;
-    // What the operator loses, e.g. "exporting without a favicon".
+    // What the operator loses, e.g. "exporting without the brand icon".
     consequence: string;
     // Accepted content types, each mapped to the file extension it is stored under.
     mimeExt: Record<string, string>;

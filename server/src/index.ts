@@ -11,6 +11,8 @@ import { config as loadEnv } from 'dotenv';
 import Fastify from 'fastify';
 import type { RouteHandlerMethod } from 'fastify';
 import { safeAnnotationImageName } from './annotation-images.js';
+import { warnRemovedBrandEnv } from './brand.js';
+import { validateBrandOverride } from './brand-resolve.js';
 import { probeFfmpeg } from './ffmpeg.js';
 import { probeGpu } from './gpu.js';
 import { createJob, createUploadJob, createVideoJob, getJob, subscribe } from './jobs.js';
@@ -94,6 +96,9 @@ export const buildApp = async () => {
         if (!filenameOk) {
             return reply.code(400).send({ error: 'invalid filename: use only letters, digits, dot, underscore, hyphen' });
         }
+        // A client brand is only ever offered by the S3 publish dialog; a ZIP
+        // download carries the operator's env brand alone.
+        delete options.brandOverride;
         const id = createJob(plyGz, options, undefined, extraPlyGz.length ? extraPlyGz : undefined);
         return reply.code(202).send({ jobId: id });
     });
@@ -323,6 +328,8 @@ export const buildApp = async () => {
         }
         const prefix = buildPrefix(options.subfolder, options.name);
         if (!prefix) return reply.code(400).send({ error: 'invalid subfolder or name' });
+        const brand = validateBrandOverride(options.brandOverride);
+        if (!brand.ok) return reply.code(400).send({ error: brand.error });
         if (options.overwrite !== true) {
             const { count } = await listPrefix(prefix);
             if (count > 0) return reply.code(409).send({ error: 'destination already exists', count });
@@ -332,7 +339,8 @@ export const buildApp = async () => {
             filename: 'output.zip',
             serializeSettings: options.serializeSettings,
             viewerExportSettings: options.viewerExportSettings,
-            portalExtras: options.portalExtras
+            portalExtras: options.portalExtras,
+            brandOverride: brand.value
         };
         const id = createJob(plyGz, exportOptions, { prefix, public: !!options.public }, extraPlyGz.length ? extraPlyGz : undefined);
         return reply.code(202).send({ jobId: id });
@@ -343,6 +351,7 @@ export const buildApp = async () => {
 
 const start = async () => {
     const app = await buildApp();
+    warnRemovedBrandEnv();
     await app.listen({ port: PORT, host: '0.0.0.0' });
 };
 

@@ -23,7 +23,7 @@ import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subse
 import { Events } from './events';
 import { buildAnnotationI18nInjection } from './viewer-companion/annotation-i18n';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
-import { injectBrand, injectBrandJs } from './viewer-companion/brand';
+import { injectBrand, injectBrandJs, type BrandInjection } from './viewer-companion/brand';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { buildEarlyLodClampInjection } from './viewer-companion/early-lod-clamp';
 import { injectFaviconLink } from './viewer-companion/favicon';
@@ -95,36 +95,20 @@ const applyPoster = (
     return injectPoster(html, viewerSettingsJson, `data:image/jpeg;base64,${bytesToBase64(posterBytes)}`);
 };
 
-// Optional favicon for ZIP exports: the export server fetched the bytes from
-// its VIEWER_FAVICON_URL and handed them down (the browser never does, so local
-// exports carry no icon). Emit the file beside the viewer and point the injected
-// <head> link at it. Mirrors applyPoster's memFs handling — every memFs entry is
-// zipped by the callers below.
-type Favicon = { filename: string; mime: string; data: Uint8Array };
-
-const applyFavicon = (
-    html: string,
-    favicon: Favicon | undefined,
-    memFs: { results: Map<string, Uint8Array> }
-): string => {
-    if (!favicon) {
-        return html;
-    }
-    memFs.results.set(favicon.filename, favicon.data);
-    return injectFaviconLink(html, `./${favicon.filename}`, favicon.mime);
-};
-
-// Optional brand override for ZIP exports: the export server fetched the icon
-// and the font from its VIEWER_BRAND_* urls and handed them down (the browser
-// never does, so local exports keep the stock SuperSplat branding). Emit both
-// files beside the viewer and point the injected markup at them by relative
-// filename. Mirrors applyFavicon -- every memFs entry is zipped by the callers
-// below, and the S3 publish path uploads every ZIP entry, so this one insertion
-// point serves package, streaming and publish alike.
+// Optional brand for ZIP exports, resolved by the export server from its
+// VIEWER_BRAND_* env and, for an S3 publish, a per-publish client brand
+// (server/src/brand-resolve.ts). The browser never passes one, so local
+// exports keep the stock SuperSplat branding. `files` are the operator assets
+// the brand uses (embedded beside index.html); client images are hotlinked
+// URLs inside `injection`. Every memFs entry is zipped by the callers below,
+// and the S3 publish path uploads every ZIP entry, so this one insertion point
+// serves package, streaming and publish alike.
+//
+// The server reaches writeViewerCore through an untyped dynamic import of
+// dist-shared: keep this shape in step with ResolvedBrand there.
 type Brand = {
-    name: string | null;
-    icon: { filename: string; mime: string; data: Uint8Array } | null;
-    font: { family: string; format: string; asset: { filename: string; mime: string; data: Uint8Array } } | null;
+    files: { filename: string; data: Uint8Array }[];
+    injection: BrandInjection;
 };
 
 const applyBrand = (
@@ -135,33 +119,23 @@ const applyBrand = (
     if (!brand) {
         return html;
     }
-    if (brand.icon) {
-        memFs.results.set(brand.icon.filename, brand.icon.data);
-    }
-    if (brand.font) {
-        memFs.results.set(brand.font.asset.filename, brand.font.asset.data);
+    for (const file of brand.files) {
+        memFs.results.set(file.filename, file.data);
     }
     const rawJs = memFs.results.get('index.js');
     if (rawJs) {
-        memFs.results.set('index.js', new TextEncoder().encode(injectBrandJs(new TextDecoder().decode(rawJs), {
-            name: brand.name ?? undefined,
-            iconHref: brand.icon ? `./${brand.icon.filename}` : undefined
-        })));
+        memFs.results.set('index.js', new TextEncoder().encode(injectBrandJs(new TextDecoder().decode(rawJs), brand.injection)));
     } else {
         console.warn('brand: no index.js in the export; the badge and info panel keep the stock branding');
     }
-    return injectBrand(html, {
-        name: brand.name ?? undefined,
-        iconHref: brand.icon ? `./${brand.icon.filename}` : undefined,
-        fontFamily: brand.font?.family,
-        fontHref: brand.font ? `./${brand.font.asset.filename}` : undefined,
-        fontFormat: brand.font?.format
-    });
+    const page = injectBrand(html, brand.injection);
+    // The brand icon doubles as the favicon.
+    return brand.injection.iconHref ? injectFaviconLink(page, brand.injection.iconHref, brand.injection.iconMime) : page;
 };
 
 // Attached annotation images for ZIP exports: emitted beside the viewer at the
 // export-derived paths baked into each annotation's extras (annotations/<id>.<ext>).
-// Mirrors applyFavicon -- every memFs entry is zipped by the callers below, and
+// Mirrors applyBrand -- every memFs entry is zipped by the callers below, and
 // the S3 publish path uploads every ZIP entry, so this one insertion point
 // serves package, streaming and publish alike. The single-file HTML path has
 // nowhere to put them and ignores this.
@@ -850,9 +824,8 @@ type ViewerCoreOptions = {
     collision?: { environment: CollisionEnvironment; radius: number; voxelSize: number };
     extraScenes?: ExtraPortalScene[];
     posterBytes?: Uint8Array;
-    // Server-only: the browser never fetches these, so a local export keeps the
-    // stock favicon-less head and the stock SuperSplat branding.
-    favicon?: Favicon;
+    // Server-only: the browser never passes a brand, so a local export keeps
+    // the stock favicon-less head and the stock SuperSplat branding.
     brand?: Brand;
     annotationImages?: AnnotationImageFile[];
 };
@@ -862,7 +835,7 @@ type ViewerCoreOptions = {
 // Module-private: only called by writeViewerCore, which hands its own options
 // straight through (viewerType is always 'streaming' here and goes unread).
 const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
-    const { dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon, brand, annotationImages } = options;
+    const { dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, brand, annotationImages } = options;
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
     // `counted` enables the splat-transform per-unit counter (chunk number)
@@ -973,7 +946,7 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
         injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals)))
     );
     const withApi = injectIframeApi(withCompanions, settingsWithLods);
-    memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(withApi, favicon, memFs), brand, memFs)));
+    memFs.results.set('index.html', new TextEncoder().encode(applyBrand(withApi, brand, memFs)));
     patchEngineLoaderInMemFs(memFs);
     applyAnnotationImages(annotationImages, memFs);
     if (collision) {
@@ -1022,7 +995,7 @@ type ExtraPortalScene = {
 };
 
 const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
-    const { dataTable, viewerType, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, favicon, brand, annotationImages } = options;
+    const { dataTable, viewerType, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, brand, annotationImages } = options;
     // Reassigned below for the single-file html path.
     let { viewerSettingsJson } = options;
     // A single-file HTML export carries no image files, so it must not advertise
@@ -1115,7 +1088,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
             const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), sogSettings), sogSettings), sogSettings), sogSettings)))), sogSettings);
-            memFs.results.set('index.html', new TextEncoder().encode(applyBrand(applyFavicon(injected, favicon, memFs), brand, memFs)));
+            memFs.results.set('index.html', new TextEncoder().encode(applyBrand(injected, brand, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);
             if (collision) {

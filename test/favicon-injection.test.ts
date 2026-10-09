@@ -40,4 +40,14 @@ describe('injectFaviconLink', () => {
         expect(warn).toHaveBeenCalled();
         warn.mockRestore();
     });
+
+    it('omits the type attribute when the mime is unknown (hotlinked icon)', () => {
+        const out = injectFaviconLink(HTML, 'https://cdn.example/client/icon.png');
+        expect(out).toContain('<link rel="icon" href="https://cdn.example/client/icon.png">');
+    });
+
+    it('escapes the href', () => {
+        const out = injectFaviconLink(HTML, 'https://cdn.example/i.png?a=1&b="x"');
+        expect(out).toContain('href="https://cdn.example/i.png?a=1&amp;b=&quot;x&quot;"');
+    });
 });

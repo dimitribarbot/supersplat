@@ -10,12 +10,17 @@ vi.mock('../src/s3.js', () => ({
     publishZip: async (_bytes: Uint8Array, dest: any) => ({ url: dest.public ? `https://cdn/${dest.prefix}/index.html` : undefined, prefix: dest.prefix })
 }));
 
-// Mock the worker host so no GPU is needed: return a tiny fake zip.
+// Mock the worker host so no GPU is needed: return a tiny fake zip, and record
+// the options each job ran with.
+const captured = vi.hoisted(() => ({ options: null as any }));
 vi.mock('../src/run-export-worker-host.js', () => ({
-    runExportViaWorker: () => ({
-        promise: Promise.resolve({ files: [{ name: 'output.zip', data: new Uint8Array([1, 2, 3]) }] }),
-        cancel: () => {}
-    })
+    runExportViaWorker: ({ options }: any) => {
+        captured.options = options;
+        return {
+            promise: Promise.resolve({ files: [{ name: 'output.zip', data: new Uint8Array([1, 2, 3]) }] }),
+            cancel: () => {}
+        };
+    }
 }));
 
 const { buildApp } = await import('../src/index.js');
@@ -119,5 +124,55 @@ describe('publish routes', () => {
         } finally {
             s3state.configured = true;
         }
+    });
+
+    it('passes a validated client brand through to the export', async () => {
+        await withApp(async (base) => {
+            const form = new FormData();
+            form.append('ply', new Blob([new Uint8Array(tinyPlyGz())]), 'scene.ply.gz');
+            form.append('options', JSON.stringify({
+                name: 'branded', public: false, overwrite: false,
+                brandOverride: { name: ' Client Co ', iconUrl: 'https://CDN.example/icon.png', logoUrl: '' },
+                viewerExportSettings: { type: 'zip', experienceSettings: {} }
+            }));
+            const res = await fetch(`${base}/api/publish`, { method: 'POST', body: form });
+            expect(res.status).toBe(202);
+            const { jobId } = await res.json();
+            await (await fetch(`${base}/api/publish/${jobId}/events`)).text();
+            expect(captured.options.brandOverride).toEqual({ name: 'Client Co', iconUrl: 'https://cdn.example/icon.png' });
+        });
+    });
+
+    it('rejects a non-https client brand URL with a descriptive 400', async () => {
+        await withApp(async (base) => {
+            const form = new FormData();
+            form.append('ply', new Blob([new Uint8Array(tinyPlyGz())]), 'scene.ply.gz');
+            form.append('options', JSON.stringify({
+                name: 'branded', public: false, overwrite: false,
+                brandOverride: { iconUrl: 'http://cdn.example/icon.png' },
+                viewerExportSettings: { type: 'zip', experienceSettings: {} }
+            }));
+            const res = await fetch(`${base}/api/publish`, { method: 'POST', body: form });
+            expect(res.status).toBe(400);
+            expect((await res.json()).error).toContain('iconUrl');
+        });
+    });
+
+    it('ignores a client brand sent to the plain export route', async () => {
+        await withApp(async (base) => {
+            const form = new FormData();
+            form.append('ply', new Blob([new Uint8Array(tinyPlyGz())]), 'scene.ply.gz');
+            form.append('options', JSON.stringify({
+                fileType: 'packageViewer', filename: 'out.zip',
+                brandOverride: { name: 'Client Co', iconUrl: 'https://cdn.example/icon.png' },
+                viewerExportSettings: { type: 'zip', experienceSettings: {} }
+            }));
+            const res = await fetch(`${base}/api/export`, { method: 'POST', body: form });
+            expect(res.status).toBe(202);
+            const { jobId } = await res.json();
+            await (await fetch(`${base}/api/export/${jobId}/events`)).text();
+            expect(captured.options.fileType).toBe('packageViewer');
+            expect(captured.options.brandOverride).toBeUndefined();
+        });
     });
 });

@@ -62,42 +62,53 @@ routes return 404 until you build).
 - `STATIC_ROOT` — directory to serve the web app from (default: the repo-root `dist/`,
   resolved relative to the server module).
 - `MAX_UPLOAD` — maximum accepted upload size in bytes for the gzipped PLY (default `1073741824`, i.e. 1 GiB). Uploads above this are rejected by the multipart parser.
-- `VIEWER_FAVICON_URL` — absolute `http(s)` URL of a favicon to embed in **ZIP viewer
-  exports** (`packageViewer`, plain and streaming, including the S3 publish that reuses
-  them). The server fetches it once per export and stores a copy as `favicon.<ext>` beside
-  `index.html`, so the exported archive stays self-contained. Accepted types: PNG, ICO,
-  SVG, JPEG, WebP, GIF; 1 MiB maximum; 5 s fetch timeout. Prefer PNG or ICO: an SVG icon is
-  embedded as-is and browsers render `image/svg+xml` favicons as a document (capable of
-  executing embedded scripts), so only point this at an icon host you control. If unset,
-  the export completes unchanged with no icon — silently, since that's the default state,
-  not a failure. If the fetch fails for any other reason (timeout, non-2xx, unsupported
-  type, oversize), the export still completes without an icon, but a warning is logged.
-  Single-file HTML exports and local in-browser exports are unaffected.
-- `VIEWER_BRAND_NAME`, `VIEWER_BRAND_ICON_URL`, `VIEWER_BRAND_FONT_NAME`,
-  `VIEWER_BRAND_FONT_URL` — replace the viewer's SuperSplat branding in **ZIP viewer
-  exports**, on exactly the same terms as `VIEWER_FAVICON_URL` (plain and streaming,
-  including the S3 publish that reuses them; single-file HTML and local in-browser exports
-  are unaffected).
-  - `VIEWER_BRAND_NAME` replaces the SuperSplat name in three places: the document
-    `<title>`, the overlay badge (top-left, which the viewer only reveals when it is
-    embedded in a cross-origin iframe) and the info panel's header. The panel keeps its
-    version suffix, so `Acme` renders as `Acme v2.32.5`.
-  - `VIEWER_BRAND_ICON_URL` replaces both SuperSplat logos. Accepted types: PNG, SVG,
-    JPEG, WebP, GIF; 1 MiB maximum. Stored as `brand-icon.<ext>` beside `index.html`.
-  - `VIEWER_BRAND_FONT_NAME` + `VIEWER_BRAND_FONT_URL` set the family the two brand
-    labels are rendered in. **Both are required** — either alone is ignored with a
-    warning. Accepted types: WOFF2, WOFF, TTF, OTF; 4 MiB maximum. Stored as
-    `brand-font.<ext>` beside `index.html` and declared with an `@font-face` rule, so the
-    export needs no network access to render correctly.
+- `VIEWER_BRAND_NAME`, `VIEWER_BRAND_ICON_URL`, `VIEWER_BRAND_LOGO_URL`, `VIEWER_BRAND_URL` —
+  the operator brand, replacing the viewer's SuperSplat branding in **ZIP viewer exports**
+  (`packageViewer`, plain and streaming, including the S3 publish that reuses them).
+  Single-file HTML and local in-browser exports are unaffected.
+  - `VIEWER_BRAND_NAME` becomes the document title (`<title data-brand-name>Acme</title>`),
+    the overlay badge's tooltip and, unless a logo is shown, the info panel label (which
+    keeps its version suffix).
+  - `VIEWER_BRAND_ICON_URL` is the overlay badge (icon only, top-left, which the viewer only
+    reveals when embedded in a cross-origin iframe), the info panel icon, and the
+    **favicon**. Stored as `brand-icon.<ext>` beside `index.html`.
+  - `VIEWER_BRAND_LOGO_URL`, when set, is shown alone in the info panel header instead of
+    the icon and the name. Stored as `brand-logo.<ext>`.
+  - `VIEWER_BRAND_URL` (absolute `https` only, otherwise ignored with a warning) is the
+    target of the info panel header; unset, the header is not a link. The badge keeps
+    linking to the viewer's own URL.
 
-  All four are optional and independent: with none set, exports keep the stock branding
-  silently. If an asset cannot be fetched (timeout, non-2xx, unsupported type, oversize)
-  that one piece is dropped with a warning and the rest of the brand — and the export —
-  still completes. Every URL is fetched once per export with a 5 s timeout; only
-  export-derived filenames ever reach the exported HTML, never the configured URL.
+  Icon and logo are fetched once per export (5 s timeout, 1 MiB maximum; PNG, ICO, SVG,
+  JPEG, WebP, GIF) and embedded, so the archive stays self-contained. Prefer PNG or ICO
+  for the icon and the logo: an SVG is served as a document from the publish origin and can execute
+  embedded scripts, so only use an image host you control. Each asset that cannot be
+  fetched is dropped with a warning; the export always completes. With none set, exports
+  keep the stock branding silently. Whenever a brand is applied, the info panel gains a
+  small "Based on [PlayCanvas SuperSplat Viewer](https://superspl.at/)" line.
 
-  Whenever the name or the icon is overridden, the info panel also gains a small
-  "Based on [PlayCanvas SuperSplat Viewer](https://superspl.at/)" attribution line.
+  `VIEWER_FAVICON_URL`, `VIEWER_BRAND_FONT_NAME` and `VIEWER_BRAND_FONT_URL` are no longer
+  supported; the server logs a notice at startup if they are still set.
+
+- **Per-publish client brand (S3 publish only).** The publish dialog has three optional
+  fields — brand name, icon URL, logo URL — sent as `brandOverride` and validated by
+  `/api/publish` (absolute `https` URLs of at most 2048 characters; a name of at most 100
+  characters without control characters; anything else is a 400). Client images are
+  **hotlinked, never fetched by the server**, so updating an image at its URL updates
+  every scene published with it. Rules:
+  - Name and icon form a pair: the client's are used only when both are given; otherwise
+    the operator's name and icon are used.
+  - Info panel header: client logo, else client icon + name, else operator logo, else
+    operator icon + name.
+  - When a client logo or a complete client pair is used, neither the badge nor the panel
+    header is a link, and the info panel adds "Powered by *operator*" (only the operator
+    name links to `VIEWER_BRAND_URL`).
+  - The name lives only in `<title data-brand-name>` of each published `index.html`; the
+    badge tooltip and panel label read it at runtime. To rename published scenes, rewrite
+    that element and re-upload `index.html` with the same content type and ACL. When only
+    a client logo is used (no complete client name + icon pair), `<title data-brand-name>`
+    holds the operator name, so a rename tool must only rewrite scenes published with a
+    full client pair (or know which brand each scene used).
+  - `/api/export` (ZIP download) ignores `brandOverride`.
 - `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` —
   S3-compatible (DigitalOcean Spaces) credentials. When all five are present, the
   capabilities endpoint reports `publish: true` and the client's Publish menu

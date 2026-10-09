@@ -29,7 +29,7 @@ const makeClient = (c: ReturnType<typeof cfg>) => new S3Client({
     credentials: { accessKeyId: c.accessKeyId, secretAccessKey: c.secretAccessKey }
 });
 
-// Keep in sync with the favicon allow-list in favicon.ts: a published viewer's
+// Keep in sync with the image allow-list in brand.ts: a published viewer's
 // icon (and its poster) must be served with a real image type, not
 // octet-stream, or browsers refuse to render it.
 const CONTENT_TYPES: Record<string, string> = {
@@ -53,7 +53,7 @@ const CONTENT_TYPES: Record<string, string> = {
     mkv: 'video/x-matroska'
 };
 
-// Own-property lookup, matching favicon.ts's MIME_EXT/EXT_MIME guard: entry
+// Own-property lookup, matching fetch-asset.ts's MIME table guard: entry
 // names come from our own exporters today, so a prototype-chain key like
 // "constructor" is unreachable in practice, but the two maps are documented
 // as siblings and should not diverge in style.

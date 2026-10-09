@@ -31,6 +31,9 @@ export type S3PublishOptions = {
         experienceSettings: ExperienceSettings;
         annotationImages?: { path: string; data: Uint8Array }[];
     };
+    // Client brand for this publish; only non-empty fields are sent. The server
+    // validates them (https URLs) and hotlinks the images.
+    brandOverride?: { name?: string; iconUrl?: string; logoUrl?: string };
 };
 
 const row = (labelKey: string, widget: any) => {
@@ -78,6 +81,24 @@ class S3PublishDialog extends Container {
         const subfolder = new TextInput({ class: 'text-input' });
         const name = new TextInput({ class: 'text-input' });
         const isPublic = new BooleanInput({ class: 'boolean', type: 'toggle', value: false });
+        // Client brand. Kept across openings (never reset in show): a client's
+        // brand is typically reused for several publishes in a row.
+        const brandName = new TextInput({ class: 'text-input' });
+        const brandIconUrl = new TextInput({ class: 'text-input', placeholder: 'https://' });
+        const brandLogoUrl = new TextInput({ class: 'text-input', placeholder: 'https://' });
+        const validHttpsUrl = (v: string) => {
+            try {
+                const u = new URL(v);
+                return u.protocol === 'https:' && !u.username && !u.password;
+            } catch {
+                return false;
+            }
+        };
+        [brandIconUrl, brandLogoUrl].forEach((input) => {
+            input.on('change', () => {
+                input.error = false;
+            });
+        });
 
         const streamingRow = row('popup.export.streaming', streaming);
         const collisionRow = row('popup.export.collision', collision);
@@ -92,6 +113,9 @@ class S3PublishDialog extends Container {
         const subfolderRow = row('popup.publish.s3.subfolder', subfolder);
         const nameRow = row('popup.publish.s3.name', name);
         const publicRow = row('popup.publish.s3.public', isPublic);
+        const brandNameRow = row('popup.publish.s3.brand-name', brandName);
+        const brandIconRow = row('popup.publish.s3.brand-icon-url', brandIconUrl);
+        const brandLogoRow = row('popup.publish.s3.brand-logo-url', brandLogoUrl);
 
         // per-scene collision params (portals only); one collapsible card per
         // portal-referenced scene, replacing the shared environment/radius/voxel rows.
@@ -99,7 +123,7 @@ class S3PublishDialog extends Container {
 
         [streamingRow, collisionRow, environmentRow].forEach(r => content.append(r.c));
         content.append(perSceneCollision);
-        [radiusRow, voxelRow, animationRow, loopRow, colorRow, fovRow, bandsRow, subfolderRow, nameRow, publicRow]
+        [radiusRow, voxelRow, animationRow, loopRow, colorRow, fovRow, bandsRow, subfolderRow, nameRow, publicRow, brandNameRow, brandIconRow, brandLogoRow]
         .forEach(r => content.append(r.c));
 
         const footer = new Container({ id: 'footer' });
@@ -223,6 +247,12 @@ class S3PublishDialog extends Container {
                     } : {}),
                     startMode: animation.value ? 'animTrack' : 'default'
                 };
+                const brand = {
+                    name: brandName.value.trim(),
+                    iconUrl: brandIconUrl.value.trim(),
+                    logoUrl: brandLogoUrl.value.trim()
+                };
+                const brandOverride = Object.fromEntries(Object.entries(brand).filter(([, v]) => v));
                 return {
                     subfolder: subfolder.value.trim(),
                     name: name.value.trim(),
@@ -246,7 +276,8 @@ class S3PublishDialog extends Container {
                         }) : undefined,
                         experienceSettings,
                         annotationImages: collectAnnotationImages(events)
-                    }
+                    },
+                    ...(Object.keys(brandOverride).length ? { brandOverride } : {})
                 };
             };
 
@@ -254,6 +285,13 @@ class S3PublishDialog extends Container {
                 onCancel = () => resolve(null);
                 onPublish = () => {
                     if (!name.value.trim()) return;   // name is required
+                    let urlsOk = true;
+                    [brandIconUrl, brandLogoUrl].forEach((input) => {
+                        const v = input.value.trim();
+                        input.error = !!v && !validHttpsUrl(v);
+                        if (input.error) urlsOk = false;
+                    });
+                    if (!urlsOk) return;   // the server stays the authority
                     resolve(assemble());
                 };
             }).finally(() => {
