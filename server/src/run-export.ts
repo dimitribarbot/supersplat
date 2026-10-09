@@ -283,10 +283,10 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // packageViewer
     const viewerType = options.viewerExportSettings!.streaming ? 'streaming' : 'package';
     const extraScenes = buildExtraScenes();
-    // Operator brand (VIEWER_BRAND_*) merged with the S3 publish's client brand,
-    // ZIP exports only: null when nothing is configured, in which case the
-    // export keeps the stock viewer. Each operator asset that cannot be fetched
-    // drops out on its own.
+    // Operator brand (VIEWER_BRAND_*) plus the S3 publish's client brand, ZIP
+    // exports only: null when nothing is configured, in which case the export
+    // keeps the stock viewer. The page applies the brand rules itself. Each
+    // operator asset that cannot be fetched drops out on its own.
     const brand = resolveBrand(await loadBrand(), options.brandOverride);
     await writeViewerCore({
         dataTable,

@@ -5,6 +5,8 @@ import { dirname, join } from 'path';
 import { describe, it, expect } from 'vitest';
 
 import { BRAND_HTML_ANCHORS, BRAND_JS_ANCHORS, injectBrand, injectBrandJs } from '../src/viewer-companion/brand';
+import { brandFragments, resolveBrandView } from '../src/viewer-companion/brand-rules';
+import { runBrandRuntime } from './brand-runtime-stub';
 import { renderUiHtml } from './ui-html';
 import { VIEWER_LOCALES } from '../src/viewer-companion/viewer-lang';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from '../src/viewer-engine-patch';
@@ -245,20 +247,24 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
         for (const anchor of BRAND_JS_ANCHORS) {
             expect(occurrences(jsSource, anchor), anchor).toBe(1);
         }
+        expect(htmlSource, 'the brand runtime updates the first icon link; the stock page must have none').not.toContain('rel="icon"');
     });
 
     it('renders the stock uiHtml through the test helper', () => {
         expect(renderUiHtml(jsSource)).toContain('<span>SuperSplat</span>');
     });
 
-    it('never writes document.title (the brand name is read back from it)', () => {
+    it('never writes document.title (the brand runtime script owns it)', () => {
         expect(jsSource).not.toContain('document.title');
     });
 
-    it('leaves one deliberate SuperSplat mention in the UI once an env brand is applied', () => {
-        const brand = { name: 'Acme', iconHref: './brand-icon.png', panelHref: 'https://acme.example/', badgeLink: true };
-        expect(injectBrand(htmlSource, brand)).toContain('<title data-brand-name>Acme</title>');
-        const ui = renderUiHtml(injectBrandJs(jsSource, brand), 'Acme');
+    it('renders the exact stock uiHtml when the brand runtime left no fragments', () => {
+        expect(renderUiHtml(injectBrandJs(jsSource))).toBe(renderUiHtml(jsSource));
+    });
+
+    it('leaves one deliberate SuperSplat mention in the UI under an operator brand', () => {
+        const view = resolveBrandView({ name: 'Acme', iconHref: './brand-icon.png', iconMime: 'image/png', url: 'https://acme.example/' }, {})!;
+        const ui = renderUiHtml(injectBrandJs(jsSource), brandFragments(view));
         expect(ui).toContain('<a class="sse-viewerBranding sse-hidden" title="Acme" target="_blank" rel="noopener noreferrer">');
         expect(ui).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
         expect(ui).toContain('<a class="sse-viewerTitle" href="https://acme.example/" target="_blank" rel="noopener noreferrer">');
@@ -272,12 +278,27 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     });
 
     it('renders both brand elements as non-links in client mode', () => {
-        const brand = { name: 'Client Co', iconHref: 'https://cdn.example/client/icon.png', logoHref: 'https://cdn.example/client/logo.png', badgeLink: false, poweredBy: { name: 'Acme', href: 'https://acme.example/' } };
-        const ui = renderUiHtml(injectBrandJs(jsSource, brand), 'Client Co');
+        const view = resolveBrandView(
+            { name: 'Acme', url: 'https://acme.example/' },
+            { name: 'Client Co', iconUrl: 'https://cdn.example/client/icon.png', logoUrl: 'https://cdn.example/client/logo.png' }
+        )!;
+        const ui = renderUiHtml(injectBrandJs(jsSource), brandFragments(view));
         expect(ui).toContain('<div class="sse-viewerBranding sse-hidden" title="Client Co">');
         expect(ui).toContain('<div class="sse-viewerTitle">');
         expect(ui).toContain('<img id="brandTitleLogo" src="https://cdn.example/client/logo.png" alt="Client Co" />');
         expect(ui).toContain('Powered by <a href="https://acme.example/" target="_blank" rel="noopener noreferrer">Acme</a>');
         expect(ui).not.toContain('github.com/playcanvas/supersplat-viewer');
+    });
+
+    it('brands the real page and resolves it at runtime into the real uiHtml', () => {
+        const operator = { name: 'Acme', iconHref: './brand-icon.png', iconMime: 'image/png', url: 'https://acme.example/' };
+        const page = injectBrand(htmlSource, { operator, client: { name: 'Client Co', iconUrl: 'https://cdn.example/client/icon.png' } });
+        expect(page).toContain('<title>Client Co</title>');
+        const r = runBrandRuntime(page);
+        expect(r.title).toBe('Client Co');
+        expect(r.favicon).toEqual({ rel: 'icon', href: 'https://cdn.example/client/icon.png' });
+        const ui = renderUiHtml(injectBrandJs(jsSource), r.ui);
+        expect(ui).toContain('<div class="sse-viewerBranding sse-hidden" title="Client Co">');
+        expect(ui).toContain('<span class="sse-title-name">Client Co</span>');
     });
 });

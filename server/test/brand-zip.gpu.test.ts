@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { probeGpu, createGpuSession } from '../src/gpu.js';
 import { runExport, type RunResult } from '../src/run-export.js';
+import { rewriteClientMeta, runBrandRuntime } from './brand-runtime-stub.js';
 import { renderUiHtml } from './ui-html.js';
 import { makePlyGz, zipEntryNames, zipReadEntry, experienceSettings } from './zip-helpers.js';
 
@@ -93,17 +94,23 @@ describe('runExport packageViewer brand (GPU)', () => {
         expect(names).not.toContain('favicon.png');
 
         const html = zipReadEntry(zip, 'index.html').toString('utf8');
-        expect(html).toContain('<title data-brand-name>Acme</title>');
+        expect(html).toContain('<title>Acme</title>');
+        expect(html).not.toContain('data-brand-name');
         expect(html).toContain('<link rel="icon" type="image/png" href="./brand-icon.png">');
         expect(html).toContain('<style id="brandStyle">');
+        expect(html).toContain('<meta name="brand-client-name" content="">');
+        expect(html).toContain('<script id="brandRuntime">');
 
         const js = zipReadEntry(zip, 'index.js').toString('utf8');
         // Proves the handle-publish patch (viewer-engine-patch.ts) ran AFTER
         // branding on the same memFs 'index.js' entry.
         expect(js).toContain('window.__supersplatViewer = viewer;');
-        expect(js).toContain('var __brandNameHtml = ');
+        expect(js).toContain('var __brandPart = ');
+        expect(js).not.toContain('Acme');
 
-        const ui = renderUiHtml(js, 'Acme');
+        const r = runBrandRuntime(html);
+        expect(r.title).toBe('Acme');
+        const ui = renderUiHtml(js, r.ui);
         expect(ui).toContain('<a class="sse-viewerBranding sse-hidden" title="Acme" target="_blank" rel="noopener noreferrer">');
         expect(ui).toContain('<img id="brandBadgeIcon" src="./brand-icon.png" alt="" />');
         expect(ui).toContain('<a class="sse-viewerTitle" href="https://acme.example/" target="_blank" rel="noopener noreferrer">');
@@ -126,27 +133,46 @@ describe('runExport packageViewer brand (GPU)', () => {
         expectEnvBrand(streaming);
     });
 
-    it('hotlinks a client brand and drops every link to the host', () => {
+    it('hotlinks a client brand, ships the operator files, and switches back via the metas', () => {
         if (!gpu) return;
         const zip = Buffer.from(client!.files[0].data);
-        const names = zipEntryNames(zip);
-        // the client pair and logo replace both operator assets: neither is embedded
-        expect(names).not.toContain('brand-icon.png');
-        expect(names).not.toContain('brand-logo.png');
+        // operator files ship even in client mode, for the switch back
+        expect(Uint8Array.from(zipReadEntry(zip, 'brand-icon.png'))).toEqual(ICON);
+        expect(Uint8Array.from(zipReadEntry(zip, 'brand-logo.png'))).toEqual(LOGO);
         // client URLs are never fetched by the server
         expect(fetched).not.toContain(CLIENT.iconUrl);
         expect(fetched).not.toContain(CLIENT.logoUrl);
 
         const html = zipReadEntry(zip, 'index.html').toString('utf8');
-        expect(html).toContain('<title data-brand-name>Client Co</title>');
+        expect(html).toContain('<title>Client Co</title>');
         expect(html).toContain('<link rel="icon" href="https://cdn.example/client/icon.png">');
+        expect(html).toContain('<meta name="brand-client-name" content="Client Co">');
+        expect(html).toContain('<meta name="brand-client-icon" content="https://cdn.example/client/icon.png">');
+        expect(html).toContain('<meta name="brand-client-logo" content="https://cdn.example/client/logo.png">');
 
-        const ui = renderUiHtml(zipReadEntry(zip, 'index.js').toString('utf8'), 'Client Co');
+        const js = zipReadEntry(zip, 'index.js').toString('utf8');
+        expect(js).not.toContain('Client Co');
+
+        const r = runBrandRuntime(html);
+        expect(r.title).toBe('Client Co');
+        const ui = renderUiHtml(js, r.ui);
         expect(ui).toContain('<div class="sse-viewerBranding sse-hidden" title="Client Co">');
         expect(ui).toContain('<img id="brandBadgeIcon" src="https://cdn.example/client/icon.png" alt="" />');
         expect(ui).toContain('<div class="sse-viewerTitle">');
         expect(ui).toContain('<img id="brandTitleLogo" src="https://cdn.example/client/logo.png" alt="Client Co" />');
         expect(ui).toContain('Powered by <a href="https://acme.example/" target="_blank" rel="noopener noreferrer">Acme</a>');
         expect(ui).not.toContain('github.com/playcanvas/supersplat-viewer');
+
+        // What the other application does to switch the scene back.
+        let back = rewriteClientMeta(html, 'brand-client-name', '');
+        back = rewriteClientMeta(back, 'brand-client-icon', '');
+        back = rewriteClientMeta(back, 'brand-client-logo', '');
+        const b = runBrandRuntime(back);
+        expect(b.title).toBe('Acme');
+        expect(b.favicon).toEqual({ rel: 'icon', type: 'image/png', href: './brand-icon.png' });
+        const backUi = renderUiHtml(js, b.ui);
+        expect(backUi).toContain('<a class="sse-viewerTitle" href="https://acme.example/" target="_blank" rel="noopener noreferrer">');
+        expect(backUi).toContain('<img id="brandTitleLogo" src="./brand-logo.png" alt="Acme" />');
+        expect(backUi).not.toContain('Powered by');
     });
 });

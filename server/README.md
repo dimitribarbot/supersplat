@@ -66,7 +66,7 @@ routes return 404 until you build).
   the operator brand, replacing the viewer's SuperSplat branding in **ZIP viewer exports**
   (`packageViewer`, plain and streaming, including the S3 publish that reuses them).
   Single-file HTML and local in-browser exports are unaffected.
-  - `VIEWER_BRAND_NAME` becomes the document title (`<title data-brand-name>Acme</title>`),
+  - `VIEWER_BRAND_NAME` becomes the document title,
     the overlay badge's tooltip and, unless a logo is shown, the info panel label (which
     keeps its version suffix).
   - `VIEWER_BRAND_ICON_URL` is the overlay badge (icon only, top-left, which the viewer only
@@ -102,12 +102,38 @@ routes return 404 until you build).
   - When a client logo or a complete client pair is used, neither the badge nor the panel
     header is a link, and the info panel adds "Powered by *operator*" (only the operator
     name links to `VIEWER_BRAND_URL`).
-  - The name lives only in `<title data-brand-name>` of each published `index.html`; the
-    badge tooltip and panel label read it at runtime. To rename published scenes, rewrite
-    that element and re-upload `index.html` with the same content type and ACL. When only
-    a client logo is used (no complete client name + icon pair), `<title data-brand-name>`
-    holds the operator name, so a rename tool must only rewrite scenes published with a
-    full client pair (or know which brand each scene used).
+  - The rules are applied **by the published page itself, on every load**, from three
+    metas in its `index.html`, pre-filled from the publish dialog:
+
+    ```html
+    <meta name="brand-client-name" content="Client Co">
+    <meta name="brand-client-icon" content="https://cdn.example/icon.png">
+    <meta name="brand-client-logo" content="https://cdn.example/logo.png">
+    ```
+
+    To rename a published scene, change its images, or switch it between operator and
+    client mode, rewrite their `content` (empty or missing = not set; icon and logo must be
+    absolute `https` URLs, anything else is ignored) and re-upload `index.html` with the
+    same content type and ACL. The value must be HTML-attribute-escaped (at least `&` as
+    `&amp;` and `"` as `&quot;`; `<` and `>` too), otherwise a name such as `A&B` or one
+    containing a double quote is corrupted or can inject markup into the page head; the
+    page cannot repair this, as the browser parses the attribute before any script runs.
+    Each meta must stay exactly once in `<head>`, before `<script id="brandRuntime">`
+    (the script reads them while the head is being parsed; a meta moved after the script
+    or into `<body>` is ignored, and only the first of duplicates is read). Nothing else
+    needs rewriting: the operator brand is baked into the page, and its icon and logo
+    files ship with every branded export, client mode included.
+  - The page sets the tab title and the favicon itself on every load. The static `<title>`
+    and favicon link keep the values resolved at publish time, so link previews and
+    crawlers that do not run scripts show those, and a page opened in its own tab briefly
+    shows the stale title before correcting it (the favicon does not flash).
+  - Optionally, rewrite the `<title>` text along with the metas to avoid both: the client
+    name when `brand-client-name` and `brand-client-icon` are both set (name and icon form
+    a pair), otherwise the operator name (`VIEWER_BRAND_NAME`), or `SuperSplat Viewer`
+    when neither exists. A client logo alone does not change the name. HTML-escape it like
+    the meta values. A wrong title is harmless: the page still corrects it on load.
+  - Scenes published before this change (with `<title data-brand-name>`) carry no metas
+    and must be republished to become switchable.
   - `/api/export` (ZIP download) ignores `brandOverride`.
 - `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` —
   S3-compatible (DigitalOcean Spaces) credentials. When all five are present, the

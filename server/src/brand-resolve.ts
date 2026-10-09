@@ -1,16 +1,11 @@
-// Merges the operator brand (brand.ts, from env) with an optional per-publish
-// client brand (S3 publish dialog) into what the shared export core injects.
-// Pure: no env, no network. See
-// docs/superpowers/specs/2026-10-09-publish-brand-override-design.md.
-//
-// Rules:
-//   - Name and icon form a pair: the client pair is used only when the client
-//     supplied both; otherwise the env pair is used everywhere.
-//   - Panel header: client logo, else the client pair, else env logo, else
-//     the env pair (the injector shows the logo alone whenever logoHref is set).
-//   - Client mode = a client value is actually used (a client logo or a
-//     complete client pair): no links on the badge or the panel header, plus
-//     "Powered by <operator>".
+// Packs the operator brand (brand.ts, from env) and an optional per-publish
+// client brand (S3 publish dialog) for the shared export core. It applies no
+// brand rules: the exported page does, on every load
+// (src/viewer-companion/brand-rules.ts), from client metas the operator's
+// other application may rewrite later. So every configured operator asset is
+// embedded, client mode included, for a published scene to be able to switch
+// back to operator mode. Pure: no env, no network. See
+// docs/superpowers/specs/2026-10-09-runtime-brand-switch-design.md.
 //
 // Client URLs are hotlinked, never fetched here or anywhere on the server.
 
@@ -23,15 +18,8 @@ export type BrandOverride = { name?: string; iconUrl?: string; logoUrl?: string 
 // dist-shared, so nothing type-checks this boundary: keep the two in step.
 export type ResolvedBrand = {
     files: { filename: string; data: Uint8Array }[];
-    injection: {
-        name?: string;
-        iconHref?: string;
-        iconMime?: string;
-        logoHref?: string;
-        panelHref?: string;
-        badgeLink: boolean;
-        poweredBy?: { name: string; href?: string };
-    };
+    operator: { name?: string; iconHref?: string; iconMime?: string; logoHref?: string; url?: string };
+    client: BrandOverride;
 };
 
 const embed = (asset: BrandAsset, files: ResolvedBrand['files']): string => {
@@ -39,47 +27,31 @@ const embed = (asset: BrandAsset, files: ResolvedBrand['files']): string => {
     return `./${asset.filename}`;
 };
 
+// null when neither brand has a name, icon or logo: the export then keeps the
+// stock viewer (VIEWER_BRAND_URL alone brands nothing).
 export const resolveBrand = (env: EnvBrand | null, override?: BrandOverride): ResolvedBrand | null => {
     const e: EnvBrand = env ?? { name: null, icon: null, logo: null, url: null };
-    const o = override ?? {};
-    const clientPair = !!(o.name && o.iconUrl);
-    const clientMode = clientPair || !!o.logoUrl;
+    const client: BrandOverride = { ...(override ?? {}) };
     const files: ResolvedBrand['files'] = [];
-
-    const name = clientPair ? o.name : (e.name ?? undefined);
-
-    let iconHref: string | undefined;
-    let iconMime: string | undefined;
-    if (clientPair) {
-        iconHref = o.iconUrl;
-    } else if (e.icon) {
-        iconHref = embed(e.icon, files);
-        iconMime = e.icon.mime;
+    const operator: ResolvedBrand['operator'] = {};
+    if (e.name) {
+        operator.name = e.name;
+    }
+    if (e.icon) {
+        operator.iconHref = embed(e.icon, files);
+        operator.iconMime = e.icon.mime;
+    }
+    if (e.logo) {
+        operator.logoHref = embed(e.logo, files);
+    }
+    if (e.url) {
+        operator.url = e.url;
     }
 
-    let logoHref: string | undefined;
-    if (o.logoUrl) {
-        logoHref = o.logoUrl;
-    } else if (!clientPair && e.logo) {
-        logoHref = embed(e.logo, files);
-    }
-
-    if (!name && !iconHref && !logoHref) {
+    if (!operator.name && !operator.iconHref && !operator.logoHref && !client.name && !client.iconUrl && !client.logoUrl) {
         return null;
     }
-
-    return {
-        files,
-        injection: {
-            name,
-            iconHref,
-            iconMime,
-            logoHref,
-            panelHref: clientMode ? undefined : (e.url ?? undefined),
-            badgeLink: !clientMode,
-            poweredBy: clientMode && e.name ? { name: e.name, href: e.url ?? undefined } : undefined
-        }
-    };
+    return { files, operator, client };
 };
 
 const NAME_MAX = 100;

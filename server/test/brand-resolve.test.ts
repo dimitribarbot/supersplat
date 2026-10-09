@@ -10,105 +10,39 @@ const C_ICON = 'https://cdn.example/client/icon.png';
 const C_LOGO = 'https://cdn.example/client/logo.png';
 
 describe('resolveBrand', () => {
-    it('returns null with no env brand and no override', () => {
+    const OPERATOR = { name: 'Acme', iconHref: './brand-icon.png', iconMime: 'image/png', logoHref: './brand-logo.svg', url: 'https://acme.example/' };
+    const FILES = [{ filename: 'brand-icon.png', data: ICON.data }, { filename: 'brand-logo.svg', data: LOGO.data }];
+
+    it('returns null with no brand anywhere', () => {
         expect(resolveBrand(null)).toBeNull();
         expect(resolveBrand(null, {})).toBeNull();
+        expect(resolveBrand({ name: null, icon: null, logo: null, url: 'https://acme.example/' })).toBeNull();
     });
 
-    it('env only: embeds the operator assets and links to the operator URL', () => {
-        expect(resolveBrand(ENV)).toEqual({
-            files: [{ filename: 'brand-icon.png', data: ICON.data }, { filename: 'brand-logo.svg', data: LOGO.data }],
-            injection: {
-                name: 'Acme',
-                iconHref: './brand-icon.png',
-                iconMime: 'image/png',
-                logoHref: './brand-logo.svg',
-                panelHref: 'https://acme.example/',
-                badgeLink: true,
-                poweredBy: undefined
-            }
+    it('env only: embeds the operator assets, passes the operator through, no client', () => {
+        expect(resolveBrand(ENV)).toEqual({ files: FILES, operator: OPERATOR, client: {} });
+    });
+
+    it('a full client brand still embeds every operator asset (for the switch back)', () => {
+        const client = { name: 'Client Co', iconUrl: C_ICON, logoUrl: C_LOGO };
+        expect(resolveBrand(ENV, client)).toEqual({ files: FILES, operator: OPERATOR, client });
+    });
+
+    it('passes partial client brands through unresolved (the page applies the rules)', () => {
+        expect(resolveBrand(ENV, { name: 'Client Co' })!.client).toEqual({ name: 'Client Co' });
+        expect(resolveBrand(ENV, { logoUrl: C_LOGO })!.client).toEqual({ logoUrl: C_LOGO });
+    });
+
+    it('omits operator fields the env does not configure', () => {
+        expect(resolveBrand({ ...ENV, logo: null, url: null })).toEqual({
+            files: [{ filename: 'brand-icon.png', data: ICON.data }],
+            operator: { name: 'Acme', iconHref: './brand-icon.png', iconMime: 'image/png' },
+            client: {}
         });
     });
 
-    it('env only without a URL: the panel header is not a link', () => {
-        expect(resolveBrand({ ...ENV, url: null })!.injection.panelHref).toBeUndefined();
-    });
-
-    it('full client brand: hotlinks everything, embeds nothing, client mode', () => {
-        expect(resolveBrand(ENV, { name: 'Client Co', iconUrl: C_ICON, logoUrl: C_LOGO })).toEqual({
-            files: [],
-            injection: {
-                name: 'Client Co',
-                iconHref: C_ICON,
-                iconMime: undefined,
-                logoHref: C_LOGO,
-                panelHref: undefined,
-                badgeLink: false,
-                poweredBy: { name: 'Acme', href: 'https://acme.example/' }
-            }
-        });
-    });
-
-    it('a complete client pair beats the env logo in the panel', () => {
-        const r = resolveBrand(ENV, { name: 'Client Co', iconUrl: C_ICON })!;
-        expect(r.injection.logoHref).toBeUndefined();
-        expect(r.injection.iconHref).toBe(C_ICON);
-        expect(r.files).toEqual([]);
-        expect(r.injection.badgeLink).toBe(false);
-    });
-
-    it('a client name alone falls back entirely to the env brand (not client mode)', () => {
-        expect(resolveBrand(ENV, { name: 'Client Co' })).toEqual(resolveBrand(ENV));
-    });
-
-    it('a client icon alone falls back entirely to the env brand (not client mode)', () => {
-        expect(resolveBrand(ENV, { iconUrl: C_ICON })).toEqual(resolveBrand(ENV));
-    });
-
-    it('a client logo alone: env name and icon, client logo, client mode', () => {
-        const r = resolveBrand(ENV, { logoUrl: C_LOGO })!;
-        expect(r.injection).toEqual({
-            name: 'Acme',
-            iconHref: './brand-icon.png',
-            iconMime: 'image/png',
-            logoHref: C_LOGO,
-            panelHref: undefined,
-            badgeLink: false,
-            poweredBy: { name: 'Acme', href: 'https://acme.example/' }
-        });
-        expect(r.files).toEqual([{ filename: 'brand-icon.png', data: ICON.data }]);
-    });
-
-    it('a client logo and name without an icon: env pair, client logo', () => {
-        const r = resolveBrand(ENV, { name: 'Client Co', logoUrl: C_LOGO })!;
-        expect(r.injection.name).toBe('Acme');
-        expect(r.injection.iconHref).toBe('./brand-icon.png');
-        expect(r.injection.logoHref).toBe(C_LOGO);
-        expect(r.injection.badgeLink).toBe(false);
-    });
-
-    it('client mode without an env name adds no "Powered by"', () => {
-        const r = resolveBrand(null, { name: 'Client Co', iconUrl: C_ICON })!;
-        expect(r.injection.poweredBy).toBeUndefined();
-        expect(r.injection.badgeLink).toBe(false);
-        expect(r.files).toEqual([]);
-    });
-
-    it('client mode with an env name but no URL: "Powered by" unlinked', () => {
-        const r = resolveBrand({ ...ENV, url: null }, { logoUrl: C_LOGO })!;
-        expect(r.injection.poweredBy).toEqual({ name: 'Acme', href: undefined });
-    });
-
-    it('a client logo with no env brand at all', () => {
-        expect(resolveBrand(null, { logoUrl: C_LOGO })!.injection).toEqual({
-            name: undefined,
-            iconHref: undefined,
-            iconMime: undefined,
-            logoHref: C_LOGO,
-            panelHref: undefined,
-            badgeLink: false,
-            poweredBy: undefined
-        });
+    it('a client brand with no env brand at all', () => {
+        expect(resolveBrand(null, { logoUrl: C_LOGO })).toEqual({ files: [], operator: {}, client: { logoUrl: C_LOGO } });
     });
 });
 

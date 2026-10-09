@@ -1,27 +1,33 @@
 // Optional brand override for the exported viewer.
 //
-// The stock viewer identifies itself as SuperSplat in three places: the
+// The stock viewer identifies itself as SuperSplat in four places: the
 // document <title>, the overlay badge (`.sse-viewerBranding`, only revealed
-// when the viewer is embedded cross-origin) and the info panel's header
-// (`.sse-viewerTitle`). The export server resolves the operator brand
-// (VIEWER_BRAND_*) and, for an S3 publish, an optional per-publish client
-// brand into one BrandInjection (server/src/brand-resolve.ts), and this file
-// swaps the surfaces. See
-// docs/superpowers/specs/2026-10-09-publish-brand-override-design.md.
+// when the viewer is embedded cross-origin), the info panel's header
+// (`.sse-viewerTitle`) and, by omission, a missing favicon. The export server
+// passes the operator brand (VIEWER_BRAND_*) and, for an S3 publish, a client
+// brand; the brand RULES (brand-rules.ts) are applied by the page itself on
+// every load, so the operator's other application can rename a published
+// scene, change its images, or switch it between operator and client mode by
+// rewriting the three client metas in its index.html. See
+// docs/superpowers/specs/2026-10-09-runtime-brand-switch-design.md.
 //
-// supersplat-viewer >= 1.32 builds its badge and info-panel markup from a JS
-// string (`var uiHtml = "…"` in index.js) rather than baking it into the page,
-// so the override has two halves: injectBrand patches the page (the <title>
-// and the injected <style>), injectBrandJs patches index.js's uiHtml literal.
-//
-// The name is written exactly once, into `<title data-brand-name>`. The badge
-// tooltip and the panel label read it back from document.title when uiHtml is
-// evaluated (index.js is a deferred module, so the head is parsed by then, and
-// the viewer never writes document.title itself), so renaming a published
-// scene only means rewriting that one element in its index.html.
+// Two halves:
+//   - injectBrand patches the page: the export-time <title>, the <style>
+//     block, the export-time favicon link, the three client metas, and the
+//     brand runtime script: a synchronous inline script that, during head
+//     parsing, resolves the operator brand baked into it against the metas,
+//     sets document.title and the favicon, and leaves the badge and panel
+//     markup in window.__brandUi.
+//   - injectBrandJs patches index.js (supersplat-viewer >= 1.32 builds that
+//     markup from `var uiHtml = "…"`): each brand surface becomes a
+//     __brandPart splice reading window.__brandUi. No brand value is ever
+//     written into index.js.
 //
 // Environment-agnostic (compiled for the export server via dist-shared):
 // string operations only.
+
+import { brandFragments, resolveBrandView, type BrandClient, type BrandOperator } from './brand-rules';
+import { faviconLinkTag } from './favicon';
 
 const HEAD_CLOSE = '</head>';
 
@@ -30,8 +36,18 @@ const HEAD_CLOSE = '</head>';
 // (mirrors the other companions' soft no-op posture).
 const MARKER = '<!-- viewer brand applied -->';
 
-// The <title> is the one brand surface left in the page itself.
-const DOC_TITLE = '<title>SuperSplat Viewer</title>';
+// The stock <title>, replaced by the name resolved at export time. Link
+// previews and crawlers that do not run scripts keep seeing that value.
+const STOCK_NAME = 'SuperSplat Viewer';
+const DOC_TITLE = `<title>${STOCK_NAME}</title>`;
+
+// The contract with the operator's other application: it may rewrite these
+// metas' content at any time; empty or missing means not set.
+export const BRAND_CLIENT_METAS = {
+    name: 'brand-client-name',
+    icon: 'brand-client-icon',
+    logo: 'brand-client-logo'
+} as const;
 
 // uiHtml anchors. Written in HTML form for readability; the JS pass searches
 // for their jsString() form, which is how they appear in index.js.
@@ -48,46 +64,24 @@ const PANEL_SECTIONS = '<div class="sse-infoGpu">';
 
 const SVG_CLOSE = '</svg>';
 
-// Attribution shown under the rebranded panel header. Placed in the info panel
-// because that is where a viewer looks to find out what they are looking at,
-// and it stays reachable in a standalone export -- unlike the overlay badge,
-// which only ever appears inside a cross-origin iframe.
-const ATTRIBUTION_URL = 'https://superspl.at/';
+// The uiHtml surfaces the brand runtime can replace. Each anchor becomes a
+// __brandPart call returning window.__brandUi[key] when the page's brand
+// runtime script set it (an empty string included) and the anchor's stock
+// markup otherwise, so a page whose runtime resolved nothing, or failed,
+// renders exactly the stock viewer. Nothing brand-specific is ever written
+// into index.js: the same file serves every mode.
+const UI_PART = '__brandPart';
+const UI_PART_DECL = `var ${UI_PART} = function (key, stock) { var ui = typeof window === "undefined" ? null : window.__brandUi; return ui && typeof ui[key] === "string" ? ui[key] : stock; };\n`;
 
-// Runtime read of the brand name, declared right before uiHtml (same module
-// scope). HTML-escaped because it is concatenated into markup, including a
-// double-quoted attribute.
-const NAME_VAR = '__brandNameHtml';
-const NAME_DECL = `var ${NAME_VAR} = (typeof document === "undefined" ? "" : document.title).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");\n`;
+// Closes the uiHtml string literal, calls __brandPart, reopens it. `stockJs` is
+// already in its escaped string-literal form.
+const part = (key: string, stockJs: string): string => `"+${UI_PART}("${key}","${stockJs}")+"`;
 
-// Placeholder for the runtime name inside an HTML fragment. NUL cannot occur in
-// any input (the server rejects control characters in names, URL parsing
-// percent-encodes them, and env values cannot carry NUL), and jsString leaves
-// it untouched, so toJs can swap it for the splice after escaping.
-const NAME_TOKEN = String.fromCharCode(0);
-
-// Closes the uiHtml string literal, concatenates the name, reopens it.
-const NAME_SPLICE = `"+${NAME_VAR}+"`;
-
-export type BrandInjection = {
-    // Operator or client brand name. Escaped into the <title>; read back at
-    // runtime for the badge tooltip and the panel label.
-    name?: string;
-    // Export-derived relative filenames (./brand-icon.png) for operator assets,
-    // or validated https: URLs for a client's hotlinked images. Escaped at
-    // every interpolation site.
-    iconHref?: string;
-    // The favicon link's type attribute; absent for a hotlinked icon.
-    iconMime?: string;
-    // When set, the panel header shows this logo alone (no icon, no name).
-    logoHref?: string;
-    // Panel header link target; absent renders the header as a non-link.
-    panelHref?: string;
-    // false renders the badge as a non-link element, so the viewer's own
-    // runtime `href` assignment has no effect (client mode). Default true.
-    badgeLink?: boolean;
-    // Client mode only: "Powered by <name>", only the name linked to href.
-    poweredBy?: { name: string; href?: string };
+export type BrandInput = {
+    // Baked into the page's runtime script; never rewritten after export.
+    operator: BrandOperator;
+    // Pre-filled into the client metas.
+    client: BrandClient;
 };
 
 const escapeHtml = (text: string): string => text
@@ -114,9 +108,6 @@ const jsString = (html: string): string => html
 .split(String.fromCharCode(0x2028)).join(`${BACKSLASH}u2028`)
 .split(String.fromCharCode(0x2029)).join(`${BACKSLASH}u2029`);
 
-// jsString, then the runtime name wherever the fragment carries NAME_TOKEN.
-const toJs = (html: string): string => jsString(html).split(NAME_TOKEN).join(NAME_SPLICE);
-
 const skip = (what: string): void => {
     console.warn(`brand: ${what} not found in the exported viewer; leaving it unbranded`);
 };
@@ -132,8 +123,9 @@ const replaceOnce = (text: string, needle: string, replacement: string, what: st
     return text.slice(0, at) + replacement + text.slice(at + needle.length);
 };
 
-// Replaces a whole <svg>...</svg> element, located by its (unique) opening tag.
-const replaceSvg = (text: string, openTag: string, replacement: string, what: string): string => {
+// Replaces a whole <svg>...</svg> element, located by its (unique) opening
+// tag; `replace` receives the element's text as it stands in the input.
+const replaceSvg = (text: string, openTag: string, replace: (svg: string) => string, what: string): string => {
     const at = text.indexOf(openTag);
     if (at < 0) {
         skip(what);
@@ -144,7 +136,8 @@ const replaceSvg = (text: string, openTag: string, replacement: string, what: st
         skip(what);
         return text;
     }
-    return text.slice(0, at) + replacement + text.slice(close + SVG_CLOSE.length);
+    const end = close + SVG_CLOSE.length;
+    return text.slice(0, at) + replace(text.slice(at, end)) + text.slice(end);
 };
 
 // The stock rules size `.sse-viewerBranding > svg` (16px badge on its dark
@@ -184,7 +177,7 @@ const STYLE = [
     '    opacity: 1;',
     '}',
     '#brandAttribution {',
-    '    padding: 10px 16px 0;',
+    '    padding: 0 16px;',
     '    text-align: center;',
     '    font-size: 11px;',
     '    line-height: 1.4;',
@@ -197,12 +190,68 @@ const STYLE = [
     '</style>'
 ].join('\n');
 
-const hasBrand = (brand: BrandInjection): boolean => !!((brand.name ?? '').trim() || (brand.iconHref ?? '').trim() || (brand.logoHref ?? '').trim());
+const hasBrand = (brand: BrandInput): boolean => {
+    const operator = brand.operator || {};
+    const client = brand.client || {};
+    return [operator.name, operator.iconHref, operator.logoHref, client.name, client.iconUrl, client.logoUrl]
+    .some(value => !!(value ?? '').trim());
+};
 
-// The page half of the override: the <title> and the injected <style>. The
-// badge and info-panel markup live in index.js's uiHtml (see injectBrandJs);
-// the favicon link is added by the export core (viewer-companion/favicon.ts).
-export const injectBrand = (html: string, brand: BrandInjection): string => {
+// The operator brand as a JS object literal for an inline <script>. JSON is
+// valid JS; `<` is escaped so no value (a name is free text) can close the
+// script element or open an HTML comment.
+const scriptJson = (value: unknown): string => JSON.stringify(value).split('<').join(`${BACKSLASH}u003c`);
+
+// The brand runtime script. Classic and synchronous, so it runs during head
+// parsing, before first paint and before the deferred index.js evaluates
+// uiHtml. Wrapped in try/catch: on any failure window.__brandUi stays unset and
+// every __brandPart splice renders its stock markup.
+//
+// BUILD TRAP: no backslash escapes and no backticks in this template other
+// than the ${} injections.
+const runtimeScript = (operator: BrandOperator): string => `
+(function () {
+  try {
+    var resolveBrandView = ${resolveBrandView.toString()};
+    var brandFragments = ${brandFragments.toString()};
+    var operator = ${scriptJson(operator || {})};
+    var meta = function (name) {
+      var el = document.querySelector('meta[name="' + name + '"]');
+      return el ? el.getAttribute('content') || '' : '';
+    };
+    var view = resolveBrandView(operator, {
+      name: meta(${JSON.stringify(BRAND_CLIENT_METAS.name)}),
+      iconUrl: meta(${JSON.stringify(BRAND_CLIENT_METAS.icon)}),
+      logoUrl: meta(${JSON.stringify(BRAND_CLIENT_METAS.logo)})
+    });
+    document.title = view && view.name ? view.name : ${JSON.stringify(STOCK_NAME)};
+    var link = document.querySelector('link[rel="icon"]');
+    if (view && view.iconHref) {
+      if (!link) {
+        link = document.createElement('link');
+        link.setAttribute('rel', 'icon');
+        document.head.appendChild(link);
+      }
+      link.setAttribute('href', view.iconHref);
+      if (view.iconMime) {
+        link.setAttribute('type', view.iconMime);
+      } else {
+        link.removeAttribute('type');
+      }
+    } else if (link) {
+      link.parentNode.removeChild(link);
+    }
+    if (view) {
+      window.__brandUi = brandFragments(view);
+    }
+  } catch (e) {
+    console.warn('brand: runtime failed; the viewer keeps its stock branding', e);
+  }
+})();
+`;
+
+// The page half of the override.
+export const injectBrand = (html: string, brand: BrandInput): string => {
     if (!hasBrand(brand)) {
         return html;                    // not configured: the default, silent
     }
@@ -219,91 +268,59 @@ export const injectBrand = (html: string, brand: BrandInjection): string => {
         return html;
     }
 
+    // The export-time view: what the page shows before (and, for clients that
+    // do not run scripts, instead of) the runtime script's own resolution.
+    const view = resolveBrandView(brand.operator, brand.client);
     let out = html;
-    const name = (brand.name ?? '').trim();
-    if (name) {
-        out = replaceOnce(out, DOC_TITLE, `<title data-brand-name>${escapeHtml(name)}</title>`, 'the document title');
+    if (view && view.name) {
+        out = replaceOnce(out, DOC_TITLE, `<title>${escapeHtml(view.name)}</title>`, 'the document title');
     }
 
-    // Last, so the block lands after the viewer's own ./index.css link and
-    // wins the cascade at equal specificity. Re-read </head>: the replacement
-    // above may have moved it.
+    const client = brand.client || {};
+    const metas = [
+        [BRAND_CLIENT_METAS.name, client.name],
+        [BRAND_CLIENT_METAS.icon, client.iconUrl],
+        [BRAND_CLIENT_METAS.logo, client.logoUrl]
+    ].map(([name, value]) => `<meta name="${name}" content="${escapeHtml((value ?? '').trim())}">`);
+
+    // The favicon link comes before the runtime script so the script finds it
+    // rather than adding a second one. The style block lands after the
+    // viewer's own ./index.css link and wins the cascade at equal specificity.
+    const block = [
+        MARKER,
+        STYLE,
+        ...(view && view.iconHref ? [faviconLinkTag(view.iconHref, view.iconMime || undefined)] : []),
+        ...metas,
+        `<script id="brandRuntime">${runtimeScript(brand.operator)}</script>`
+    ].join('\n        ');
+
+    // Re-read </head>: the title replacement may have moved it.
     const end = out.indexOf(HEAD_CLOSE);
-    return `${out.slice(0, end)}        ${MARKER}\n        ${STYLE}\n    ${out.slice(end)}`;
+    return `${out.slice(0, end)}        ${block}\n    ${out.slice(end)}`;
 };
 
-// The uiHtml half of the override, applied to index.js. Idempotent by the
-// attribution id, which every branded pass inserts.
-export const injectBrandJs = (js: string, brand: BrandInjection): string => {
-    if (!hasBrand(brand)) {
+// The uiHtml half of the override, applied to index.js: every brand surface
+// becomes a __brandPart splice. Idempotent by the declaration it adds.
+export const injectBrandJs = (js: string): string => {
+    if (js.includes(UI_PART)) {
         return js;
     }
-    if (js.includes('brandAttribution')) {
+    // A splice without the declaration in uiHtml's scope would throw and break
+    // the viewer, so without the anchor nothing is spliced at all.
+    if (!js.includes(UI_HTML_DECL)) {
+        skip('the ui template');
         return js;
     }
 
-    const name = (brand.name ?? '').trim();
-    const iconHref = (brand.iconHref ?? '').trim();
-    const logoHref = (brand.logoHref ?? '').trim();
-    const panelHref = (brand.panelHref ?? '').trim();
-    const badgeLink = brand.badgeLink !== false;
-
-    let out = js;
-
-    // The runtime name needs its declaration in uiHtml's scope; without the
-    // anchor, a splice would reference an undeclared variable and break the
-    // viewer, so fall back to no runtime name at all.
-    let runtimeName = false;
-    if (name) {
-        if (out.includes(UI_HTML_DECL)) {
-            out = replaceOnce(out, UI_HTML_DECL, NAME_DECL + UI_HTML_DECL, 'the ui template');
-            runtimeName = true;
-        } else {
-            skip('the ui template');
-        }
-    }
-
-    // Overlay badge: icon only, the name as its tooltip, a link only outside
-    // client mode (the viewer sets its href to its own URL at runtime).
-    const tooltip = runtimeName ? ` title="${NAME_TOKEN}"` : '';
-    const badgeOpen = badgeLink ?
-        `<a class="sse-viewerBranding sse-hidden"${tooltip} target="_blank" rel="noopener noreferrer">` :
-        `<div class="sse-viewerBranding sse-hidden"${tooltip}>`;
-    out = replaceOnce(out, jsString(BADGE_OPEN), toJs(badgeOpen), 'the overlay badge');
-    out = replaceOnce(out, jsString(BADGE_CLOSE), toJs(badgeLink ? '</a>' : '</div>'), 'the overlay badge label');
-    if (iconHref) {
-        out = replaceSvg(out, jsString(BADGE_LOGO_OPEN), toJs(`<img id="brandBadgeIcon" src="${escapeHtml(iconHref)}" alt="" />`), 'the overlay badge logo');
-    }
-
-    // Info panel header: the operator URL or no link at all, never upstream's
-    // repository; the logo alone, or the icon and the name.
-    const panelOpen = panelHref ?
-        `<a class="sse-viewerTitle" href="${escapeHtml(panelHref)}" target="_blank" rel="noopener noreferrer">` :
-        '<div class="sse-viewerTitle">';
-    out = replaceOnce(out, jsString(PANEL_OPEN), toJs(panelOpen), 'the info panel header');
-    out = replaceOnce(out, jsString(PANEL_CLOSE), toJs(PANEL_VERSION + (panelHref ? '</a>' : '</div>')), 'the info panel header end');
-    if (logoHref) {
-        out = replaceSvg(out, jsString(PANEL_LOGO_OPEN), toJs(`<img id="brandTitleLogo" src="${escapeHtml(logoHref)}" alt="${runtimeName ? NAME_TOKEN : ''}" />`), 'the info panel logo');
-        out = replaceOnce(out, jsString(PANEL_LABEL), '', 'the info panel label');
-    } else {
-        if (iconHref) {
-            out = replaceSvg(out, jsString(PANEL_LOGO_OPEN), toJs(`<img id="brandTitleIcon" src="${escapeHtml(iconHref)}" alt="" />`), 'the info panel logo');
-        }
-        if (runtimeName) {
-            out = replaceOnce(out, jsString(PANEL_LABEL), toJs(`<span class="sse-title-name">${NAME_TOKEN}</span>`), 'the info panel label');
-        }
-    }
-
-    // Attribution, plus "Powered by" in client mode with only the name linked.
-    let powered = '';
-    const poweredName = (brand.poweredBy?.name ?? '').trim();
-    if (poweredName) {
-        const label = escapeHtml(poweredName);
-        const href = (brand.poweredBy?.href ?? '').trim();
-        powered = `<br />Powered by ${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label}`;
-    }
-    const markup = `<div id="brandAttribution">Based on <a href="${ATTRIBUTION_URL}" target="_blank" rel="noopener noreferrer">PlayCanvas SuperSplat Viewer</a>${powered}</div>\n            `;
-    out = replaceOnce(out, jsString(PANEL_SECTIONS), toJs(markup + PANEL_SECTIONS), 'the info panel sections');
+    let out = replaceOnce(js, UI_HTML_DECL, UI_PART_DECL + UI_HTML_DECL, 'the ui template');
+    out = replaceOnce(out, jsString(BADGE_OPEN), part('badgeOpen', jsString(BADGE_OPEN)), 'the overlay badge');
+    out = replaceSvg(out, jsString(BADGE_LOGO_OPEN), svg => part('badgeIcon', svg), 'the overlay badge logo');
+    out = replaceOnce(out, jsString(BADGE_CLOSE), part('badgeClose', jsString(BADGE_CLOSE)), 'the overlay badge label');
+    out = replaceOnce(out, jsString(PANEL_OPEN), part('panelOpen', jsString(PANEL_OPEN)), 'the info panel header');
+    out = replaceSvg(out, jsString(PANEL_LOGO_OPEN), svg => part('panelLogo', svg), 'the info panel logo');
+    out = replaceOnce(out, jsString(PANEL_LABEL), part('panelLabel', jsString(PANEL_LABEL)), 'the info panel label');
+    out = replaceOnce(out, jsString(PANEL_CLOSE), jsString(PANEL_VERSION) + part('panelClose', jsString('</a>')), 'the info panel header end');
+    out = replaceOnce(out, jsString(PANEL_SECTIONS), part('attribution', '') + jsString(PANEL_SECTIONS), 'the info panel sections');
     return out;
 };
 

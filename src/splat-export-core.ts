@@ -23,10 +23,9 @@ import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subse
 import { Events } from './events';
 import { buildAnnotationI18nInjection } from './viewer-companion/annotation-i18n';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
-import { injectBrand, injectBrandJs, type BrandInjection } from './viewer-companion/brand';
+import { injectBrand, injectBrandJs, type BrandInput } from './viewer-companion/brand';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { buildEarlyLodClampInjection } from './viewer-companion/early-lod-clamp';
-import { injectFaviconLink } from './viewer-companion/favicon';
 import { buildIframeApiInjection } from './viewer-companion/iframe-api';
 import { buildLoadingBarInjection } from './viewer-companion/loading-bar';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
@@ -95,20 +94,21 @@ const applyPoster = (
     return injectPoster(html, viewerSettingsJson, `data:image/jpeg;base64,${bytesToBase64(posterBytes)}`);
 };
 
-// Optional brand for ZIP exports, resolved by the export server from its
-// VIEWER_BRAND_* env and, for an S3 publish, a per-publish client brand
-// (server/src/brand-resolve.ts). The browser never passes one, so local
-// exports keep the stock SuperSplat branding. `files` are the operator assets
-// the brand uses (embedded beside index.html); client images are hotlinked
-// URLs inside `injection`. Every memFs entry is zipped by the callers below,
-// and the S3 publish path uploads every ZIP entry, so this one insertion point
-// serves package, streaming and publish alike.
+// Optional brand for ZIP exports, from the export server: the operator brand
+// (VIEWER_BRAND_*; its icon and logo are `files`, embedded beside index.html,
+// and ship with every branded export so a published scene can always switch
+// back to operator mode) and, for an S3 publish, the client brand (hotlinked
+// URLs), pre-filled into the page's client metas. The page applies the brand
+// rules itself on every load (viewer-companion/brand-rules.ts). The browser
+// never passes a brand, so local exports keep the stock SuperSplat branding.
+// Every memFs entry is zipped by the callers below, and the S3 publish path
+// uploads every ZIP entry, so this one insertion point serves package,
+// streaming and publish alike.
 //
 // The server reaches writeViewerCore through an untyped dynamic import of
 // dist-shared: keep this shape in step with ResolvedBrand there.
-type Brand = {
+type Brand = BrandInput & {
     files: { filename: string; data: Uint8Array }[];
-    injection: BrandInjection;
 };
 
 const applyBrand = (
@@ -124,13 +124,11 @@ const applyBrand = (
     }
     const rawJs = memFs.results.get('index.js');
     if (rawJs) {
-        memFs.results.set('index.js', new TextEncoder().encode(injectBrandJs(new TextDecoder().decode(rawJs), brand.injection)));
+        memFs.results.set('index.js', new TextEncoder().encode(injectBrandJs(new TextDecoder().decode(rawJs))));
     } else {
         console.warn('brand: no index.js in the export; the badge and info panel keep the stock branding');
     }
-    const page = injectBrand(html, brand.injection);
-    // The brand icon doubles as the favicon.
-    return brand.injection.iconHref ? injectFaviconLink(page, brand.injection.iconHref, brand.injection.iconMime) : page;
+    return injectBrand(html, brand);
 };
 
 // Attached annotation images for ZIP exports: emitted beside the viewer at the
