@@ -7,7 +7,9 @@
     "build:shared": "node ../scripts/build-shared.mjs",
     "build": "npm run build:shared && tsc",
     "dev": "npm run build:shared && tsx watch src/index.ts",
+    "dev:prod": "npm run build:shared && tsx watch src/index.ts --prod",
     "start": "node dist/index.js",
+    "start:prod": "node dist/index.js --prod",
     "pretest": "npm run build:shared",
     "test": "vitest run"
   },

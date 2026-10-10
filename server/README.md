@@ -145,6 +145,10 @@ routes return 404 until you build).
 
 Configure these in `server/.env.local` (git-ignored); see `server/.env.local.example`.
 
+For production settings, put them in `server/.env.prod.local` (git-ignored) and start
+with `--prod` (`npm run dev:prod` / `npm run start:prod`). Only that file is loaded — no
+fallback to `.env.local` — and the server exits if it is missing.
+
 ## Endpoints
 
 ### `GET /api/export/capabilities`

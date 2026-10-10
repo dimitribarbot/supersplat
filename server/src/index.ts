@@ -18,7 +18,16 @@ import { probeGpu } from './gpu.js';
 import { createJob, createUploadJob, createVideoJob, getJob, subscribe } from './jobs.js';
 import { isConfigured as s3IsConfigured, listPrefix, objectExists } from './s3.js';
 
-loadEnv({ path: '.env.local' });
+// `--prod` swaps in the production settings (e.g. the prod S3 bucket). The prod
+// file is loaded on its own — no fallback to `.env.local` — so a key missing from
+// it can never silently pick up a dev value.
+const ENV_FILE = process.argv.includes('--prod') ? '.env.prod.local' : '.env.local';
+if (ENV_FILE === '.env.prod.local' && !existsSync(ENV_FILE)) {
+    console.error(`--prod was passed but ${ENV_FILE} was not found in ${process.cwd()}`);
+    process.exit(1);
+}
+loadEnv({ path: ENV_FILE });
+console.log(`Loaded environment from ${ENV_FILE}`);
 
 const PORT = Number(process.env.PORT ?? 3334);
 const ALL_FORMATS = ['ply', 'compressedPly', 'splat', 'sog', 'htmlViewer', 'packageViewer'];
