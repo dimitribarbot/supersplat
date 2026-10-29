@@ -59,8 +59,10 @@ class EditHistory {
     // scene disagree with the ones already written. Refusing is silent and safe:
     // unlike rejecting an incoming op, it cannot strand a half-applied edit or
     // orphan a loaded splat. The export progress dialog already explains the wait.
+    // Without the file handler (e.g. upstream's queue-ordering harness) the function
+    // is not registered, which means no export can be running.
     private exporting() {
-        return !!this.events.invoke('scene.exporting');
+        return this.events.functions.has('scene.exporting') && !!this.events.invoke('scene.exporting');
     }
 
     private unchanged() {

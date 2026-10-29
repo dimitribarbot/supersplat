@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 import { CommandQueue } from '../src/command-queue';
 import { EditHistory } from '../src/edit-history';
@@ -98,5 +98,25 @@ describe('EditHistory export gate', () => {
         // to prove nothing was scheduled behind it
         await history.add(makeOp() as any);
         expect(op.calls.undo).toBe(0);
+    });
+
+    // An EditHistory without the file handler (upstream's queue-ordering
+    // harness builds one) has no 'scene.exporting' function: that means no
+    // export can be running, so undo/redo run without an error logged.
+    it('treats a missing scene.exporting function as no export running', async () => {
+        const events = new Events();
+        const history = new EditHistory(events, new CommandQueue());
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+            const op = makeOp();
+            await history.add(op as any);
+            await history.undo();
+            expect(op.calls.undo).toBe(1);
+            await history.redo();
+            expect(op.calls.do).toBe(2);
+            expect(error).not.toHaveBeenCalled();
+        } finally {
+            error.mockRestore();
+        }
     });
 });
