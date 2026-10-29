@@ -249,6 +249,12 @@ const createEditorSession = (events: Events, scene: Scene, queue: CommandQueue, 
                         backgroundColor: [background.r, background.g, background.b] as [number, number, number]
                     };
                     const settings = buildExportOptions(events, exportType, choices);
+                    // fork: a portal viewer export always writes the whole walkthrough
+                    // (the start scene plus every portal scene), so it cannot honour a
+                    // narrower scope -- refuse rather than export something else
+                    if (viewer && (settings.viewerExportSettings?.experienceSettings?.portalScenes?.length ?? 0) > 1 && r.scope !== 'visible_layers') {
+                        throw new EditorError('unsupported_scope', 'This scene has portals: a viewer export always contains the whole portal walkthrough. Use scope visible_layers.');
+                    }
                     settings.serializeSettings.selected = r.scope === 'selection';
                     await events.invoke('scene.write', fileType, settings, undefined, { ...options, throwOnError: true, splats: targets });
                     return { filename: r.filename, format: r.format, layers: targets.map(s => s.uid), splats: count, status: 'download_requested' };

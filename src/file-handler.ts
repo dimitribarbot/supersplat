@@ -1015,7 +1015,10 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
     };
 
     const writeScene = async (fileType: FileType, options: SceneExportOptions, stream?: FileSystemWritableFileStream, operation?: FileOperationOptions) => {
-        if (options.useServer) {
+        // An editor-API export (`operation` set) always writes locally: the server
+        // path honours none of its scope, cancellation or error contract, and ends
+        // in a summary modal that would stall the command queue it runs inside.
+        if (options.useServer && !operation) {
             let outcome: ServerWriteOutcome;
             try {
                 outcome = await writeViaServer(fileType, options, stream);
@@ -1162,10 +1165,15 @@ const initFileHandler = (scene: Scene, events: Events, dropTarget: HTMLElement) 
                     // `scene.export` discard -- i.e. delete -- the file that was
                     // written correctly. Swallowed deliberately: an unshowable summary
                     // is cosmetic, a deleted export is data loss.
-                    try {
-                        await showCollisionSummary(events, collisionSizes, sceneNames, i18n.t('popup.export.summary.header'));
-                    } catch (e) {
-                        console.warn('collision summary failed (the export was written):', e);
+                    // Not for an editor-API export (`operation` set): it runs inside a
+                    // command-queue slot, and a modal waiting for OK there would stall
+                    // every queued command until someone clicked it.
+                    if (!operation) {
+                        try {
+                            await showCollisionSummary(events, collisionSizes, sceneNames, i18n.t('popup.export.summary.header'));
+                        } catch (e) {
+                            console.warn('collision summary failed (the export was written):', e);
+                        }
                     }
                     break;
                 }

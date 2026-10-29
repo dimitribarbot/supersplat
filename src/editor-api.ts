@@ -308,7 +308,16 @@ const createEditorAPI = (events: Events, scene: Scene, editHistory: EditHistory,
                 if (ops.length) await ctx.apply(ops.length === 1 ? ops[0] : new MultiOp(ops));
                 return result(splats, ops.reduce((n, op) => n + op.ranges.count, 0));
             }),
-            delete: (layer?: LayerId, options?: CommandOptions) => applyState(layer, s => new RemoveInstancesOp(s), options, true),
+            // fork: like the UI's select.delete, refuse while an export runs: viewer
+            // exports extract each portal scene lazily, so a delete landing mid-export
+            // would make a not-yet-extracted scene disagree with the ones written.
+            // Checked inside the queue slot, as the export itself is not queued.
+            delete: (layer?: LayerId, options?: CommandOptions) => applyState(layer, (s) => {
+                if (events.functions.has('scene.exporting') && events.invoke('scene.exporting')) {
+                    throw new EditorError('busy', 'An export is running. Wait for it to finish.');
+                }
+                return new RemoveInstancesOp(s);
+            }, options, true),
             restoreDeleted: async (layer?: LayerId, options?: CommandOptions) => {
                 const splat = target(layer);
                 return await run(splat, async (ctx) => {
