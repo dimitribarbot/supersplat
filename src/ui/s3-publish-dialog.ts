@@ -6,6 +6,7 @@ import { PerSceneCollisionPanel } from './collision-params';
 import { i18n } from './localization';
 import { Events } from '../events';
 import { buildPortalBundle } from '../portal-export';
+import type { Splat } from '../splat';
 import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
 
 // Strip a known splat/scene file extension so the name can serve as the
@@ -23,7 +24,7 @@ export type S3PublishOptions = {
     subfolder: string;
     name: string;
     public: boolean;
-    serializeSettings: { maxSHBands: number };
+    serializeSettings: { shBands: number };
     viewerExportSettings: {
         type: 'zip';
         streaming: boolean;
@@ -187,7 +188,10 @@ class S3PublishDialog extends Container {
             const bgClr = events.invoke('bgClr');
             color.value = [bgClr.r, bgClr.g, bgClr.b];
             fov.value = events.invoke('camera.fov');
-            bands.value = events.invoke('view.bands');
+            // default to the scene's band count, capped by the viewport setting;
+            // higher values pad the missing coefficients with zeros
+            const sceneBands = Math.max(0, ...(events.invoke('scene.splats') as Splat[]).map(s => s.resource.shBands));
+            bands.value = Math.min(events.invoke('view.bands'), sceneBands);
             subfolder.value = '';
             // the name becomes the destination folder, so strip any file extension
             name.value = removeKnownExtension(splatNames[0] ?? 'scene');
@@ -257,7 +261,7 @@ class S3PublishDialog extends Container {
                     subfolder: subfolder.value.trim(),
                     name: name.value.trim(),
                     public: isPublic.value,
-                    serializeSettings: { maxSHBands: bands.value },
+                    serializeSettings: { shBands: bands.value },
                     viewerExportSettings: {
                         type: 'zip',
                         streaming: streaming.value,

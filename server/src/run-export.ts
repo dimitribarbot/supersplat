@@ -17,7 +17,7 @@ import { resolveBrand, type BrandOverride } from './brand-resolve.js';
 export type ExportOptions = {
     fileType: 'ply' | 'compressedPly' | 'splat' | 'sog' | 'htmlViewer' | 'packageViewer';
     filename: string;
-    serializeSettings?: { maxSHBands?: number };
+    serializeSettings?: { shBands?: number };
     sogIterations?: number;
     viewerExportSettings?: { type: 'html' | 'zip'; streaming?: boolean; experienceSettings: any; collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number }; poster?: Uint8Array; annotationImages?: { path: string; data: Uint8Array }[] };
     // per-extra-scene metadata for a portal walkthrough (index-aligned to extraPlyGz)

@@ -14,3 +14,4 @@ dist-shared/
 
 # superpowers brainstorming companion artifacts
 .superpowers/
+test/.build

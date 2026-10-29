@@ -45,6 +45,7 @@ import {
     Vec2
 } from 'playcanvas';
 
+import type { CameraFrame } from './camera';
 import { createGradeTerms, gradeRows, gradeTerms, type GradeParams } from './color-grade';
 import { maskByteSize } from './data-processor/histogram-config';
 import type { Scene } from './scene';
@@ -372,11 +373,15 @@ class ProjectedSplatRenderer {
     // sort are global - which splat is being picked is a shader-side filter - so
     // one call covers a whole multi-splat pick. It also refreshes the indirect
     // args, so the pick draw no longer leans on the previous frame's.
-    renderSortedForPick() {
-        this.render(true);
+    // The caller sets the engine camera to the gesture's frame (Camera.withFrame);
+    // size overrides the target size the projection is laid out for.
+    renderSortedForPick(size?: { width: number, height: number }) {
+        this.render(true, size);
     }
 
-    preparePick(splat: Splat, pickOp: number, depth: boolean) {
+    // footprint is the gesture's selection footprint, passed in rather than
+    // read live so toggling it can't change a finished stroke
+    preparePick(splat: Splat, pickOp: number, depth: boolean, footprint: number) {
         if (this.drawSlot >= 0) {
             this.meshInstance.setIndirect(null, this.drawSlot, 1);
         }
@@ -389,7 +394,6 @@ class ProjectedSplatRenderer {
         // (centers mode) the id pass is the full-size occlusion surface for the
         // visibility compute, and depth estimation always uses true footprints,
         // so both render at 1
-        const footprint = (this.scene.events.invoke('selection.footprint') as number) ?? 1;
         this.material.setParameter('pickFootprint', depth || footprint === 0 ? 1 : footprint);
     }
 
@@ -478,6 +482,7 @@ class ProjectedSplatRenderer {
             new UniformFormat('minPixelSize', UNIFORMTYPE_FLOAT),
             new UniformFormat('near', UNIFORMTYPE_FLOAT),
             new UniformFormat('far', UNIFORMTYPE_FLOAT),
+            new UniformFormat('radialSort', UNIFORMTYPE_UINT),
             new UniformFormat('capacity', UNIFORMTYPE_UINT),
             new UniformFormat('keepCulled', UNIFORMTYPE_UINT),
             new UniformFormat('minContribution', UNIFORMTYPE_FLOAT),
@@ -695,16 +700,18 @@ class ProjectedSplatRenderer {
     async footprintIntersect(
         splat: Splat,
         region: { y0: number, y1: number, intervals: Uint32Array },
-        footprint: number
+        footprint: number,
+        frame: CameraFrame
     ): Promise<Uint8Array | null> {
         const placement = this.placements.find(item => item.splat === splat);
         if (!placement) {
             return null;
         }
 
-        // re-project so the cache matches the current camera even if no frame
-        // rendered since it moved
-        this.renderSortedForPick();
+        // re-project under the gesture's frame and target size, so the cache
+        // matches the region's pixel space even if the camera moved or the
+        // viewport resized since the stroke
+        this.scene.camera.withFrame(frame, () => this.renderSortedForPick(frame.target));
 
         const byteSize = maskByteSize(placement.count);
         if (!this.footprintOutput || this.footprintOutput.byteSize !== byteSize) {
@@ -729,7 +736,7 @@ class ProjectedSplatRenderer {
         compute.setParameter('cacheA', this.cacheA);
         compute.setParameter('cacheB', this.cacheB);
         compute.setParameter('cacheWidth', this.cacheWidth);
-        compute.setParameter('viewport', [this.scene.targetSize.width, this.scene.targetSize.height]);
+        compute.setParameter('viewport', [frame.target.width, frame.target.height]);
         compute.setParameter('entryBase', placement.entryBase);
         compute.setParameter('entryCount', placement.count);
         compute.setParameter('regionY0', region.y0);
@@ -814,7 +821,7 @@ class ProjectedSplatRenderer {
         this.layoutDirty = false;
     }
 
-    render(forPick = false) {
+    render(forPick = false, size?: { width: number, height: number }) {
         if (this.layoutDirty) {
             this.rebuildLayout();
         }
@@ -825,7 +832,9 @@ class ProjectedSplatRenderer {
         }
 
         const start = performance.now();
-        const { camera, targetSize, events } = this.scene;
+        const { camera, events } = this.scene;
+        // a footprint pick lays the projection out for its gesture's target size
+        const targetSize = size ?? this.scene.targetSize;
         const cameraComponent = camera.camera;
         const view = cameraComponent.viewMatrix;
         // match the depth convention of engine-drawn meshes: the forward
@@ -891,10 +900,23 @@ class ProjectedSplatRenderer {
         // against the depth of what moved or vanished, their own included -
         // and a projection switch changes its depth mapping; both skip the
         // cull, and the frame writes a fresh map
-        this.updateDepthMap(targetSize.width, targetSize.height);
+        // the live size: a pick-size projection must not reallocate the map
+        this.updateDepthMap(this.scene.targetSize.width, this.scene.targetSize.height);
         const isOrtho = cameraComponent.projection === 1;
         const occlusion = this.stochastic && this.occlusionCull && this.prevValid &&
             !this.scene.editedRender && this.prevClipZ[2] === (isOrtho ? 1 : 0);
+
+        // radial sorting orders by distance to the camera instead of depth along
+        // its forward axis. Orthographic rays are parallel, so depth is the only
+        // order there. The projector keeps splats whose centres are off-screen
+        // but whose footprints reach it, so the frustum does not bound their
+        // distance; the scene bound does: no centre lies farther than the
+        // bound's centre plus its radius
+        const radialSort = !isOrtho && events.invoke('view.sortMode') === 'radial';
+        const bound = this.scene.bound;
+        const sortFar = radialSort ?
+            cameraPosition.distance(bound.center) + bound.halfExtents.length() :
+            cameraComponent.farClip;
 
         let ringsBase = 0;
         let ringsCount = 0;
@@ -969,7 +991,8 @@ class ProjectedSplatRenderer {
             compute.setParameter('pickOp', -1);
             compute.setParameter('minPixelSize', minPixelSize);
             compute.setParameter('near', cameraComponent.nearClip);
-            compute.setParameter('far', cameraComponent.farClip);
+            compute.setParameter('far', sortFar);
+            compute.setParameter('radialSort', radialSort ? 1 : 0);
             compute.setParameter('capacity', this.capacity);
             // culled splats of the selected layer stay projected while the
             // centres overlay is up, so their centres still draw

@@ -48,7 +48,7 @@ import { createProgressRenderer, writeSogCore, writeViewerCore } from './splat-e
 import { State } from './splat-state';
 
 type SerializeSettings = {
-    maxSHBands?: number;            // specifies the maximum number of bands to be exported
+    shBands?: number;               // number of bands to export, zero-padding missing coefficients. defaults to the source bands
     selected?: boolean;             // only export selected gaussians. used for copy/paste
     minOpacity?: number;            // filter out gaussians with alpha less than or equal to minAlpha
     removeInvalid?: boolean;        // filter out gaussians with invalid data (NaN/Infinity)
@@ -461,7 +461,7 @@ class SuperSplatChunkSource implements ChunkSource {
     }
 
     static async create(splats: Splat[], settings: SerializeSettings) {
-        const outputBands = Math.min(settings.maxSHBands ?? 3, splats.length ? Math.max(...splats.map(s => s.resource.shBands)) : 0);
+        const outputBands = settings.shBands ?? (splats.length ? Math.max(...splats.map(s => s.resource.shBands)) : 0);
         const entries: ExportEntry[] = [];
         let start = 0;
         for (const splat of splats) {
@@ -757,9 +757,19 @@ const extractDataTable = async (splats: Splat[], settings: SerializeSettings): P
     }
 };
 
+// Settings for one portal scene: the chosen SH band count, capped at the
+// scene's own. Each portal scene is written on its own, and `shBands` is an
+// exact count (missing bands are zero-padded), so without the cap a 0-band
+// scene next to a 3-band one would ship 45 zero coefficients per gaussian.
+const portalSceneSettings = (settings: SerializeSettings, splats: Splat[]): SerializeSettings => {
+    const sceneBands = splats.length ? Math.max(...splats.map(s => s.resource.shBands)) : 0;
+    return { ...settings, shBands: Math.min(settings.shBands ?? sceneBands, sceneBands) };
+};
+
 const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSettings, options: ViewerExportSettings, fs: FileSystem): Promise<void> => {
     const { experienceSettings, events, collision } = options;
-    const dataTable = await extractDataTable(splats, serializeSettings);
+    const portal = !!(experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1);
+    const dataTable = await extractDataTable(splats, portal ? portalSceneSettings(serializeSettings, splats) : serializeSettings);
     const viewerType = options.type === 'html' ? 'html' : (options.streaming ? 'streaming' : 'package');
 
     // Build per-scene extra descriptors for a portal walkthrough. The primary
@@ -769,7 +779,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
     // writeViewerCore, one at a time, so a multi-scene walkthrough no longer
     // holds every scene's float32 columns at once. The Splat elements are
     // already resident in the editor, so the descriptor itself costs nothing.
-    const extraScenes = (experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1) ?
+    const extraScenes = portal ?
         options.portalScenes?.map(entry => ({
             collisionUrl: entry.collisionUrl,
             environment: entry.environment,
@@ -777,7 +787,7 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
             voxelSize: entry.voxelSize,
             seed: entry.seed,
             streaming: options.streaming ?? false,
-            loadDataTable: () => extractDataTable([entry.splat], serializeSettings)
+            loadDataTable: () => extractDataTable([entry.splat], portalSceneSettings(serializeSettings, [entry.splat]))
         })) ?? [] :
         [];
 
@@ -851,6 +861,7 @@ const serializeSpz = async (splats: Splat[], settings: SpzSettings, fs: FileSyst
 
 export {
     Writer,
+    portalSceneSettings,
     writeResourceFile,
     writeSplatFile,
     WebGPUUnavailableError,

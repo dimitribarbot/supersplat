@@ -85,7 +85,7 @@ class BrowserDownloadWriter implements Writer {
     private cursor: number = 0;
     private filename: string;
 
-    constructor(filename: string) {
+    constructor(filename: string, private signal?: AbortSignal) {
         this.filename = filename;
     }
 
@@ -94,6 +94,7 @@ class BrowserDownloadWriter implements Writer {
     }
 
     write(data: Uint8Array): void {
+        this.signal?.throwIfAborted();
         // Snapshot: the PLY serializer flushes one reused scratch buffer, and the
         // caller may keep mutating `data` after this call returns.
         this.chunks.push(data.slice());
@@ -101,6 +102,7 @@ class BrowserDownloadWriter implements Writer {
     }
 
     close(): void {
+        this.signal?.throwIfAborted();
         const blob = new Blob(this.chunks as BlobPart[], { type: 'application/octet-stream' });
         this.chunks = [];
         triggerDownload(blob, this.filename);
@@ -125,7 +127,7 @@ class BrowserFileSystem implements FileSystem {
      * @param filename - The filename for downloads (fallback mode)
      * @param stream - Optional FileSystemWritableFileStream for direct file access
      */
-    constructor(filename: string, stream?: FileSystemWritableFileStream) {
+    constructor(filename: string, stream?: FileSystemWritableFileStream, private signal?: AbortSignal) {
         this.filename = filename;
         this.stream = stream;
     }
@@ -134,7 +136,7 @@ class BrowserFileSystem implements FileSystem {
         if (this.stream) {
             return new BrowserFileWriter(this.stream);
         }
-        return new BrowserDownloadWriter(this.filename);
+        return new BrowserDownloadWriter(this.filename, this.signal);
     }
 
     mkdir(_path: string): Promise<void> {

@@ -1,5 +1,6 @@
 import { CommandQueue } from './command-queue';
 import { EditOp, MultiOp } from './edit-ops';
+import { checkCancelled, CommandOptions } from './editor-command';
 import { Events } from './events';
 import { Splat } from './splat';
 
@@ -26,6 +27,10 @@ class EditHistory {
     constructor(events: Events, commandQueue: CommandQueue) {
         this.events = events;
         this.commandQueue = commandQueue;
+
+        // in-slot application for tasks that already own a command slot
+        // (CommandContext.apply); add() below is the queue entry for the rest
+        commandQueue.setEditApplier((editOp, suppressOp) => this._add(editOp, suppressOp));
 
         events.on('edit.undo', () => this.undo());
         events.on('edit.redo', () => this.redo());
@@ -58,25 +63,31 @@ class EditHistory {
         return !!this.events.invoke('scene.exporting');
     }
 
-    undo() {
+    private unchanged() {
+        return Promise.resolve({ changed: false, canUndo: this.canUndo(), canRedo: this.canRedo() });
+    }
+
+    undo(options?: CommandOptions) {
         if (this.exporting()) {
-            return Promise.resolve();
+            return this.unchanged();
         }
         return this.queue(async () => {
-            if (this.canUndo()) {
-                await this._undo();
-            }
+            checkCancelled(options);
+            const changed = this.canUndo();
+            if (changed) await this._undo();
+            return { changed, canUndo: this.canUndo(), canRedo: this.canRedo() };
         });
     }
 
-    redo(suppressOp = false) {
+    redo(suppressOp = false, options?: CommandOptions) {
         if (this.exporting()) {
-            return Promise.resolve();
+            return this.unchanged();
         }
         return this.queue(async () => {
-            if (this.canRedo()) {
-                await this._redo(suppressOp);
-            }
+            checkCancelled(options);
+            const changed = this.canRedo();
+            if (changed) await this._redo(suppressOp);
+            return { changed, canUndo: this.canUndo(), canRedo: this.canRedo() };
         });
     }
 

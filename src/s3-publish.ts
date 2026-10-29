@@ -5,7 +5,7 @@ import { Events } from './events';
 import { checkPublishExists, PublishExistsError, runServerPublish } from './export-server-client';
 import { buildPortalUpload } from './portal-upload';
 import { firstWalkthroughPose } from './poster-pose';
-import { SerializeSettings, writeSplatFile } from './splat-serialize';
+import { portalSceneSettings, SerializeSettings, writeSplatFile } from './splat-serialize';
 import { i18n } from './ui/localization';
 import type { S3PublishOptions } from './ui/s3-publish-dialog';
 
@@ -44,7 +44,7 @@ const registerS3PublishEvents = (events: Events) => {
             const splats = upload ? [upload.startSplat] : events.invoke('scene.splats');
 
             const memFs = new MemoryFileSystem();
-            await writeSplatFile(splats, serializeSettings, 'ply', 'scene.ply', {}, memFs);
+            await writeSplatFile(splats, upload ? portalSceneSettings(serializeSettings, splats) : serializeSettings, 'ply', 'scene.ply', {}, memFs);
             const plyBytes = memFs.results.get('scene.ply');
             if (!plyBytes) {
                 events.fire('progressEnd');

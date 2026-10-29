@@ -186,8 +186,8 @@ const companionRuntime = `
   })();
   // Multiple used by computeResidentCeiling. It multiplies the FIXED
   // CEILING_REFERENCE_BUDGET below, not the live engine render budget: the
-  // ceiling is deliberately decoupled from the active quality mode, so raising
-  // the render budget (HD) never raises residency. It is the whole ceiling
+  // ceiling is deliberately decoupled from the Quality slider's position, so
+  // raising the render budget never raises residency. It is the whole ceiling
   // on mobile (conservative -- never-OOM outranks instant crossings there),
   // only a lower FLOOR on desktop, where the ceiling is project-aware (the
   // summed pyramid cost of ALL scenes, capped by a RAM-derived limit) so any
@@ -196,15 +196,15 @@ const companionRuntime = `
   // LOD levels, ~1.9x the finest-level splat total).
   var RESIDENT_BUDGET_MULT = IS_MOBILE ? 3 : 12;
   // Reference render budget the resident ceiling is derived from -- a CONSTANT,
-  // deliberately not the live engine budget. The viewer now has three quality
-  // modes (see quality-tier.ts) and HD is 14M; deriving the ceiling from the
-  // live budget would put it at 3 x 14M = 42M on mobile (~0.9-1GB of GPU
-  // textures at ~20-25 bytes/splat -- near-certain OOM on a phone) and
-  // 12 x 14M = 168M on desktop, which overrides the RAM-derived cap entirely.
-  // Pinning it to the Normal-mode budgets keeps the ceiling bit-for-bit what it
-  // is today (6M mobile, 48M desktop floor), so HD raises only what the engine
-  // RENDERS per frame, never what stays resident across scenes. Device class is
-  // deliberately not consulted here either, for the same reason.
+  // deliberately not the live engine budget. The viewer's Quality slider
+  // (supersplat-viewer 1.38) reaches 8M on mobile and 16M on desktop; deriving
+  // the ceiling from the live budget would put it at 3 x 8M = 24M on mobile
+  // (~0.5-0.6GB of GPU textures at ~20-25 bytes/splat -- likely OOM on a phone)
+  // and 12 x 16M = 192M on desktop, which overrides the RAM-derived cap
+  // entirely. Pinning it to the slider's Default-position budgets keeps the
+  // ceiling bit-for-bit what it was (6M mobile, 48M desktop floor), so a higher
+  // position raises only what the engine RENDERS per frame, never what stays
+  // resident across scenes.
   var CEILING_REFERENCE_BUDGET = IS_MOBILE ? 2000000 : 4000000;
   var residentBudgetOverride = (function () {
     // ?residentBudget=<n> overrides the ceiling for on-device tuning.
@@ -1265,7 +1265,8 @@ const companionRuntime = `
         refreshPortalMarkers();
       });
       // The viewer's applyPerfSettings re-runs on these events (xrMode since
-      // supersplat-viewer 1.37): it reopens the start component's lodRangeMin
+      // supersplat-viewer 1.37; quality and stochastic replaced performanceMode
+      // in 1.38): it reopens the start component's lodRangeMin
       // to 0 (wiping the budget clamp) AND applies the new splatBudget (a
       // standalone headset drops to its XR budget in a session). A frame later
       // (rAF: all listeners on the event run synchronously, so by then
@@ -1282,19 +1283,26 @@ const companionRuntime = `
           if (pinReady) { pinDesired(); }
         });
       };
-      ev.on('performanceMode:changed', reassertAfterPerfSettings);
+      ev.on('quality:changed', reassertAfterPerfSettings);
+      ev.on('stochastic:changed', reassertAfterPerfSettings);
       ev.on('xrMode:changed', reassertAfterPerfSettings);
     }
 
-    // supersplat-viewer 1.37 lets a two-hand grab drag, turn and scale the
-    // start scene's entity in XR. Portal scenes, portal markers, crossings and
-    // zones are all world-anchored and would not follow, detaching them from
-    // what the user sees, so portal exports switch the grab off. The viewer
-    // creates the script on the camera rig once the splat has loaded, which is
-    // before any session can start, and it only acts in update(), which a
-    // disabled script never runs. Disabled at every start, so nothing can
-    // re-enable it between sessions, and at once should a session already be
-    // running when this companion starts.
+    // Portal scenes, portal markers, crossings and zones are all world-anchored,
+    // so nothing in XR may move the start scene's entity: it would detach them
+    // from what the user sees. Since supersplat-viewer 1.38 a two-hand grab in
+    // a walk-in scene moves the USER (XrGrabMove) and leaves the entity put, so
+    // that grab stays. Two things still move the entity, and both are switched
+    // off here:
+    //   - an object (orbit) export's grab, the XrManipulation script the viewer
+    //     creates on the camera rig once the splat has loaded, before any
+    //     session can start. It only acts in update(), which a disabled script
+    //     never runs. Disabled at every start, so nothing can re-enable it
+    //     between sessions, and at once should a session already be running.
+    //   - the XR menu's Ice Cream hold (state.iceCream), which puts the entity
+    //     on the user's fist. Turned back off whenever it is turned on. Deferred:
+    //     the viewer's own iceCream:changed listener may run after this one in
+    //     the same dispatch and would re-enable the hold with the stale value.
     var rig = viewer.global && viewer.global.camera && viewer.global.camera.parent;
     if (app.xr && app.xr.on && rig) {
       var disableXrGrab = function () {
@@ -1303,6 +1311,16 @@ const companionRuntime = `
       };
       app.xr.on('start', disableXrGrab);
       if (app.xr.active) { disableXrGrab(); }
+    }
+    var xrState = viewer.global && viewer.global.state;
+    if (ev && ev.on && xrState) {
+      var disableIceCream = function () {
+        setTimeout(function () {
+          if (xrState.iceCream) { xrState.iceCream = false; }
+        }, 0);
+      };
+      ev.on('iceCream:changed', function (on) { if (on) { disableIceCream(); } });
+      disableIceCream();
     }
 
     liveApp = app;

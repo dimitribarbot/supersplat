@@ -31,7 +31,6 @@ import { buildLoadingBarInjection } from './viewer-companion/loading-bar';
 import { buildOffLimitsZonesInjection } from './viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
-import { buildQualityModeInjection } from './viewer-companion/quality-mode';
 import { patchViewerBootstrap } from './viewer-companion/viewer-bootstrap';
 import { buildViewerLangInjection } from './viewer-companion/viewer-lang';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
@@ -270,25 +269,14 @@ const injectDeviceFallback = (html: string): string => {
     return html + injection;
 };
 
-// Inject the quality-mode companion into an HTML string before </body>.
-// ALWAYS injected: every export gets the three modes and the device heuristic,
-// and the engine patch's budget() reads globals this publishes. It needs no
-// viewer handle at parse time (it resolves the mode from localStorage and
-// device signals alone) but its UI and watchdog phase reaches for
-// window.__supersplatViewer, which the engine patch (viewer-engine-patch.ts)
-// publishes unconditionally on every path.
-const injectQualityMode = (html: string): string => {
-    return insertBeforeBodyClose(html, buildQualityModeInjection());
-};
-
 // Inject the early-LOD-clamp companion into an HTML string before </body>.
 // STREAMING EXPORTS ONLY: it exists to stop the engine requesting the whole LOD
 // pyramid before the viewer's own coarse-only clamp lands, and only a streaming
 // export has an octree at all -- SOG/PLY package and single-file HTML exports
-// have no LOD levels for it to act on. Like the quality-mode injector it needs
-// no viewer handle at parse time: it polls for window.__supersplatViewer, which
-// the engine patch (viewer-engine-patch.ts) publishes unconditionally on every
-// path, so chain position does not matter.
+// have no LOD levels for it to act on. It needs no viewer handle at parse
+// time: it polls for window.__supersplatViewer, which the engine patch
+// (viewer-engine-patch.ts) publishes unconditionally on every path, so chain
+// position does not matter.
 const injectEarlyLodClamp = (html: string): string => {
     return insertBeforeBodyClose(html, buildEarlyLodClampInjection());
 };
@@ -296,10 +284,9 @@ const injectEarlyLodClamp = (html: string): string => {
 // Inject the loading-bar companion into an HTML string before </body>. ALWAYS
 // injected: the instant-0% paint and the never-goes-backwards clamp apply to
 // every export. The reveal gates on splats + skybox only (supersplat-viewer
-// >= 1.32); there is no collision term to feed. Like the quality-mode injector
-// it needs no viewer handle at parse time -- it polls for
-// window.__supersplatViewer, which the engine patch publishes -- so chain
-// position does not matter.
+// >= 1.32); there is no collision term to feed. It needs no viewer handle at
+// parse time -- it polls for window.__supersplatViewer, which the engine patch
+// publishes -- so chain position does not matter.
 const injectLoadingBar = (html: string): string => {
     return insertBeforeBodyClose(html, buildLoadingBarInjection());
 };
@@ -941,7 +928,7 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     const withZones = injectOffLimitsZones(withAnnotations, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
     const withCompanions = injectLoadingBar(
-        injectEarlyLodClamp(injectQualityMode(injectDeviceFallback(withPortals)))
+        injectEarlyLodClamp(injectDeviceFallback(withPortals))
     );
     const withApi = injectIframeApi(withCompanions, settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(applyBrand(withApi, brand, memFs)));
@@ -1038,7 +1025,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
             }
             // Single-file output: the poster is inlined as a data URI (no memFs).
             const withPoster = applyPoster(new TextDecoder().decode(raw), viewerSettingsJson, posterBytes, null);
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson)))), viewerSettingsJson);
+            const injected = injectIframeApi(injectLoadingBar(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), viewerSettingsJson);
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (!enginePatch.handlePublished) {
@@ -1085,7 +1072,7 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
                 { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
                 viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectIframeApi(injectLoadingBar(injectQualityMode(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), sogSettings), sogSettings), sogSettings), sogSettings)))), sogSettings);
+            const injected = injectIframeApi(injectLoadingBar(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), sogSettings), sogSettings), sogSettings), sogSettings))), sogSettings);
             memFs.results.set('index.html', new TextEncoder().encode(applyBrand(injected, brand, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);

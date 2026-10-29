@@ -116,7 +116,7 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
         expect(occurrences(htmlSource, '</body>')).toBe(1);
     });
 
-    // viewer-engine-patch.ts -- all nine patches, including the required handle publish
+    // viewer-engine-patch.ts -- all six patches, including the required handle publish
     it('matches every engine patch, publishes the handle, and re-applying is a no-op', () => {
         const once = patchViewerEngine(jsSource);
         expect(once.patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
@@ -179,20 +179,32 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     it('re-runs applyPerfSettings only on the events portals.ts re-clamps after', () => {
         expect(jsSource).toContain('gsplatComponent.lodRangeMin = 0;');
         const triggers = [...jsSource.matchAll(/events\.on\('([^']+)', applyPerfSettings\)/g)].map(m => m[1]);
-        expect(triggers.sort()).toEqual(['performanceMode:changed', 'xrMode:changed']);
+        expect(triggers.sort()).toEqual(['quality:changed', 'stochastic:changed', 'xrMode:changed']);
     });
 
-    // portals.ts switches the XR grab off by disabling the script on the
-    // camera rig (global.camera's parent) when a session starts. That only
-    // works while the grab is a Script created there, by that name, before XR
-    // can start, and acting in update() -- which a disabled script never runs.
-    it('keeps the XR grab script portals.ts disables', () => {
+    // portals.ts switches an object export's XR grab off by disabling the
+    // script on the camera rig (global.camera's parent) when a session starts.
+    // That only works while the grab is a Script created there, by that name,
+    // before XR can start, and acting in update() -- which a disabled script
+    // never runs. A walk-in scene's grab (XrGrabMove) moves the user, not the
+    // entity, so portals.ts leaves it alone -- pin that it is still the scene
+    // branch. The Ice Cream hold moves the entity and is driven by
+    // state.iceCream, which portals.ts turns back off.
+    it('keeps the XR grab script and the Ice Cream switch portals.ts disables', () => {
         expect(jsSource).toContain("static scriptName = 'xrManipulation';");
-        expect(jsSource).toContain('const { app, events, state, camera, renderer, root } = global;');
+        expect(jsSource).toContain('const { app, events, state, camera, renderer, root, localize, quality } = global;');
         expect(jsSource).toContain('const parent = camera.parent;');
-        expect(jsSource).toContain('manipulation = parent.script.create(XrManipulation, {');
-        expect(jsSource).toContain('this.xr.setManipulationTarget(results[0]);');
+        expect(jsSource).toContain([
+            '        setGrabTarget: (entity, scene) => {',
+            '            if (scene) {',
+            '                grabMove = new XrGrabMove(app, parent, setUserScale);',
+            '            }',
+            '            else {',
+            '                manipulation = parent.script.create(XrManipulation, {'
+        ].join('\n'));
         expect(jsSource).toContain('this._startGrab(target, left, right);');
+        expect(jsSource).toContain("const iceCreamChanged = events.on('iceCream:changed', (value) => {");
+        expect(jsSource).toContain('iceCream.enabled = state.iceCream;');
     });
 
     // annotation-links.ts injects its chip when the shared tooltip is SHOWN
@@ -208,7 +220,7 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     });
 
     it('keeps the events the companions listen to', () => {
-        for (const name of ['selectedAnnotation:changed', 'progress:changed', 'loaded:changed', 'firstFrame', 'collisionOverlayEnabled:changed', 'cameraMode:changed', 'gamingControls:changed', 'performanceMode:changed', 'inputEvent']) {
+        for (const name of ['selectedAnnotation:changed', 'progress:changed', 'loaded:changed', 'firstFrame', 'collisionOverlayEnabled:changed', 'cameraMode:changed', 'gamingControls:changed', 'quality:changed', 'stochastic:changed', 'iceCream:changed', 'inputEvent']) {
             expect(jsSource, name).toContain(`'${name}'`);
         }
         expect(jsSource).toContain("'frame:ready'");
@@ -216,7 +228,7 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
 
     // DOM classes the companions query or style (all live in uiHtml now)
     it('keeps the sse- classes the companions touch', () => {
-        for (const cls of ['sse-annotation', 'sse-annotation-title', 'sse-annotation-text', 'sse-performanceModeRow', 'sse-settingsGroup', 'sse-settingsRow', 'sse-loadingWrap', 'sse-loadingBar', 'sse-loadingText', 'sse-poster', 'sse-viewerBranding', 'sse-viewerTitle', 'sse-title-name', 'sse-infoGpu']) {
+        for (const cls of ['sse-annotation', 'sse-annotation-title', 'sse-annotation-text', 'sse-settingsGroup', 'sse-settingsRow', 'sse-loadingWrap', 'sse-loadingBar', 'sse-loadingText', 'sse-poster', 'sse-viewerBranding', 'sse-viewerTitle', 'sse-title-name', 'sse-infoGpu']) {
             expect(jsSource, cls).toContain(cls);
         }
         expect(jsSource).toContain("root.className = 'sse-viewer';");

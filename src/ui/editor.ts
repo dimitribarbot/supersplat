@@ -11,6 +11,7 @@ import { AnnotationImagesDialog } from './annotation-images-dialog';
 import { AnnotationTranslationsDialog } from './annotation-translations-dialog';
 import { BottomToolbar } from './bottom-toolbar';
 import { CameraInfoOverlay } from './camera-info-overlay';
+import { ClipboardMenu } from './clipboard-menu';
 import { ExportPopup } from './export-popup';
 import { ExportSummaryDialog } from './export-summary-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
@@ -122,7 +123,7 @@ class EditorUI {
         const canvas = document.createElement('canvas');
         canvas.id = 'canvas';
 
-        // app label
+        // app label, a link to the about box
         const appLabel = new Label({
             id: 'app-label',
             text: 'SUPERSPLAT '
@@ -130,6 +131,15 @@ class EditorUI {
         const versionSpan = document.createElement('span');
         versionSpan.textContent = `v${version}`;
         appLabel.dom.appendChild(versionSpan);
+
+        // keep its pointer events from reaching the camera controls on the
+        // canvas container, whose pointer capture would swallow the click
+        ['pointerdown', 'pointerup', 'pointermove', 'wheel', 'dblclick'].forEach((eventName) => {
+            appLabel.dom.addEventListener(eventName, (event: Event) => event.stopPropagation());
+        });
+        appLabel.dom.addEventListener('click', () => {
+            events.fire('show.about');
+        });
 
         // canvas container
         const canvasContainer = new Container({
@@ -152,7 +162,9 @@ class EditorUI {
         tooltipsContainer.append(tooltips);
 
         // bottom toolbar
-        const scenePanel = new ScenePanel(events, tooltips);
+        // shared right-click copy/paste menu for panel sections
+        const clipboardMenu = new ClipboardMenu();
+        const scenePanel = new ScenePanel(events, tooltips, clipboardMenu);
         const settingsPanel = new SettingsPanel(events, tooltips);
         const appearancePanel = new AppearancePanel(events, tooltips);
         const overlaysPanel = new OverlaysPanel(events, tooltips);
@@ -165,11 +177,12 @@ class EditorUI {
 
         canvasContainer.dom.appendChild(canvas);
         canvasContainer.append(annotationContainer);
-        canvasContainer.append(appLabel);
         canvasContainer.append(cameraInfoOverlay);
         canvasContainer.append(perfOverlay);
         canvasContainer.append(overdrawLegend);
         canvasContainer.append(toolsContainer);
+        // above the tools container, so it stays clickable while a selection tool is active
+        canvasContainer.append(appLabel);
         canvasContainer.append(scenePanel);
         canvasContainer.append(bottomToolbar);
         canvasContainer.append(rightToolbar);
@@ -264,6 +277,7 @@ class EditorUI {
         topContainer.append(annotationTranslationsDialog);
         topContainer.append(shortcutsPopup);
         topContainer.append(aboutPopup);
+        topContainer.append(clipboardMenu);
 
         appContainer.append(editorContainer);
         appContainer.append(topContainer);

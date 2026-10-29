@@ -262,8 +262,10 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('startSceneLodFloor');
         expect(out).toContain('applyStartFloor');
         // the clamp survives the viewer's applyPerfSettings re-run (which
-        // reopens the start component's lodRangeMin to 0 on this event)
-        expect(out).toContain("'performanceMode:changed'");
+        // reopens the start component's lodRangeMin to 0 on these events;
+        // supersplat-viewer 1.38 replaced performanceMode with both)
+        expect(out).toContain("ev.on('quality:changed', reassertAfterPerfSettings);");
+        expect(out).toContain("ev.on('stochastic:changed', reassertAfterPerfSettings);");
         // supersplat-viewer >= 1.37 re-runs applyPerfSettings on every XR
         // enter/exit too, so the clamp must be restored on that event as well
         expect(out).toContain("'xrMode:changed'");
@@ -272,9 +274,11 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('if (pinReady) { pinDesired(); }');
     });
 
-    // supersplat-viewer 1.37's two-hand XR grab moves only the start scene's
-    // entity; portal scenes, markers, crossings and zones are world-anchored
-    // and would detach from what the user sees, so portal exports turn it off.
+    // An object export's two-hand XR grab (XrManipulation) and the 1.38 Ice
+    // Cream hold both move the start scene's entity; portal scenes, markers,
+    // crossings and zones are world-anchored and would detach from what the
+    // user sees, so portal exports turn both off. A walk-in scene's grab moves
+    // the user instead and is left alone.
     it('switches off the viewer XR grab when a session starts', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
@@ -284,6 +288,20 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain("app.xr.on('start', disableXrGrab);");
         expect(out).toContain("rig.script.get('xrManipulation')");
         expect(out).toContain('grab.enabled = false;');
+    });
+
+    it('turns the XR Ice Cream hold back off, after the viewer has seen the change', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/lod-meta.json'],
+            portalStart: 0
+        });
+        expect(out).toContain("ev.on('iceCream:changed', function (on) { if (on) { disableIceCream(); } });");
+        // deferred, so a viewer listener later in the same dispatch cannot
+        // re-enable the hold with the stale value
+        const reset = out.indexOf('if (xrState.iceCream) { xrState.iceCream = false; }');
+        expect(reset).toBeGreaterThan(-1);
+        expect(out.lastIndexOf('setTimeout(function () {', reset)).toBeGreaterThan(out.indexOf('var disableIceCream = function () {'));
     });
 
     it('halts GPU-feeding work on devicelost and resumes on devicerestored', () => {

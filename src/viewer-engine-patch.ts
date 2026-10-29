@@ -10,24 +10,24 @@
 // `hasFailed(url)` (PR #8998) and `inst.octree.destroyed` (PR #9011). The nine
 // engine backport patches are therefore obsolete and have been removed.
 //
-// What remains are nine fork-specific patches (NOT upstream backports) that
+// What remains are six fork-specific patches (NOT upstream backports) that
 // add viewer-APP behaviour absent from any upstream engine version:
 //
 //   1. A spawn-preserving `reseat()` method on the viewer's CameraManager.
-//   2/3. VR/AR entry grounded to the floor beneath the camera instead of
-//        world Y=0 (`groundBelowCamera()` + the XR-start rig placement).
-//   4. `window.__ssPc`, publishing the engine classes the portal-marker
+//   2. `window.__ssPc`, publishing the engine classes the portal-marker
 //      companion needs (a classic script cannot reach them otherwise).
-//   5/6. Two guards so a click on a portal marker opens its tooltip without
+//   3/4. Two guards so a click on a portal marker opens its tooltip without
 //        also driving the camera.
-//   7. The walk-mode nav hover ring hides while the pointer is over a marker
+//   5. The walk-mode nav hover ring hides while the pointer is over a marker
 //      icon (the viewer's own annotations get this from their DOM hotspot;
 //      the markers have none by design).
-//   8. The perf-settings budget table is chosen by the companion's device
-//      capability class instead of the mobile/desktop user-agent split, plus
-//      an HD tier reading a companion-published gaussian budget.
-//   9. A publish of the internal Viewer as `window.__supersplatViewer` plus
+//   6. A publish of the internal Viewer as `window.__supersplatViewer` plus
 //      the `__ssOnViewer` hook (required: exports fail without it).
+//
+// Retired with supersplat-viewer 1.38 (splat-transform 3.10): grounding VR/AR
+// entry to the floor beneath the camera (the viewer now does this itself from
+// collision) and the device-class budget table with its HD tier (replaced by
+// the viewer's own Quality slider and per-device budget ladders).
 //
 // These target the exported viewer app (4-/8-space indented), not the engine,
 // so they are unaffected by the engine bump; each search string was re-verified
@@ -95,60 +95,6 @@ const PATCHES: EnginePatch[] = [
             '            global.app.renderNextFrame = true;\n' +
             '        };\n',
         applied: 'this.reseat = () => {\n'
-    },
-    // --- fork: VR/AR enters at the floor beneath the camera, not world Y=0 ---
-    // The bundled viewer's XR start handler pins the camera rig to world Y=0 and
-    // uses a 'local-floor' reference space, so VR/AR only lands at eye level when
-    // the scene's floor happens to sit at Y=0. Walk mode instead grounds to the
-    // real floor via findCylinderSpawn (a 3D shell search, radius 5m, around the
-    // camera). For an exported splat whose floor is off-zero (the common case)
-    // this floats the viewer above the scene by the floor's world-Y. Two patches:
-    //   1. Expose groundBelowCamera(x,y,z) on the CameraManager, running the SAME
-    //      findCylinderSpawn walk uses, at the current camera XZ -> the floor Y
-    //      beneath you (per-position, so slopes / multi-level stay correct).
-    //   2. Have the XR start handler set the rig Y to that floor (falling back to
-    //      0 when there is no collision, or no ground within range -- i.e. the
-    //      prior behaviour, so a floor-at-0 scene is unchanged).
-    // Runtime-only: reuses the loaded collision (single source of truth), so
-    // there is nothing to bake at export and nothing to keep in parity. The 5m
-    // reach is inherited from walk mode, so VR behaves exactly like entering walk.
-    // Anchored on the reseat() block above (same CameraManager closure, where
-    // `collision`, `controllers` and the module-level `findCylinderSpawn` and
-    // `Vec3` are all in scope); runs after the reseat patch that creates it.
-    {
-        search:
-            '        this.reseat = () => {\n' +
-            '            const controller = getController(state.cameraMode);\n' +
-            '            (controller.goto || controller.onEnter).call(controller, this.camera);\n' +
-            '            target.copy(this.camera);\n' +
-            '            transitionTimer = 1;\n' +
-            '            global.app.renderNextFrame = true;\n' +
-            '        };\n',
-        replace:
-            '        this.reseat = () => {\n' +
-            '            const controller = getController(state.cameraMode);\n' +
-            '            (controller.goto || controller.onEnter).call(controller, this.camera);\n' +
-            '            target.copy(this.camera);\n' +
-            '            transitionTimer = 1;\n' +
-            '            global.app.renderNextFrame = true;\n' +
-            '        };\n' +
-            '        this.groundBelowCamera = (x, y, z) => {\n' +
-            '            const walk = controllers.walk;\n' +
-            '            if (!walk || !walk.collision) return null;\n' +
-            '            const out = new Vec3();\n' +
-            '            return findCylinderSpawn(walk.collision, x, y, z, (walk.capsuleHeight + walk.hoverHeight) * 0.5, walk.capsuleRadius, out) ? out.y : null;\n' +
-            '        };\n',
-        applied: '        this.groundBelowCamera = (x, y, z) => {\n'
-    },
-    {
-        // XR start: ground the rig to the floor beneath the camera instead of
-        // pinning it to world Y=0. Self-destructing search (the `0` becomes a
-        // ternary), so no `applied` marker is needed. 8-space indented.
-        search:
-            '        parent.setPosition(cameraPosition.x, 0, cameraPosition.z);\n',
-        replace:
-            '        const ssFloorY = (window.__supersplatViewer && window.__supersplatViewer.cameraManager && window.__supersplatViewer.cameraManager.groundBelowCamera) ? window.__supersplatViewer.cameraManager.groundBelowCamera(cameraPosition.x, cameraPosition.y, cameraPosition.z) : null;\n' +
-            '        parent.setPosition(cameraPosition.x, (typeof ssFloorY === \'number\') ? ssFloorY : 0, cameraPosition.z);\n'
     },
     // --- fork: publish the engine classes the portal-marker companion needs ---
     // The exported viewer bundles engine + app into one unminified ESM module
@@ -264,39 +210,6 @@ const PATCHES: EnginePatch[] = [
             '    updateCursor(offsetX, offsetY) {\n' +
             '        if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(offsetX, offsetY)) { this.hoverRing.hide(); return; }\n' +
             '        if (!this.hoverActive || this.navigating) {\n'
-    },
-    // --- fork: budget table by device capability class, plus the HD tier ---
-    // applyPerfSettings' budget(). Two changes on two adjacent lines:
-    //
-    //   1. The table is chosen by the companion's device CLASS instead of the
-    //      mobile/desktop user-agent split. The stock objects are reused
-    //      verbatim -- budgets.mobile {low:1,high:2} IS the weak table and
-    //      budgets.desktop {low:2,high:4} IS the standard table -- so the table
-    //      literal itself is never patched and a recent phone gets 2M/4M while
-    //      a software-rendering desktop drops to 1M/2M.
-    //   2. An HD tier reading window.__ssHdBudget (6 on mobile and weak
-    //      desktops, 14 on standard desktops -- see src/quality-tier.ts).
-    //
-    // All policy lives in the companion's globals, so this patch carries no
-    // logic of its own and the decision rules stay in unit-tested TypeScript.
-    //
-    // Degrades safely with no companion present: undefined __ssQualityClass
-    // takes budgets.desktop and undefined __ssQualityMode takes the stock
-    // performanceMode branch -- i.e. exactly today's desktop behaviour. (A
-    // phone without the companion would get the desktop table, which cannot
-    // happen in practice: the companion is injected into every export.)
-    //
-    // `?budget=` still wins -- config.budget returns earlier in the same
-    // function and is untouched. Self-destructing (neither line survives the
-    // replacement), so no `applied` marker is needed. Verified to occur
-    // exactly once in the splat-transform 3.1.7 baked viewer.
-    {
-        search:
-            '                    const quality = platform.mobile ? budgets.mobile : budgets.desktop;\n' +
-            '                    return state.performanceMode ? quality.low : quality.high;\n',
-        replace:
-            '                    const quality = (window.__ssQualityClass === \'weak\') ? budgets.mobile : budgets.desktop;\n' +
-            '                    return (window.__ssQualityMode === \'hd\') ? (window.__ssHdBudget || 14) : (state.performanceMode ? quality.low : quality.high);\n'
     },
     // --- fork: publish the internal Viewer for every companion ---
     // supersplat-viewer >= 1.32 replaced `main()` with `createViewer()`, whose

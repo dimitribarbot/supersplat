@@ -11,7 +11,6 @@ import { buildDeviceFallbackInjection } from '../src/viewer-companion/device-fal
 import { buildIframeApiInjection } from '../src/viewer-companion/iframe-api';
 import { buildOffLimitsZonesInjection } from '../src/viewer-companion/off-limits-zones';
 import { buildPortalsInjection } from '../src/viewer-companion/portals';
-import { buildQualityModeInjection } from '../src/viewer-companion/quality-mode';
 import { resolveLocale, VIEWER_LOCALES, viewerLangRuntime } from '../src/viewer-companion/viewer-lang';
 import { i18n } from '../src/ui/localization';
 
@@ -137,7 +136,6 @@ describe('companions share one language resolver', () => {
         ['annotation-links', buildAnnotationLinksInjection([linkAnnotation])],
         ['off-limits-zones', buildOffLimitsZonesInjection([zone], '')],
         ['device-fallback', buildDeviceFallbackInjection()],
-        ['quality-mode', buildQualityModeInjection()],
         ['portals', buildPortalsInjection(portalViewerSettings)],
         ['iframe-api', buildIframeApiInjection([linkAnnotation])],
         ['annotation-i18n', buildAnnotationI18nInjection([translatedAnnotation])]

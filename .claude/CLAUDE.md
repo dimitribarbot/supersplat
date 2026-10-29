@@ -14,7 +14,7 @@ Run from the repo root (front-end app):
 - `npm run watch` — rebuild on change (no HMR; refresh the browser manually).
 - `npm run develop` — debug build (`BUILD_TYPE=debug`) + static server on **http://localhost:3333**. Use this for pure front-end work.
 - `npm run lint` — ESLint over `src` (`eslint src`).
-- `npm run test` — Vitest (`test/**/*.test.ts`), Node environment.
+- `npm run test` — Vitest (`test/**/*.test.ts`, Node environment), then upstream's Node harness (`tsc -p test/tsconfig.json` emits `src` to `test/.build`, then `test/queue-ordering.mjs` runs). Upstream's other harnesses (`test/editor-commands.mjs`, `test/webmcp.mjs`) run with `node --import ./test/register.mjs <file>` after that emit.
 - Single test: `npx vitest run test/portals.test.ts` (or `npx vitest run -t "<name>"` to filter by test name; drop `run` to watch).
 
 Build types (`BUILD_TYPE` env): `debug` (no minify, uses `playcanvas.dbg`), `profile`, `release` (strips `Debug.exec` calls + terser). `prod` is aliased to `release`.
