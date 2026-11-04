@@ -26,7 +26,8 @@
 // Environment-agnostic (compiled for the export server via dist-shared):
 // string operations only.
 
-import { brandFragments, resolveBrandView, type BrandClient, type BrandOperator } from './brand-rules';
+import { brandFragments, resolveBrandView } from './brand-rules';
+import type { BrandClient, BrandOperator } from './brand-rules';
 import { faviconLinkTag } from './favicon';
 
 const HEAD_CLOSE = '</head>';
@@ -53,9 +54,11 @@ export const BRAND_CLIENT_METAS = {
 // for their jsString() form, which is how they appear in index.js.
 const UI_HTML_DECL = 'var uiHtml = ';
 const BADGE_OPEN = '<a class="sse-viewerBranding sse-hidden" target="_blank" rel="noopener noreferrer">';
-const BADGE_LOGO_OPEN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="64 64 384 384" role="img" aria-label="SuperSplat">';
+const BADGE_LOGO_OPEN =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="64 64 384 384" role="img" aria-label="SuperSplat">';
 const BADGE_CLOSE = '<span>SuperSplat</span>\n    </a>';
-const PANEL_OPEN = '<a\n                class="sse-viewerTitle"\n                href="https://github.com/playcanvas/supersplat-viewer"\n                target="_blank"\n                rel="noopener noreferrer"\n            >';
+const PANEL_OPEN =
+    '<a\n                class="sse-viewerTitle"\n                href="https://github.com/playcanvas/supersplat-viewer"\n                target="_blank"\n                rel="noopener noreferrer"\n            >';
 const PANEL_LOGO_OPEN = '<svg class="sse-viewerLogo" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">';
 const PANEL_LABEL = '<span class="sse-title-name">SuperSplat Viewer</span>';
 const PANEL_VERSION = '<span class="sse-title-version">v<span class="sse-appVersionLabel"></span></span>\n            ';
@@ -84,12 +87,13 @@ export type BrandInput = {
     client: BrandClient;
 };
 
-const escapeHtml = (text: string): string => text
-.replace(/&/g, '&amp;')
-.replace(/</g, '&lt;')
-.replace(/>/g, '&gt;')
-.replace(/"/g, '&quot;')
-.replace(/'/g, '&#39;');
+const escapeHtml = (text: string): string =>
+    text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 
 // Built by code point so no backslash escape appears in this file's source.
 const BACKSLASH = String.fromCharCode(92);
@@ -100,13 +104,20 @@ const BACKSLASH = String.fromCharCode(92);
 // break the string literal (a pre-ES2019 engine even treats a raw U+2028/2029
 // as a syntax error). split/join, not String.replace, so a `$` in brand text
 // is never read as a pattern.
-const jsString = (html: string): string => html
-.split(BACKSLASH).join(BACKSLASH + BACKSLASH)
-.split('"').join(`${BACKSLASH}"`)
-.split('\n').join(`${BACKSLASH}n`)
-.split('\r').join(`${BACKSLASH}r`)
-.split(String.fromCharCode(0x2028)).join(`${BACKSLASH}u2028`)
-.split(String.fromCharCode(0x2029)).join(`${BACKSLASH}u2029`);
+const jsString = (html: string): string =>
+    html
+        .split(BACKSLASH)
+        .join(BACKSLASH + BACKSLASH)
+        .split('"')
+        .join(`${BACKSLASH}"`)
+        .split('\n')
+        .join(`${BACKSLASH}n`)
+        .split('\r')
+        .join(`${BACKSLASH}r`)
+        .split(String.fromCharCode(0x2028))
+        .join(`${BACKSLASH}u2028`)
+        .split(String.fromCharCode(0x2029))
+        .join(`${BACKSLASH}u2029`);
 
 const skip = (what: string): void => {
     console.warn(`brand: ${what} not found in the exported viewer; leaving it unbranded`);
@@ -193,8 +204,9 @@ const STYLE = [
 const hasBrand = (brand: BrandInput): boolean => {
     const operator = brand.operator || {};
     const client = brand.client || {};
-    return [operator.name, operator.iconHref, operator.logoHref, client.name, client.iconUrl, client.logoUrl]
-    .some(value => !!(value ?? '').trim());
+    return [operator.name, operator.iconHref, operator.logoHref, client.name, client.iconUrl, client.logoUrl].some(
+        (value) => !!(value ?? '').trim()
+    );
 };
 
 // The operator brand as a JS object literal for an inline <script>. JSON is
@@ -253,7 +265,7 @@ const runtimeScript = (operator: BrandOperator): string => `
 // The page half of the override.
 export const injectBrand = (html: string, brand: BrandInput): string => {
     if (!hasBrand(brand)) {
-        return html;                    // not configured: the default, silent
+        return html; // not configured: the default, silent
     }
 
     const headEnd = html.indexOf(HEAD_CLOSE);
@@ -314,13 +326,23 @@ export const injectBrandJs = (js: string): string => {
 
     let out = replaceOnce(js, UI_HTML_DECL, UI_PART_DECL + UI_HTML_DECL, 'the ui template');
     out = replaceOnce(out, jsString(BADGE_OPEN), part('badgeOpen', jsString(BADGE_OPEN)), 'the overlay badge');
-    out = replaceSvg(out, jsString(BADGE_LOGO_OPEN), svg => part('badgeIcon', svg), 'the overlay badge logo');
+    out = replaceSvg(out, jsString(BADGE_LOGO_OPEN), (svg) => part('badgeIcon', svg), 'the overlay badge logo');
     out = replaceOnce(out, jsString(BADGE_CLOSE), part('badgeClose', jsString(BADGE_CLOSE)), 'the overlay badge label');
     out = replaceOnce(out, jsString(PANEL_OPEN), part('panelOpen', jsString(PANEL_OPEN)), 'the info panel header');
-    out = replaceSvg(out, jsString(PANEL_LOGO_OPEN), svg => part('panelLogo', svg), 'the info panel logo');
+    out = replaceSvg(out, jsString(PANEL_LOGO_OPEN), (svg) => part('panelLogo', svg), 'the info panel logo');
     out = replaceOnce(out, jsString(PANEL_LABEL), part('panelLabel', jsString(PANEL_LABEL)), 'the info panel label');
-    out = replaceOnce(out, jsString(PANEL_CLOSE), jsString(PANEL_VERSION) + part('panelClose', jsString('</a>')), 'the info panel header end');
-    out = replaceOnce(out, jsString(PANEL_SECTIONS), part('attribution', '') + jsString(PANEL_SECTIONS), 'the info panel sections');
+    out = replaceOnce(
+        out,
+        jsString(PANEL_CLOSE),
+        jsString(PANEL_VERSION) + part('panelClose', jsString('</a>')),
+        'the info panel header end'
+    );
+    out = replaceOnce(
+        out,
+        jsString(PANEL_SECTIONS),
+        part('attribution', '') + jsString(PANEL_SECTIONS),
+        'the info panel sections'
+    );
     return out;
 };
 
@@ -328,4 +350,14 @@ export const injectBrandJs = (js: string): string => {
 // test/viewer-html-anchors.test.ts asserts each still occurs exactly once in the
 // viewer splat-transform ships: the html one in the page, the rest in index.js.
 export const BRAND_HTML_ANCHORS = [DOC_TITLE];
-export const BRAND_JS_ANCHORS = [UI_HTML_DECL, BADGE_OPEN, BADGE_LOGO_OPEN, BADGE_CLOSE, PANEL_OPEN, PANEL_LOGO_OPEN, PANEL_LABEL, PANEL_CLOSE, PANEL_SECTIONS].map(jsString);
+export const BRAND_JS_ANCHORS = [
+    UI_HTML_DECL,
+    BADGE_OPEN,
+    BADGE_LOGO_OPEN,
+    BADGE_CLOSE,
+    PANEL_OPEN,
+    PANEL_LOGO_OPEN,
+    PANEL_LABEL,
+    PANEL_CLOSE,
+    PANEL_SECTIONS
+].map(jsString);

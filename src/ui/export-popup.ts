@@ -1,14 +1,25 @@
-import { BooleanInput, Button, ColorPicker, Container, Element, Label, SelectInput, SliderInput, TextInput } from '@playcanvas/pcui';
+import {
+    BooleanInput,
+    Button,
+    ColorPicker,
+    Container,
+    Element,
+    Label,
+    SelectInput,
+    SliderInput,
+    TextInput
+} from '@playcanvas/pcui';
 
-import { Pose } from '../camera-poses';
-import { PerSceneCollisionPanel } from './collision-params';
-import { i18n } from './localization';
-import { Events } from '../events';
-import { ExportChoices, ExportDialogResult, ExportType } from '../export-options';
+import type { Pose } from '../camera-poses';
+import type { Events } from '../events';
+import type { ExportChoices, ExportDialogResult, ExportType } from '../export-options';
 import { probeExportCapabilities } from '../export-server-client';
-import { ExportSettings } from '../export-settings';
+import type { ExportSettings } from '../export-settings';
 import type { BlobReadSource, WriteTarget } from '../io';
 import type { Splat } from '../splat';
+
+import { PerSceneCollisionPanel } from './collision-params';
+import { i18n } from './localization';
 import sceneExport from './svg/export.svg';
 import projectSave from './svg/save.svg';
 
@@ -49,13 +60,21 @@ const removeKnownExtension = (filename: string) => {
 };
 
 const isValidFilename = (filename: string) => {
-    return !!filename.trim() && !/[<>:"/\\|?*]|[. ]$/.test(filename) &&
-        !Array.from(filename).some(char => char.charCodeAt(0) < 32) &&
-        !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename);
+    return (
+        !!filename.trim() &&
+        !/[<>:"/\\|?*]|[. ]$/.test(filename) &&
+        !Array.from(filename).some((char) => char.charCodeAt(0) < 32) &&
+        !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)
+    );
 };
 
 class ExportPopup extends Container {
-    show: (exportType: FileDialogType, splatNames: string[], settings?: ExportSettings, exclude?: BlobReadSource) => Promise<null | ExportDialogResult>;
+    show: (
+        exportType: FileDialogType,
+        splatNames: string[],
+        settings?: ExportSettings,
+        exclude?: BlobReadSource
+    ) => Promise<null | ExportDialogResult>;
     hide: () => void;
     destroy: () => void;
 
@@ -129,8 +148,9 @@ class ExportPopup extends Container {
         galleryWarning.hidden = true;
 
         const refreshGalleryWarning = () => {
-            const count = ((events.invoke('annotations.list') ?? []) as { linkType?: string, images?: unknown[] }[])
-            .filter(a => a.linkType === 'images' && (a.images?.length ?? 0) > 0).length;
+            const count = (
+                (events.invoke('annotations.list') ?? []) as { linkType?: string; images?: unknown[] }[]
+            ).filter((a) => a.linkType === 'images' && (a.images?.length ?? 0) > 0).length;
             galleryWarning.hidden = !(currentExportType === 'viewer' && viewerTypeSelect.value === 'html' && count > 0);
             if (!galleryWarning.hidden) {
                 galleryWarning.text = i18n.t('export.annotation-images-html-warning', { count });
@@ -520,7 +540,9 @@ class ExportPopup extends Container {
 
         const getFilename = () => {
             const filename = filenameEntry.value;
-            return filename && !filename.toLowerCase().endsWith(filenameExtension) ? `${filename}${filenameExtension}` : filename;
+            return filename && !filename.toLowerCase().endsWith(filenameExtension)
+                ? `${filename}${filenameExtension}`
+                : filename;
         };
 
         const validateFilename = async (suggest = false): Promise<void> => {
@@ -532,7 +554,9 @@ class ExportPopup extends Container {
             locationName.hidden = !directory;
             locationName.text = directory ? `…/${directory.name}` : '';
             locationName.dom.title = locationName.text;
-            changeLocationButton.text = i18n.t(directory ? 'popup.export.change-location' : 'popup.export.choose-location');
+            changeLocationButton.text = i18n.t(
+                directory ? 'popup.export.change-location' : 'popup.export.choose-location'
+            );
             exportButton.enabled = false;
             exportButton.text = i18n.t(actionKey);
 
@@ -545,8 +569,8 @@ class ExportPopup extends Container {
             } else if (directory) {
                 try {
                     handle = await directory.getFileHandle(filename);
-                    const sources = await events.invoke('scene.sourcesOf', handle) as BlobReadSource[];
-                    if (sources.some(source => source !== excludedSource)) {
+                    const sources = (await events.invoke('scene.sourcesOf', handle)) as BlobReadSource[];
+                    if (sources.some((source) => source !== excludedSource)) {
                         message = i18n.t('popup.overwrite-source');
                         needsSuggestion = true;
                     }
@@ -566,8 +590,12 @@ class ExportPopup extends Container {
                     stem = filename.slice(0, filename.lastIndexOf('.'));
                 }
                 const extension = filename.slice(stem.length);
-                let base = Array.from(stem).map(char => (char.charCodeAt(0) < 32 || /[<>:"/\\|?*]/.test(char) ? '_' : char))
-                .join('').trim().replace(/[. ]+$/, '') || 'scene';
+                let base =
+                    Array.from(stem)
+                        .map((char) => (char.charCodeAt(0) < 32 || /[<>:"/\\|?*]/.test(char) ? '_' : char))
+                        .join('')
+                        .trim()
+                        .replace(/[. ]+$/, '') || 'scene';
                 if (!isValidFilename(`${base}_cleaned${extension}`)) base = 'scene';
 
                 let index = 1;
@@ -610,7 +638,8 @@ class ExportPopup extends Container {
             filenameMessage.dom.classList.toggle('error', !!message);
             filenameEntry.input.setAttribute('aria-invalid', String(!!message));
             exportButton.text = i18n.t(handle && !message ? 'popup.export.overwrite' : actionKey);
-            exportButton.enabled = !message && (!hasFilePicker || !!directory) && changeLocationButton.enabled && !submitting;
+            exportButton.enabled =
+                !message && (!hasFilePicker || !!directory) && changeLocationButton.enabled && !submitting;
         };
 
         i18n.onChange(validateFilename, this);
@@ -684,10 +713,12 @@ class ExportPopup extends Container {
         const updateServerVisibility = () => {
             const serverSupports = (() => {
                 if (!capabilities?.enabled) return false;
-                if (currentExportType === 'splat') return false;             // always client-side
-                if (currentExportType === 'viewerSettings') return false;    // pure JSON, no server benefit
+                if (currentExportType === 'splat') return false; // always client-side
+                if (currentExportType === 'viewerSettings') return false; // pure JSON, no server benefit
                 if (currentExportType === 'viewer') {
-                    return capabilities.formats.includes('htmlViewer') || capabilities.formats.includes('packageViewer');
+                    return (
+                        capabilities.formats.includes('htmlViewer') || capabilities.formats.includes('packageViewer')
+                    );
                 }
                 if (currentExportType === 'ply') {
                     return compressBoolean.value && capabilities.formats.includes('compressedPly');
@@ -695,7 +726,7 @@ class ExportPopup extends Container {
                 return capabilities.formats.includes(currentExportType);
             })();
             serverRow.hidden = !serverSupports;
-            serverToggle.value = serverSupports;   // default on when shown
+            serverToggle.value = serverSupports; // default on when shown
         };
 
         compressBoolean.on('change', () => {
@@ -726,7 +757,23 @@ class ExportPopup extends Container {
             currentExportType = exportType;
 
             const allRows = [
-                viewerTypeRow, animationRow, loopRow, colorRow, fovRow, compressRow, bandsRow, iterationsRow, streamingRow, collisionRow, environmentRow, perSceneCollision, radiusRow, voxelSizeRow, serverRow, spzVersionRow, filenameRow
+                viewerTypeRow,
+                animationRow,
+                loopRow,
+                colorRow,
+                fovRow,
+                compressRow,
+                bandsRow,
+                iterationsRow,
+                streamingRow,
+                collisionRow,
+                environmentRow,
+                perSceneCollision,
+                radiusRow,
+                voxelSizeRow,
+                serverRow,
+                spzVersionRow,
+                filenameRow
             ];
 
             const activeRows: Container[] = {
@@ -735,7 +782,22 @@ class ExportPopup extends Container {
                 ssproj: [filenameRow],
                 sog: [bandsRow, iterationsRow, serverRow, filenameRow],
                 spz: [bandsRow, spzVersionRow, filenameRow],
-                viewer: [viewerTypeRow, animationRow, loopRow, colorRow, fovRow, bandsRow, streamingRow, collisionRow, environmentRow, perSceneCollision, radiusRow, voxelSizeRow, serverRow, filenameRow],
+                viewer: [
+                    viewerTypeRow,
+                    animationRow,
+                    loopRow,
+                    colorRow,
+                    fovRow,
+                    bandsRow,
+                    streamingRow,
+                    collisionRow,
+                    environmentRow,
+                    perSceneCollision,
+                    radiusRow,
+                    voxelSizeRow,
+                    serverRow,
+                    filenameRow
+                ],
                 viewerSettings: [animationRow, loopRow, colorRow, fovRow, filenameRow]
             }[exportType];
 
@@ -745,7 +807,10 @@ class ExportPopup extends Container {
 
             // default to the scene's band count, capped by the viewport setting.
             // higher values pad the missing coefficients with zeros
-            const sceneBands = Math.max(0, ...(events.invoke('scene.splats') as Splat[]).map(s => s.resource.shBands));
+            const sceneBands = Math.max(
+                0,
+                ...(events.invoke('scene.splats') as Splat[]).map((s) => s.resource.shBands)
+            );
             bandsSlider.value = Math.min(events.invoke('view.bands'), sceneBands);
 
             // ply
@@ -817,14 +882,19 @@ class ExportPopup extends Container {
             refreshGalleryWarning();
         };
 
-        this.show = (exportType: FileDialogType, splatNames: string[], settings: ExportSettings = {}, exclude?: BlobReadSource) => {
+        this.show = (
+            exportType: FileDialogType,
+            splatNames: string[],
+            settings: ExportSettings = {},
+            exclude?: BlobReadSource
+        ) => {
             saveProject = exportType === 'ssproj';
             excludedSource = exclude;
             exportIcon.hidden = saveProject;
             saveIcon.hidden = !saveProject;
 
             const frames = events.invoke('timeline.frames');
-            const hasPoses = (events.invoke('camera.poses') as Pose[]).some(p => p.frame >= 0 && p.frame < frames);
+            const hasPoses = (events.invoke('camera.poses') as Pose[]).some((p) => p.frame >= 0 && p.frame < frames);
 
             reset(exportType, splatNames, hasPoses);
 
@@ -843,11 +913,25 @@ class ExportPopup extends Container {
                 const useServer = !serverRow.hidden && serverToggle.value;
                 switch (exportType) {
                     case 'ply':
-                        return { filename, shBands: bandsSlider.value, compressedPly: compressBoolean.value, useServer };
+                        return {
+                            filename,
+                            shBands: bandsSlider.value,
+                            compressedPly: compressBoolean.value,
+                            useServer
+                        };
                     case 'sog':
-                        return { filename, shBands: bandsSlider.value, sogIterations: iterationsSlider.value, useServer };
+                        return {
+                            filename,
+                            shBands: bandsSlider.value,
+                            sogIterations: iterationsSlider.value,
+                            useServer
+                        };
                     case 'spz':
-                        return { filename, shBands: bandsSlider.value, spzVersion: spzVersionSelect.value === '3' ? 3 : 4 };
+                        return {
+                            filename,
+                            shBands: bandsSlider.value,
+                            spzVersion: spzVersionSelect.value === '3' ? 3 : 4
+                        };
                     case 'viewer':
                     case 'viewerSettings':
                         return {
@@ -862,9 +946,8 @@ class ExportPopup extends Container {
                             collision: collisionToggle.value,
                             // index-aligned with the portal bundle; empty when the
                             // scene has no portals, in which case globalCollision is used
-                            perSceneCollision: Array.from(
-                                { length: perSceneCollision.sceneCount() },
-                                (_, i) => perSceneCollision.valuesAt(i)
+                            perSceneCollision: Array.from({ length: perSceneCollision.sceneCount() }, (_, i) =>
+                                perSceneCollision.valuesAt(i)
                             ),
                             globalCollision: {
                                 environment: environmentSelect.value as 'indoor' | 'outdoor',
@@ -901,8 +984,14 @@ class ExportPopup extends Container {
                         // publish flow, which really does only stream to HTTP, never
                         // comes through this dialog -- it runs off 'scene.publishS3'.
                         if (directory) {
-                            const target = await events.invoke('scene.pickWriteTarget', directory, getFilename(),
-                                async (handle: FileSystemFileHandle) => !!overwriteHandle && await handle.isSameEntry(overwriteHandle), excludedSource);
+                            const target = await events.invoke(
+                                'scene.pickWriteTarget',
+                                directory,
+                                getFilename(),
+                                async (handle: FileSystemFileHandle) =>
+                                    !!overwriteHandle && (await handle.isSameEntry(overwriteHandle)),
+                                excludedSource
+                            );
 
                             // A newly detected file needs an explicit Overwrite click.
                             // Keep the dialog open if its filename or folder changed while checking.

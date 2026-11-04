@@ -5,7 +5,7 @@
 // portal-transition. That means each one must be SELF-CONTAINED -- no
 // references to module-scope constants, no imports.
 
-type MarkerPortal = { front: number | null, back: number | null };
+type MarkerPortal = { front: number | null; back: number | null };
 
 // Icon size in screen pixels. Deliberately larger than the viewer's own
 // annotation hotspot (25px) so a doorway marker reads as a distinct affordance.
@@ -36,7 +36,7 @@ const portalsForScene = (portals: MarkerPortal[], active: number): number[] => {
 // POSITIVE view-space depth (the caller negates the view-space z).
 const markerScale = (size: number, canvasHeight: number, projData5: number, viewDepth: number): number => {
     if (!canvasHeight || !projData5) return 0;
-    return (size / canvasHeight) * (2 * viewDepth / projData5);
+    return (size / canvasHeight) * ((2 * viewDepth) / projData5);
 };
 
 // Suppression rule. Deliberately NOT a function of controlsHidden or
@@ -44,7 +44,7 @@ const markerScale = (size: number, canvasHeight: number, projData5: number, view
 // while the user is moving in walk or fly mode. That divergence is the whole
 // reason this cannot reuse the viewer's Annotation class, whose opacity is a
 // static shared by every instance.
-const markerVisible = (s: { noui: boolean, cameraMode: string, transitionActive: boolean }): boolean => {
+const markerVisible = (s: { noui: boolean; cameraMode: string; transitionActive: boolean }): boolean => {
     if (!s) return true;
     if (s.noui) return false;
     if (s.cameraMode === 'anim') return false;
@@ -65,7 +65,7 @@ const markerVisible = (s: { noui: boolean, cameraMode: string, transitionActive:
 // click would open the tooltip of whatever icon sat under a stale point, and a
 // pointermove would latch the hover tint there forever. Because the lock only
 // ever engages in this state, testing it here needs no pointerLockElement read.
-const markerInteractive = (s: { cameraMode: string, gamingControls: boolean }): boolean => {
+const markerInteractive = (s: { cameraMode: string; gamingControls: boolean }): boolean => {
     if (!s) return true;
     if (s.gamingControls && (s.cameraMode === 'walk' || s.cameraMode === 'fly')) return false;
     return true;
@@ -82,7 +82,11 @@ const markerInteractive = (s: { cameraMode: string, gamingControls: boolean }): 
 // unclickable with no angle threshold; a tilted doorway gives a rotated
 // ellipse; and the normalised distance doubles as the nearest-centre tie-break
 // for overlapping icons.
-const markerHitTest = (markers: { sx: number, sy: number, ux: number, uy: number, vx: number, vy: number, onScreen: boolean }[], x: number, y: number): number => {
+const markerHitTest = (
+    markers: { sx: number; sy: number; ux: number; uy: number; vx: number; vy: number; onScreen: boolean }[],
+    x: number,
+    y: number
+): number => {
     const list = markers || [];
     let best = -1;
     let bestDist = -1;

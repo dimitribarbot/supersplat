@@ -35,11 +35,14 @@ const BOOTSTRAP_CLOSE = '</script>';
 const LINE_SEP = String.fromCharCode(0x2028);
 const PARA_SEP = String.fromCharCode(0x2029);
 
-const jsonForScriptBlock = (value: any): string => {
+const jsonForScriptBlock = (value: unknown): string => {
     return JSON.stringify(value)
-    .split('<').join('\\u003c')
-    .split(LINE_SEP).join('\\u2028')
-    .split(PARA_SEP).join('\\u2029');
+        .split('<')
+        .join('\\u003c')
+        .split(LINE_SEP)
+        .join('\\u2028')
+        .split(PARA_SEP)
+        .join('\\u2029');
 };
 
 // Merge `patch` into the exported viewer's bootstrap block. Returns null when
@@ -52,7 +55,7 @@ const jsonForScriptBlock = (value: any): string => {
 // JSON.parse/stringify round trip of that would cost two extra full copies of
 // the payload. Patch keys are appended last, so they win the duplicate-key
 // race that JSON.parse resolves last-one-wins.
-const patchViewerBootstrap = (html: string, patch: Record<string, any>): string | null => {
+const patchViewerBootstrap = (html: string, patch: Record<string, unknown>): string | null => {
     const openIdx = html.indexOf(BOOTSTRAP_OPEN);
     if (openIdx === -1) {
         return null;
@@ -64,8 +67,8 @@ const patchViewerBootstrap = (html: string, patch: Record<string, any>): string 
     }
 
     const pairs = Object.keys(patch)
-    .map(key => `${jsonForScriptBlock(key)}:${jsonForScriptBlock(patch[key])}`)
-    .join(',');
+        .map((key) => `${jsonForScriptBlock(key)}:${jsonForScriptBlock(patch[key])}`)
+        .join(',');
 
     const trimmed = html.slice(innerStart, closeIdx).trim();
 

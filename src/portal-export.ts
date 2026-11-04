@@ -4,29 +4,39 @@
 // and the relative scene/collision URLs the viewer companion loads. No
 // playcanvas / splat-transform imports so it is unit-testable in isolation.
 
-import { InfiniteEdges } from './portal-geom';
-import { normalizePortalTransition, PortalTransition } from './portal-transition';
+import type { InfiniteEdges } from './portal-geom';
+import type { PortalTransition } from './portal-transition';
+import { normalizePortalTransition } from './portal-transition';
 
 type Vec3 = [number, number, number];
 type Quat = [number, number, number, number];
 
 type ExportPortal = {
-    position: Vec3,
-    rotation: Quat,
-    width: number,
-    height: number,
-    frontUid: number | null,
-    backUid: number | null,
-    infinite?: InfiniteEdges,
-    transition?: PortalTransition   // absent = 'defocus' (the default)
+    position: Vec3;
+    rotation: Quat;
+    width: number;
+    height: number;
+    frontUid: number | null;
+    backUid: number | null;
+    infinite?: InfiniteEdges;
+    transition?: PortalTransition; // absent = 'defocus' (the default)
 };
 
 type PortalBundle = {
-    sceneUids: number[];                 // index -> editor uid (index 0 = start)
-    portals: { position: Vec3, rotation: Quat, width: number, height: number, front: number | null, back: number | null, infinite?: InfiniteEdges, transition: PortalTransition }[];
-    portalScenes: string[];              // index -> relative asset URL (index 0 = '')
-    portalStart: number;                 // always 0
-    portalCollision: (string | null)[];  // index -> voxel URL, or [] when collision off
+    sceneUids: number[]; // index -> editor uid (index 0 = start)
+    portals: {
+        position: Vec3;
+        rotation: Quat;
+        width: number;
+        height: number;
+        front: number | null;
+        back: number | null;
+        infinite?: InfiniteEdges;
+        transition: PortalTransition;
+    }[];
+    portalScenes: string[]; // index -> relative asset URL (index 0 = '')
+    portalStart: number; // always 0
+    portalCollision: (string | null)[]; // index -> voxel URL, or [] when collision off
 };
 
 const sceneUrl = (index: number, streaming: boolean): string => {
@@ -39,16 +49,16 @@ const collisionUrl = (index: number): string => {
 };
 
 const buildPortalBundle = (args: {
-    portals: ExportPortal[],
-    startUid: number | null,
-    availableUids: number[],
-    streaming: boolean,
-    collision: boolean,
+    portals: ExportPortal[];
+    startUid: number | null;
+    availableUids: number[];
+    streaming: boolean;
+    collision: boolean;
     // Preferred start when no explicit start (startUid) was chosen: the editor's
     // currently visible/selected scene. Only honored if it is referenced by a
     // portal (an unreferenced start would be unreachable). Optional so older
     // callers keep the referenced[0] fallback.
-    preferredStartUid?: number | null
+    preferredStartUid?: number | null;
 }): PortalBundle | null => {
     const { portals, startUid, availableUids, streaming, collision, preferredStartUid } = args;
     const exists = (uid: number | null): uid is number => uid !== null && availableUids.includes(uid);
@@ -59,17 +69,18 @@ const buildPortalBundle = (args: {
         if (exists(uid) && !referenced.includes(uid)) referenced.push(uid);
     };
     portals.forEach((p) => {
-        add(p.frontUid); add(p.backUid);
+        add(p.frontUid);
+        add(p.backUid);
     });
 
     // choose the start scene: explicit start if valid; else the editor's
     // visible/selected scene when it is portal-referenced; else first referenced
-    const preferred = (preferredStartUid != null && referenced.includes(preferredStartUid)) ? preferredStartUid : null;
+    const preferred = preferredStartUid != null && referenced.includes(preferredStartUid) ? preferredStartUid : null;
     const start = exists(startUid) ? startUid : (preferred ?? referenced[0] ?? null);
     if (start === null) return null;
 
     // index order: start first, then the rest in first-seen order
-    const sceneUids: number[] = [start, ...referenced.filter(u => u !== start)];
+    const sceneUids: number[] = [start, ...referenced.filter((u) => u !== start)];
     if (sceneUids.length < 2) return null;
 
     const indexOf = (uid: number | null): number | null => {
@@ -77,7 +88,7 @@ const buildPortalBundle = (args: {
         return i >= 0 ? i : null;
     };
 
-    const rewritten = portals.map(p => ({
+    const rewritten = portals.map((p) => ({
         position: [p.position[0], p.position[1], p.position[2]] as Vec3,
         rotation: [p.rotation[0], p.rotation[1], p.rotation[2], p.rotation[3]] as Quat,
         width: p.width,
@@ -123,20 +134,16 @@ const rotateByQuat = (q: Quat, v: Vec3): Vec3 => {
     const tx = 2 * (y * v[2] - z * v[1]);
     const ty = 2 * (z * v[0] - x * v[2]);
     const tz = 2 * (x * v[1] - y * v[0]);
-    return [
-        v[0] + w * tx + (y * tz - z * ty),
-        v[1] + w * ty + (z * tx - x * tz),
-        v[2] + w * tz + (x * ty - y * tx)
-    ];
+    return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)];
 };
 
 const resolveCollisionSeed = (args: {
-    sceneIndex: number,
-    sceneUid: number,
-    portals: ExportPortal[],
-    authored: Record<string, Vec3>,
-    startSeed: Vec3
-}): { seed: Vec3, estimated: boolean } => {
+    sceneIndex: number;
+    sceneUid: number;
+    portals: ExportPortal[];
+    authored: Record<string, Vec3>;
+    startSeed: Vec3;
+}): { seed: Vec3; estimated: boolean } => {
     const { sceneIndex, sceneUid, portals, authored, startSeed } = args;
 
     if (sceneIndex === 0) {
@@ -149,7 +156,7 @@ const resolveCollisionSeed = (args: {
     }
 
     // portal-derived best-effort: first portal whose front/back is this scene
-    const p = portals.find(pt => pt.frontUid === sceneUid || pt.backUid === sceneUid);
+    const p = portals.find((pt) => pt.frontUid === sceneUid || pt.backUid === sceneUid);
     if (!p) {
         // no portal references it (shouldn't happen for an exported scene) -> fall back to start seed
         return { seed: [startSeed[0], startSeed[1], startSeed[2]], estimated: true };
@@ -171,21 +178,23 @@ export { resolveCollisionSeed, EYE_HEIGHT, SIDE_NUDGE };
 
 // Start-scene collision seed = the start camera's initial position (or origin).
 // Pure (no playcanvas) so both the export and publish upload paths share it.
-const collisionSeedTuple = (es: { cameras?: { initial?: { position?: [number, number, number] } }[] }): [number, number, number] => {
+const collisionSeedTuple = (es: {
+    cameras?: { initial?: { position?: [number, number, number] } }[];
+}): [number, number, number] => {
     return es.cameras?.[0]?.initial?.position ?? [0, 0, 0];
 };
 
 export { collisionSeedTuple };
 
 type PortalExtra = {
-    index: number,
-    uid: number,
-    collisionUrl: string | null,
-    environment: 'indoor' | 'outdoor',
-    radius: number,
-    voxelSize: number,
-    seed: Vec3,
-    estimated: boolean
+    index: number;
+    uid: number;
+    collisionUrl: string | null;
+    environment: 'indoor' | 'outdoor';
+    radius: number;
+    voxelSize: number;
+    seed: Vec3;
+    estimated: boolean;
 };
 
 // Resolve the per-extra-scene export inputs shared by BOTH the local writer
@@ -194,25 +203,43 @@ type PortalExtra = {
 // unit-testable and guarantees the local and server paths compute an identical
 // bundle + ordering. Index 0 (primary/start) is excluded from `extras`.
 const resolvePortalExtras = (args: {
-    portals: ExportPortal[],
-    startUid: number | null,
-    availableUids: number[],
-    streaming: boolean,
-    collision: boolean,
-    authored: Record<string, Vec3>,
-    startSeed: Vec3,
-    environments: ('indoor' | 'outdoor')[],
-    radii: number[],
-    voxelSizes: number[],
-    preferredStartUid?: number | null
-}): { bundle: PortalBundle, extras: PortalExtra[] } | null => {
-    const { portals, startUid, availableUids, streaming, collision, authored, startSeed, environments, radii, voxelSizes, preferredStartUid } = args;
+    portals: ExportPortal[];
+    startUid: number | null;
+    availableUids: number[];
+    streaming: boolean;
+    collision: boolean;
+    authored: Record<string, Vec3>;
+    startSeed: Vec3;
+    environments: ('indoor' | 'outdoor')[];
+    radii: number[];
+    voxelSizes: number[];
+    preferredStartUid?: number | null;
+}): { bundle: PortalBundle; extras: PortalExtra[] } | null => {
+    const {
+        portals,
+        startUid,
+        availableUids,
+        streaming,
+        collision,
+        authored,
+        startSeed,
+        environments,
+        radii,
+        voxelSizes,
+        preferredStartUid
+    } = args;
     const bundle = buildPortalBundle({ portals, startUid, availableUids, streaming, collision, preferredStartUid });
     if (!bundle) return null;
 
     const extras: PortalExtra[] = bundle.sceneUids.slice(1).map((uid, i) => {
         const index = i + 1;
-        const { seed, estimated } = resolveCollisionSeed({ sceneIndex: index, sceneUid: uid, portals, authored, startSeed });
+        const { seed, estimated } = resolveCollisionSeed({
+            sceneIndex: index,
+            sceneUid: uid,
+            portals,
+            authored,
+            startSeed
+        });
         return {
             index,
             uid,

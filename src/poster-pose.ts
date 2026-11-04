@@ -33,7 +33,7 @@ const firstWalkthroughPose = (experienceSettings: ExperienceSettings): PosterPos
 
     const fovKeys = kf.values?.fov;
     const fallbackFov = experienceSettings.cameras?.[0]?.initial?.fov ?? 60;
-    const fov = (fovKeys && fovKeys.length > 0) ? fovKeys[0] : fallbackFov;
+    const fov = fovKeys && fovKeys.length > 0 ? fovKeys[0] : fallbackFov;
 
     return {
         position: [pos[0], pos[1], pos[2]],

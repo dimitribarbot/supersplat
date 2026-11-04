@@ -1,10 +1,29 @@
 import { buildPortalAnimTimeline } from '../portal-anim-timeline';
 import { crossingReducer } from '../portal-crossing';
 import { segmentCrossesRect, resolvePortalCrossing } from '../portal-geom';
-import { collectLodFileUrls, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam, warmConcurrency } from '../portal-preload';
-import { markerRuntime, markerStyle } from './portal-markers';
+import {
+    collectLodFileUrls,
+    collectSogBlockFileUrls,
+    buildPortalAdjacency,
+    desiredResidentScenes,
+    assignPinDepths,
+    computeWarmSet,
+    computeResidentCeiling,
+    selectResidentScenes,
+    sceneResidentToDepth,
+    startSceneLodFloor,
+    shouldSampleDeviceFinest,
+    pinBatchAllowed,
+    computeRevealLevel,
+    sceneRenderFloor,
+    parseBudgetParam,
+    warmConcurrency
+} from '../portal-preload';
 import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
+
+import { markerRuntime, markerStyle } from './portal-markers';
+import type { ViewerSettingsJson } from './viewer-settings-json';
 
 // Localized default loading labels, keyed by primary language subtag. Mirrors
 // the language set used by off-limits-zones.ts / annotation-links.ts.
@@ -2429,7 +2448,7 @@ const companionRuntime = `
 // Produce the full HTML fragment to inject before </body>, or '' when no portals
 // are configured. The payload global is HTML-escaped so it cannot break out of
 // the injected <script> tag (mirrors buildOffLimitsZonesInjection escaping).
-const buildPortalsInjection = (viewerSettingsJson: any): string => {
+const buildPortalsInjection = (viewerSettingsJson: ViewerSettingsJson): string => {
     const portals = viewerSettingsJson?.portals;
     if (!portals || portals.length === 0) {
         return '';
@@ -2438,7 +2457,7 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
     // exported viewer can switch scenes by cursor time (play/scrub) rather than
     // only by frame-to-frame crossings. Uses the first anim track, matching the
     // viewer's getAnimTrack (animTracks[0]).
-    const portalRects = portals.map((p: any) => ({
+    const portalRects = portals.map((p) => ({
         position: p.position,
         rotation: p.rotation,
         width: p.width,
@@ -2467,14 +2486,16 @@ const buildPortalsInjection = (viewerSettingsJson: any): string => {
     // < > & are escaped; U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR
     // are escaped because they are treated as line terminators in JS).
     const payloadJson = JSON.stringify(payload)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
-    return `<style>${companionStyle}${markerStyle}</style>` +
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+    return (
+        `<style>${companionStyle}${markerStyle}</style>` +
         `<script>window.__supersplatPortals = ${payloadJson};</script>` +
-        `<script>${companionRuntime}</script>`;
+        `<script>${companionRuntime}</script>`
+    );
 };
 
 export { buildPortalsInjection, resolveLoadingMessage, DEFAULT_MESSAGES };

@@ -21,7 +21,7 @@ type AlignmentSolveRaw = {
 // identity quaternion — the ~180-degree rotation case power iteration misses.
 const largestEigenVector4 = (m: number[][]) => {
     const n = 4;
-    const a = m.map(row => row.slice());
+    const a = m.map((row) => row.slice());
     const v = [
         [1, 0, 0, 0],
         [0, 1, 0, 0],
@@ -87,7 +87,7 @@ const largestEigenVector4 = (m: number[][]) => {
 
     const q = [v[0][best], v[1][best], v[2][best], v[3][best]];
     const len = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
-    return q.map(x => x / len);
+    return q.map((x) => x / len);
 };
 
 // rotate a vector by a quaternion given as [x, y, z, w]
@@ -98,11 +98,7 @@ const rotateByQuat = (q: number[], x: number, y: number, z: number): [number, nu
     const ty = 2 * (qz * x - qx * z);
     const tz = 2 * (qx * y - qy * x);
     // v + qw * t + cross(q.xyz, t)
-    return [
-        x + qw * tx + (qy * tz - qz * ty),
-        y + qw * ty + (qz * tx - qx * tz),
-        z + qw * tz + (qx * ty - qy * tx)
-    ];
+    return [x + qw * tx + (qy * tz - qz * ty), y + qw * ty + (qz * tx - qx * tz), z + qw * tz + (qx * ty - qy * tx)];
 };
 
 const solveAlignmentRaw = (source: Vec3Like[], target: Vec3Like[], mode: AlignmentMode): AlignmentSolveRaw | null => {
@@ -111,18 +107,36 @@ const solveAlignmentRaw = (source: Vec3Like[], target: Vec3Like[], mode: Alignme
         return null;
     }
 
-    let scx = 0, scy = 0, scz = 0;
-    let tcx = 0, tcy = 0, tcz = 0;
+    let scx = 0,
+        scy = 0,
+        scz = 0;
+    let tcx = 0,
+        tcy = 0,
+        tcz = 0;
     for (let i = 0; i < n; i++) {
-        scx += source[i].x; scy += source[i].y; scz += source[i].z;
-        tcx += target[i].x; tcy += target[i].y; tcz += target[i].z;
+        scx += source[i].x;
+        scy += source[i].y;
+        scz += source[i].z;
+        tcx += target[i].x;
+        tcy += target[i].y;
+        tcz += target[i].z;
     }
-    scx /= n; scy /= n; scz /= n;
-    tcx /= n; tcy /= n; tcz /= n;
+    scx /= n;
+    scy /= n;
+    scz /= n;
+    tcx /= n;
+    tcy /= n;
+    tcz /= n;
 
-    let sxx = 0, sxy = 0, sxz = 0;
-    let syx = 0, syy = 0, syz = 0;
-    let szx = 0, szy = 0, szz = 0;
+    let sxx = 0,
+        sxy = 0,
+        sxz = 0;
+    let syx = 0,
+        syy = 0,
+        syz = 0;
+    let szx = 0,
+        szy = 0,
+        szz = 0;
     let sourceVariance = 0;
 
     for (let i = 0; i < n; i++) {
@@ -133,9 +147,15 @@ const solveAlignmentRaw = (source: Vec3Like[], target: Vec3Like[], mode: Alignme
         const v = target[i].y - tcy;
         const w = target[i].z - tcz;
 
-        sxx += x * u; sxy += x * v; sxz += x * w;
-        syx += y * u; syy += y * v; syz += y * w;
-        szx += z * u; szy += z * v; szz += z * w;
+        sxx += x * u;
+        sxy += x * v;
+        sxz += x * w;
+        syx += y * u;
+        syy += y * v;
+        syz += y * w;
+        szx += z * u;
+        szy += z * v;
+        szz += z * w;
         sourceVariance += x * x + y * y + z * z;
     }
 
@@ -170,11 +190,7 @@ const solveAlignmentRaw = (source: Vec3Like[], target: Vec3Like[], mode: Alignme
     }
 
     const [crx, cry, crz] = rotateByQuat(rotation, scx, scy, scz);
-    const translation: [number, number, number] = [
-        tcx - scale * crx,
-        tcy - scale * cry,
-        tcz - scale * crz
-    ];
+    const translation: [number, number, number] = [tcx - scale * crx, tcy - scale * cry, tcz - scale * crz];
 
     const residuals: number[] = [];
     let residualSum = 0;
@@ -197,10 +213,4 @@ const solveAlignmentRaw = (source: Vec3Like[], target: Vec3Like[], mode: Alignme
     };
 };
 
-export {
-    AlignmentMode,
-    AlignmentSolveRaw,
-    Vec3Like,
-    largestEigenVector4,
-    solveAlignmentRaw
-};
+export { AlignmentMode, AlignmentSolveRaw, Vec3Like, largestEigenVector4, solveAlignmentRaw };

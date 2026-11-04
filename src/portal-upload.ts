@@ -5,10 +5,11 @@
 
 import { MemoryFileSystem } from '@playcanvas/splat-transform';
 
-import { Events } from './events';
+import type { Events } from './events';
 import { collisionSeedTuple, resolvePortalExtras } from './portal-export';
-import { Splat } from './splat';
-import { portalSceneSettings, SerializeSettings, writeSplatFile } from './splat-serialize';
+import type { Splat } from './splat';
+import type { ExperienceSettings, SerializeSettings } from './splat-serialize';
+import { portalSceneSettings, writeSplatFile } from './splat-serialize';
 
 type PortalUploadMeta = {
     seed: [number, number, number];
@@ -25,10 +26,15 @@ type PortalUploadMeta = {
 // scene PLYs and their upload metadata, in the same index order as portalScenes.
 const buildPortalUpload = async (args: {
     events: Events;
-    es: any;
+    es: ExperienceSettings;
     serializeSettings: SerializeSettings;
     streaming: boolean;
-}): Promise<{ startSplat: Splat; extraPlyGz: Blob[]; portalExtras: PortalUploadMeta[]; sceneNames: string[] } | null> => {
+}): Promise<{
+    startSplat: Splat;
+    extraPlyGz: Blob[];
+    portalExtras: PortalUploadMeta[];
+    sceneNames: string[];
+} | null> => {
     const { events, es, serializeSettings, streaming } = args;
 
     if (!es?.portalScenes || es.portalScenes.length <= 1) return null;
@@ -38,7 +44,7 @@ const buildPortalUpload = async (args: {
         portals: events.invoke('portals.export') ?? [],
         startUid: events.invoke('portals.startSplat') ?? null,
         preferredStartUid: events.invoke('selection')?.uid ?? null,
-        availableUids: all.map(s => s.uid),
+        availableUids: all.map((s) => s.uid),
         streaming,
         collision: !!es.portalCollision && es.portalCollision.length > 0,
         authored: events.invoke('portals.exportEntrypoints') ?? {},
@@ -50,24 +56,33 @@ const buildPortalUpload = async (args: {
     if (!resolved) return null;
 
     const startUid = resolved.bundle.sceneUids[0];
-    const startSplat = all.find(s => s.uid === startUid);
+    const startSplat = all.find((s) => s.uid === startUid);
     if (!startSplat) throw new Error(`Portal export: start scene uid ${startUid} not found among loaded splats.`);
 
     const extraPlyGz: Blob[] = [];
     const portalExtras: PortalUploadMeta[] = [];
     for (const ex of resolved.extras) {
-        const splat = all.find(s => s.uid === ex.uid);
+        const splat = all.find((s) => s.uid === ex.uid);
         if (!splat) throw new Error(`Portal export: scene uid ${ex.uid} not found among loaded splats.`);
         const sFs = new MemoryFileSystem();
         await writeSplatFile([splat], portalSceneSettings(serializeSettings, [splat]), 'ply', 'scene.ply', {}, sFs);
         const bytes = sFs.results.get('scene.ply');
         if (!bytes) throw new Error(`Portal export: scene uid ${ex.uid} produced no PLY.`);
-        const gz = await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))).blob();
+        const gz = await new Response(
+            new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
+        ).blob();
         extraPlyGz.push(gz);
-        portalExtras.push({ seed: ex.seed, environment: ex.environment, radius: ex.radius, voxelSize: ex.voxelSize, collisionUrl: ex.collisionUrl, streaming });
+        portalExtras.push({
+            seed: ex.seed,
+            environment: ex.environment,
+            radius: ex.radius,
+            voxelSize: ex.voxelSize,
+            collisionUrl: ex.collisionUrl,
+            streaming
+        });
     }
 
-    const sceneNames = resolved.bundle.sceneUids.map(uid => all.find(s => s.uid === uid)?.name ?? `#${uid}`);
+    const sceneNames = resolved.bundle.sceneUids.map((uid) => all.find((s) => s.uid === uid)?.name ?? `#${uid}`);
 
     return { startSplat, extraPlyGz, portalExtras, sceneNames };
 };

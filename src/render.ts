@@ -1,25 +1,48 @@
 import { WebPCodec } from '@playcanvas/splat-transform';
-import { BufferTarget, EncodedPacket, EncodedVideoPacketSource, MkvOutputFormat, MovOutputFormat, Mp4OutputFormat, Output, StreamTarget, WebMOutputFormat } from 'mediabunny';
+import {
+    BufferTarget,
+    EncodedPacket,
+    EncodedVideoPacketSource,
+    MkvOutputFormat,
+    MovOutputFormat,
+    Mp4OutputFormat,
+    Output,
+    StreamTarget,
+    WebMOutputFormat
+} from 'mediabunny';
 import { Color, path, Quat, Vec3 } from 'playcanvas';
 
 import { ElementType } from './element';
 import { EquirectRenderer } from './equirect-renderer';
-import { Events } from './events';
+import type { Events } from './events';
 import { encodePng } from './png-writer';
 import type { PosterPose } from './poster-pose';
-import { Scene } from './scene';
+import type { Scene } from './scene';
 import { injectSphericalMetadata } from './spherical-metadata';
-import { Splat } from './splat';
+import type { Splat } from './splat';
 import { i18n } from './ui/localization';
-import { buildVideoEncoderConfig, getVideoCodecType, VideoSettings } from './video-config';
+import type { VideoSettings } from './video-config';
+import { buildVideoEncoderConfig, getVideoCodecType } from './video-config';
 
 const nullClr = new Color(0, 0, 0, 0);
 
 // Lookup maps for video output format and codec configuration
-const FORMAT_CONFIG: Record<string, { create: (streaming: boolean) => Mp4OutputFormat | MovOutputFormat | MkvOutputFormat | WebMOutputFormat; extension: string }> = {
-    mp4: { create: streaming => new Mp4OutputFormat({ fastStart: streaming ? false : 'in-memory' }), extension: 'mp4' },
+const FORMAT_CONFIG: Record<
+    string,
+    {
+        create: (streaming: boolean) => Mp4OutputFormat | MovOutputFormat | MkvOutputFormat | WebMOutputFormat;
+        extension: string;
+    }
+> = {
+    mp4: {
+        create: (streaming) => new Mp4OutputFormat({ fastStart: streaming ? false : 'in-memory' }),
+        extension: 'mp4'
+    },
     webm: { create: () => new WebMOutputFormat(), extension: 'webm' },
-    mov: { create: streaming => new MovOutputFormat({ fastStart: streaming ? false : 'in-memory' }), extension: 'mov' },
+    mov: {
+        create: (streaming) => new MovOutputFormat({ fastStart: streaming ? false : 'in-memory' }),
+        extension: 'mov'
+    },
     mkv: { create: () => new MkvOutputFormat(), extension: 'mkv' }
 };
 
@@ -32,7 +55,7 @@ type ImageSettings = {
     transparentBg: boolean;
     showDebug: boolean;
     format: 'png' | 'jpeg' | 'webp';
-    quality?: number;           // 0..1, jpeg only
+    quality?: number; // 0..1, jpeg only
     projection?: 'standard' | 'equirect';
     levelHorizon?: boolean;
 };
@@ -46,7 +69,9 @@ const isInvalidFilenameChar = (char: string) => {
 };
 
 const sanitizeFilename = (filename: string) => {
-    const sanitized = Array.from(filename, char => (isInvalidFilenameChar(char) ? '_' : char)).join('').trim();
+    const sanitized = Array.from(filename, (char) => (isInvalidFilenameChar(char) ? '_' : char))
+        .join('')
+        .trim();
     return sanitized.length > 0 ? sanitized : 'supersplat';
 };
 
@@ -68,7 +93,11 @@ const getImportedFilename = (filename: string) => {
 // sorting is submitted on the GPU immediately before each render
 const sortSplatsAndWait = (_scene: Scene, _splats: Splat[]) => Promise.resolve();
 
-const downloadFile = (data: ArrayBuffer | Uint8Array<ArrayBuffer>, filename: string, type = 'application/octet-stream') => {
+const downloadFile = (
+    data: ArrayBuffer | Uint8Array<ArrayBuffer>,
+    filename: string,
+    type = 'application/octet-stream'
+) => {
     const blob = new Blob([data], { type });
     const url = window.URL.createObjectURL(blob);
     const el = document.createElement('a');
@@ -85,7 +114,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
     // set, otherwise the first visible splat's name
     const baseFilename = () => {
         const docName = events.invoke('doc.name');
-        const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
+        const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter((splat) => splat.visible);
         const source = docName || (splats[0]?.name ?? 'supersplat');
         return sanitizeFilename(removeExtension(getImportedFilename(source)));
     };
@@ -145,7 +174,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             scene.gizmoLayer.enabled = true;
             scene.centersLayer.enabled = true;
             scene.camera.camera.clearColor.set(0, 0, 0, 0);
-            scene.forceRender = true;       // repaint the viewport with normal rendering
+            scene.forceRender = true; // repaint the viewport with normal rendering
         }
     });
 
@@ -156,136 +185,153 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
     // way. bgColor is the EXPORT's background ([r,g,b] floats), not the editor
     // background. Returns null on any failure so the export falls back to the
     // solid-color cover rather than aborting.
-    events.function('render.poster', async (width: number, height: number, bgColor: [number, number, number], pose?: PosterPose | null): Promise<Uint8Array | null> => {
-        // Snapshot the live editor camera so we can restore it after rendering
-        // from the walkthrough's first frame. null => render the current view
-        // (no walkthrough: unchanged behavior).
-        const saved = pose ? events.invoke('camera.getPose') : null;
+    events.function(
+        'render.poster',
+        async (
+            width: number,
+            height: number,
+            bgColor: [number, number, number],
+            pose?: PosterPose | null
+        ): Promise<Uint8Array | null> => {
+            // Snapshot the live editor camera so we can restore it after rendering
+            // from the walkthrough's first frame. null => render the current view
+            // (no walkthrough: unchanged behavior).
+            const saved = pose ? events.invoke('camera.getPose') : null;
 
-        // Sort every visible splat for the current camera and wait for the async
-        // sorter to finish. The gsplat depth sort is camera-relative; after a
-        // camera move the previous sort is stale and a single render composites
-        // splats in the wrong front-to-back order (smeared reflections, soft
-        // edges). Mirrors the per-frame sort in render.video.
-        const sortVisibleSplats = () => {
-            const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
-            return Promise.all(splats.map(splat => new Promise<void>((resolve) => {
-                // Guard: a splat without a live sorter can't be sorted, and this
-                // runs inside the finally teardown where a throw would skip the
-                // lockedRenderMode reset (below) and freeze the editor.
-                const instance = splat.entity?.gsplat?.instance;
-                if (!instance?.sorter) {
-                    resolve();
-                    return;
-                }
-                instance.sorter.once('updated', () => resolve());
-                instance.sort(scene.camera.mainCamera);
-                setTimeout(resolve, 1000);
-            })));
-        };
-
-        try {
-            // Move to the walkthrough first-frame pose. Set directly on the
-            // camera (NOT via the camera.setPose event) so the editor's fov
-            // slider / camera UI don't flash to the walkthrough pose during the
-            // multi-second export — the event fires camera.fov, which the view
-            // panel binds to. This mirrors how the video export moves the camera
-            // without touching the editor UI. fov before setPose so the distance
-            // uses the new fovFactor; startOffscreenMode's onUpdate(0) snaps the
-            // 0-damping tween before the render.
-            if (pose) {
-                scene.camera.fov = pose.fov;
-                scene.camera.setPose(
-                    new Vec3(pose.position[0], pose.position[1], pose.position[2]),
-                    new Vec3(pose.target[0], pose.target[1], pose.target[2]),
-                    0
+            // Sort every visible splat for the current camera and wait for the async
+            // sorter to finish. The gsplat depth sort is camera-relative; after a
+            // camera move the previous sort is stale and a single render composites
+            // splats in the wrong front-to-back order (smeared reflections, soft
+            // edges). Mirrors the per-frame sort in render.video.
+            const sortVisibleSplats = () => {
+                const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter((splat) => splat.visible);
+                return Promise.all(
+                    splats.map(
+                        (splat) =>
+                            new Promise<void>((resolve) => {
+                                // Guard: a splat without a live sorter can't be sorted, and this
+                                // runs inside the finally teardown where a throw would skip the
+                                // lockedRenderMode reset (below) and freeze the editor.
+                                const instance = splat.entity?.gsplat?.instance;
+                                if (!instance?.sorter) {
+                                    resolve();
+                                    return;
+                                }
+                                instance.sorter.once('updated', () => resolve());
+                                instance.sort(scene.camera.mainCamera);
+                                setTimeout(resolve, 1000);
+                            })
+                    )
                 );
-            }
+            };
 
-            // offscreen render of the current camera view, editor aids hidden
-            scene.camera.startOffscreenMode(width, height);
-            scene.camera.renderOverlays = false;
-            scene.offLimitsLayer.enabled = false;
-            scene.gizmoLayer.enabled = false;
-            scene.camera.clearPass.setClearColor(new Color(bgColor[0], bgColor[1], bgColor[2], 1));
-
-            // Suppress the normal render loop's auto-present. Moving the camera
-            // changes the serialized scene state, which in normal mode sets
-            // app.renderNextFrame (scene.ts) and presents ONE on-screen frame at
-            // the walkthrough pose — a visible blink of the editor view. Locked
-            // mode presents only on an explicit lockedRender, so the camera move
-            // never reaches the screen. Same pattern the video export uses.
-            scene.lockedRenderMode = true;
-
-            // Re-sort for the walkthrough camera before capturing. Only when the
-            // camera moved (a pose was given); the current-view path already has
-            // a valid sort.
-            if (pose) {
-                await sortVisibleSplats();
-            }
-
-            // Request exactly one (offscreen) render for the capture.
-            scene.lockedRender = true;
-            await postRender();
-
-            const data = new Uint8Array(width * height * 4);
-            const { mainTarget, workTarget } = scene.camera;
-            scene.dataProcessor.copyRt(mainTarget, workTarget);
-            // read the rendered frame (immediate: see render.offscreen)
-            await workTarget.colorBuffer.read(0, 0, width, height, { renderTarget: workTarget, data, immediate: true });
-
-            // rows are read back top-down (0,0 at the top), so no flip
-
-            // JPEG-encode (poster is opaque: JPEG drops alpha, bg already set)
-            const canvas = new OffscreenCanvas(width, height);
-            const ctx = canvas.getContext('2d');
-            ctx.putImageData(new ImageData(new Uint8ClampedArray(data.buffer), width, height), 0, 0);
-            const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-            return new Uint8Array(await blob.arrayBuffer());
-        } catch (error) {
-            console.warn('poster render failed (export continues without screenshot poster):', error);
-            return null;
-        } finally {
-            scene.camera.endOffscreenMode();
-            scene.camera.renderOverlays = true;
-            scene.offLimitsLayer.enabled = true;
-            scene.gizmoLayer.enabled = true;
-            scene.camera.clearPass.setClearColor(nullClr);
-
-            // Restore the editor camera to where the user left it — directly
-            // (not via the event) for the same no-UI-flash reason, and snap the
-            // tween now with onUpdate(0) so the resumed on-screen render never
-            // shows the walkthrough pose. Wrapped so a failure here can never
-            // skip the lockedRenderMode reset below (which would freeze the
-            // editor's on-screen rendering).
             try {
-                if (saved) {
-                    scene.camera.fov = saved.fov;
+                // Move to the walkthrough first-frame pose. Set directly on the
+                // camera (NOT via the camera.setPose event) so the editor's fov
+                // slider / camera UI don't flash to the walkthrough pose during the
+                // multi-second export — the event fires camera.fov, which the view
+                // panel binds to. This mirrors how the video export moves the camera
+                // without touching the editor UI. fov before setPose so the distance
+                // uses the new fovFactor; startOffscreenMode's onUpdate(0) snaps the
+                // 0-damping tween before the render.
+                if (pose) {
+                    scene.camera.fov = pose.fov;
                     scene.camera.setPose(
-                        new Vec3(saved.position.x, saved.position.y, saved.position.z),
-                        new Vec3(saved.target.x, saved.target.y, saved.target.z),
+                        new Vec3(pose.position[0], pose.position[1], pose.position[2]),
+                        new Vec3(pose.target[0], pose.target[1], pose.target[2]),
                         0
                     );
-                    scene.camera.onUpdate(0);
+                }
 
-                    // The capture sorted the splats for the walkthrough camera.
-                    // Re-sort for the restored editor camera BEFORE releasing the
-                    // render loop, so the single frame we present isn't the editor
-                    // view carrying the walkthrough's splat order (a one-frame
-                    // blobby blink). Still under lockedRenderMode here, so nothing
-                    // presents while we wait.
+                // offscreen render of the current camera view, editor aids hidden
+                scene.camera.startOffscreenMode(width, height);
+                scene.camera.renderOverlays = false;
+                scene.offLimitsLayer.enabled = false;
+                scene.gizmoLayer.enabled = false;
+                scene.camera.clearPass.setClearColor(new Color(bgColor[0], bgColor[1], bgColor[2], 1));
+
+                // Suppress the normal render loop's auto-present. Moving the camera
+                // changes the serialized scene state, which in normal mode sets
+                // app.renderNextFrame (scene.ts) and presents ONE on-screen frame at
+                // the walkthrough pose — a visible blink of the editor view. Locked
+                // mode presents only on an explicit lockedRender, so the camera move
+                // never reaches the screen. Same pattern the video export uses.
+                scene.lockedRenderMode = true;
+
+                // Re-sort for the walkthrough camera before capturing. Only when the
+                // camera moved (a pose was given); the current-view path already has
+                // a valid sort.
+                if (pose) {
                     await sortVisibleSplats();
                 }
-            } catch (restoreError) {
-                console.warn('poster camera restore failed:', restoreError);
-            }
 
-            // Hand back to the normal render loop and present one clean frame at
-            // the restored pose. Unconditional: never leave lockedRenderMode set.
-            scene.lockedRenderMode = false;
-            scene.forceRender = true;
+                // Request exactly one (offscreen) render for the capture.
+                scene.lockedRender = true;
+                await postRender();
+
+                const data = new Uint8Array(width * height * 4);
+                const { mainTarget, workTarget } = scene.camera;
+                scene.dataProcessor.copyRt(mainTarget, workTarget);
+                // read the rendered frame (immediate: see render.offscreen)
+                await workTarget.colorBuffer.read(0, 0, width, height, {
+                    renderTarget: workTarget,
+                    data,
+                    immediate: true
+                });
+
+                // rows are read back top-down (0,0 at the top), so no flip
+
+                // JPEG-encode (poster is opaque: JPEG drops alpha, bg already set)
+                const canvas = new OffscreenCanvas(width, height);
+                const ctx = canvas.getContext('2d');
+                ctx.putImageData(new ImageData(new Uint8ClampedArray(data.buffer), width, height), 0, 0);
+                const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+                return new Uint8Array(await blob.arrayBuffer());
+            } catch (error) {
+                console.warn('poster render failed (export continues without screenshot poster):', error);
+                return null;
+            } finally {
+                scene.camera.endOffscreenMode();
+                scene.camera.renderOverlays = true;
+                scene.offLimitsLayer.enabled = true;
+                scene.gizmoLayer.enabled = true;
+                scene.camera.clearPass.setClearColor(nullClr);
+
+                // Restore the editor camera to where the user left it — directly
+                // (not via the event) for the same no-UI-flash reason, and snap the
+                // tween now with onUpdate(0) so the resumed on-screen render never
+                // shows the walkthrough pose. Wrapped so a failure here can never
+                // skip the lockedRenderMode reset below (which would freeze the
+                // editor's on-screen rendering).
+                try {
+                    if (saved) {
+                        scene.camera.fov = saved.fov;
+                        scene.camera.setPose(
+                            new Vec3(saved.position.x, saved.position.y, saved.position.z),
+                            new Vec3(saved.target.x, saved.target.y, saved.target.z),
+                            0
+                        );
+                        scene.camera.onUpdate(0);
+
+                        // The capture sorted the splats for the walkthrough camera.
+                        // Re-sort for the restored editor camera BEFORE releasing the
+                        // render loop, so the single frame we present isn't the editor
+                        // view carrying the walkthrough's splat order (a one-frame
+                        // blobby blink). Still under lockedRenderMode here, so nothing
+                        // presents while we wait.
+                        await sortVisibleSplats();
+                    }
+                } catch (restoreError) {
+                    console.warn('poster camera restore failed:', restoreError);
+                }
+
+                // Hand back to the normal render loop and present one clean frame at
+                // the restored pose. Unconditional: never leave lockedRenderMode set.
+                scene.lockedRenderMode = false;
+                scene.forceRender = true;
+            }
         }
-    });
+    );
 
     events.function('render.image', async (imageSettings: ImageSettings, fileStream?: FileSystemWritableFileStream) => {
         events.fire('startSpinner');
@@ -295,7 +341,8 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
         let savedOrtho = false;
 
         try {
-            const { width, height, transparentBg, showDebug, format, quality, projection, levelHorizon } = imageSettings;
+            const { width, height, transparentBg, showDebug, format, quality, projection, levelHorizon } =
+                imageSettings;
             const is360 = projection === 'equirect';
 
             // in 360 mode the offscreen target is a square cube face; the
@@ -340,12 +387,18 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 const far = dist + boundRadius;
                 const near = Math.max(1e-6, dist < boundRadius ? far / (1024 * 16) : dist - boundRadius);
 
-                const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
+                const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter((splat) => splat.visible);
                 const qWorld = new Quat();
 
                 for (let face = 0; face < 6; face++) {
                     qWorld.mul2(qCapture, EquirectRenderer.faceRotations[face]);
-                    scene.camera.setPoseOverride({ position: camPos, rotation: qWorld, fov: EquirectRenderer.faceFov, near, far });
+                    scene.camera.setPoseOverride({
+                        position: camPos,
+                        rotation: qWorld,
+                        fov: EquirectRenderer.faceFov,
+                        near,
+                        far
+                    });
 
                     // faces view different directions, so each render must
                     // wait for its own sort
@@ -373,7 +426,11 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 scene.dataProcessor.copyRt(mainTarget, workTarget, scene.overdrawRender);
 
                 // read the rendered frame (immediate: see render.offscreen)
-                await workTarget.colorBuffer.read(0, 0, width, height, { renderTarget: workTarget, data, immediate: true });
+                await workTarget.colorBuffer.read(0, 0, width, height, {
+                    renderTarget: workTarget,
+                    data,
+                    immediate: true
+                });
             }
 
             let bytes: Uint8Array<ArrayBuffer>;
@@ -391,7 +448,11 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                     data[i] = 255;
                 }
 
-                const imageData = new ImageData(new Uint8ClampedArray(data.buffer, data.byteOffset, data.length), width, height);
+                const imageData = new ImageData(
+                    new Uint8ClampedArray(data.buffer, data.byteOffset, data.length),
+                    width,
+                    height
+                );
                 let blob: Blob;
                 if (typeof OffscreenCanvas !== 'undefined') {
                     const canvas = new OffscreenCanvas(width, height);
@@ -412,7 +473,11 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                     }
                     context.putImageData(imageData, 0, 0);
                     blob = await new Promise<Blob>((resolve, reject) => {
-                        canvas.toBlob(b => (b ? resolve(b) : reject(new Error('failed to encode jpeg'))), 'image/jpeg', quality ?? 0.9);
+                        canvas.toBlob(
+                            (b) => (b ? resolve(b) : reject(new Error('failed to encode jpeg'))),
+                            'image/jpeg',
+                            quality ?? 0.9
+                        );
                     });
                 }
                 bytes = new Uint8Array(await blob.arrayBuffer());
@@ -470,7 +535,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             scene.gizmoLayer.enabled = true;
             scene.centersLayer.enabled = true;
             scene.camera.clearPass.setClearColor(nullClr);
-            scene.forceRender = true;       // repaint the viewport with normal rendering
+            scene.forceRender = true; // repaint the viewport with normal rendering
 
             events.fire('stopSpinner');
         }
@@ -493,7 +558,19 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
             let muxerWrites = Promise.resolve();
 
             try {
-                const { startFrame, endFrame, frameRate, width, height, bitrate, transparentBg, showDebug, format, codec: codecChoice, projection, levelHorizon } = videoSettings;
+                const {
+                    startFrame,
+                    endFrame,
+                    frameRate,
+                    width,
+                    height,
+                    transparentBg,
+                    showDebug,
+                    format,
+                    codec: codecChoice,
+                    projection,
+                    levelHorizon
+                } = videoSettings;
 
                 const is360 = projection === 'equirect';
 
@@ -502,7 +579,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 // last (fastStart false) instead of streaming to disk
                 const taggable = is360 && (format === 'mp4' || format === 'mov');
 
-                const target = (fileStream && !taggable) ? new StreamTarget(fileStream) : new BufferTarget();
+                const target = fileStream && !taggable ? new StreamTarget(fileStream) : new BufferTarget();
 
                 // Configure output format and codec from lookup maps (default to mp4/h264)
                 const formatConfig = FORMAT_CONFIG[format] ?? FORMAT_CONFIG.mp4;
@@ -546,17 +623,17 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                             // drives backpressure in the encode loop, and every
                             // write has settled before output.finalize().
                             muxerWrites = muxerWrites
-                            .then(async () => {
-                                if (!muxerError) {
-                                    await videoSource.add(encodedPacket, meta);
-                                }
-                            })
-                            .catch((error) => {
-                                muxerError = error instanceof Error ? error : new Error(String(error));
-                            })
-                            .finally(() => {
-                                muxerQueueSize--;
-                            });
+                                .then(async () => {
+                                    if (!muxerError) {
+                                        await videoSource.add(encodedPacket, meta);
+                                    }
+                                })
+                                .catch((error) => {
+                                    muxerError = error instanceof Error ? error : new Error(String(error));
+                                })
+                                .finally(() => {
+                                    muxerQueueSize--;
+                                });
                         },
                         error: (error) => {
                             encoderError = error;
@@ -614,7 +691,10 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                     events.fire('timeline.time', frameTime);
 
                     // Wait for PLY sequence to load the frame if present
-                    const newSplat = await events.invoke('plysequence.setFrameAsync', Math.floor(frameTime)) as Splat | null;
+                    const newSplat = (await events.invoke(
+                        'plysequence.setFrameAsync',
+                        Math.floor(frameTime)
+                    )) as Splat | null;
 
                     // manually update the camera so position and rotation are correct
                     scene.camera.onUpdate(0);
@@ -635,7 +715,9 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                             last_pos.copy(pos);
                             last_forward.copy(forward);
 
-                            const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
+                            const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(
+                                (splat) => splat.visible
+                            );
                             await sortAndWait(splats);
                         }
                     }
@@ -662,7 +744,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                     }
                     // muxerQueueSize is decremented by the write chain settling
                     // during the await
-                    // eslint-disable-next-line no-unmodified-loop-condition
+
                     while (muxerQueueSize > MAX_QUEUE_SIZE) {
                         await muxerWrites;
                     }
@@ -692,7 +774,11 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                     scene.dataProcessor.copyRt(mainTarget, workTarget, scene.overdrawRender);
 
                     // read the rendered frame (immediate: see render.offscreen)
-                    await workTarget.colorBuffer.read(0, 0, width, height, { renderTarget: workTarget, data, immediate: true });
+                    await workTarget.colorBuffer.read(0, 0, width, height, {
+                        renderTarget: workTarget,
+                        data,
+                        immediate: true
+                    });
 
                     await encodeFrame(frameTime);
                 };
@@ -728,14 +814,22 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                     const far = dist + boundRadius;
                     const near = Math.max(1e-6, dist < boundRadius ? far / (1024 * 16) : dist - boundRadius);
 
-                    const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(splat => splat.visible);
+                    const splats = (scene.getElementsByType(ElementType.splat) as Splat[]).filter(
+                        (splat) => splat.visible
+                    );
 
                     for (let face = 0; face < 6; face++) {
                         // check for cancellation
                         if (cancelled) return;
 
                         qWorld.mul2(qCapture, EquirectRenderer.faceRotations[face]);
-                        scene.camera.setPoseOverride({ position: camPos, rotation: qWorld, fov: EquirectRenderer.faceFov, near, far });
+                        scene.camera.setPoseOverride({
+                            position: camPos,
+                            rotation: qWorld,
+                            fov: EquirectRenderer.faceFov,
+                            near,
+                            far
+                        });
 
                         // faces view different directions, so each render must
                         // wait for its own sort
@@ -752,7 +846,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                         const frameIndex = Math.round(frameTime * frameRate);
                         events.fire('progressUpdate', {
                             text: i18n.t('panel.render.rendering', { ellipsis: true }),
-                            progress: 100 * (frameIndex + (face + 1) / 6) / totalFrames
+                            progress: (100 * (frameIndex + (face + 1) / 6)) / totalFrames
                         });
                     }
 
@@ -791,7 +885,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
 
                         events.fire('progressUpdate', {
                             text: i18n.t('panel.render.rendering', { ellipsis: true }),
-                            progress: 100 * frameTime / duration
+                            progress: (100 * frameTime) / duration
                         });
                     }
                 }
@@ -868,7 +962,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 await events.invoke('showPopup', {
                     type: 'error',
                     header: i18n.t('panel.render.failed'),
-                    message: `'${(error as any).message ?? error}'`
+                    message: `'${(error as Error).message ?? error}'`
                 });
                 return false;
             } finally {
@@ -892,7 +986,7 @@ const registerRenderEvents = (scene: Scene, events: Events) => {
                 scene.centersLayer.enabled = true;
                 scene.camera.clearPass.setClearColor(nullClr);
                 scene.lockedRenderMode = false;
-                scene.forceRender = true;       // camera likely moved, finish with normal render
+                scene.forceRender = true; // camera likely moved, finish with normal render
 
                 events.fire('progressEnd');
             }

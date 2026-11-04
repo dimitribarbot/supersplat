@@ -1,13 +1,18 @@
-import { Container } from '@playcanvas/pcui';
+import type { Container } from '@playcanvas/pcui';
 import { Entity, TranslateGizmo, Vec3 } from 'playcanvas';
 
-import { AlignmentManager, AlignmentPickSide } from '../alignment';
-import { Events } from '../events';
-import { Scene } from '../scene';
+import type { AlignmentManager, AlignmentPickSide } from '../alignment';
+import type { Events } from '../events';
+import type { Scene } from '../scene';
 
 class AlignmentTransformHandler {
-    activate() {}
-    deactivate() {}
+    activate() {
+        // no-op
+    }
+
+    deactivate() {
+        // no-op
+    }
 }
 
 const p = new Vec3();
@@ -28,12 +33,7 @@ class AlignmentTool {
     activate: () => void;
     deactivate: () => void;
 
-    constructor(
-        events: Events,
-        scene: Scene,
-        manager: AlignmentManager,
-        canvasContainer: Container
-    ) {
+    constructor(events: Events, scene: Scene, manager: AlignmentManager, canvasContainer: Container) {
         const transformHandler = new AlignmentTransformHandler();
         const parent = canvasContainer.dom;
         let active = false;
@@ -41,7 +41,7 @@ class AlignmentTool {
 
         // SVG overlay above the canvas. Draws a numbered dot for every picked
         // source/target point, projected to screen coordinates each frame so the
-        // markers are never occluded by the splats (mirrors AnnotationOverlay).
+        // markers are never occluded by the splats (mirrors registerAnnotationOverlay).
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.classList.add('alignment-overlay-svg', 'hidden');
         parent.appendChild(svg);
@@ -133,7 +133,7 @@ class AlignmentTool {
             if (!sel) {
                 return;
             }
-            const pair = manager.pairs.find(pr => pr.id === sel.id);
+            const pair = manager.pairs.find((pr) => pr.id === sel.id);
             if (!pair || !pair[sel.side]) {
                 return;
             }

@@ -1,4 +1,11 @@
-type Capabilities = { enabled: boolean; gpu: boolean; formats: string[]; publish?: boolean; video?: boolean; maxUpload?: number };
+type Capabilities = {
+    enabled: boolean;
+    gpu: boolean;
+    formats: string[];
+    publish?: boolean;
+    video?: boolean;
+    maxUpload?: number;
+};
 
 let cached: Capabilities | null | undefined;
 
@@ -7,9 +14,9 @@ export const probeExportCapabilities = async (): Promise<Capabilities | null> =>
     try {
         const res = await fetch(`${location.origin}/api/export/capabilities`);
         if (res.ok) {
-            cached = await res.json() as Capabilities;
+            cached = (await res.json()) as Capabilities;
         } else {
-            cached = null;   // server explicitly responded that export is unavailable — cache it
+            cached = null; // server explicitly responded that export is unavailable — cache it
         }
     } catch {
         // transient error (network/parse): do not cache, allow the next call to retry
@@ -24,7 +31,12 @@ export const probeExportCapabilities = async (): Promise<Capabilities | null> =>
 export type ServerProgress = {
     message?: string;
     value?: number;
-    loc?: { segments?: { key: string; params?: Record<string, string | number> }[]; counter?: { index: number; total: number }; name?: string; nameKey?: string };
+    loc?: {
+        segments?: { key: string; params?: Record<string, string | number> }[];
+        counter?: { index: number; total: number };
+        name?: string;
+        nameKey?: string;
+    };
     collision?: { index: number; bytes: number };
 };
 
@@ -41,7 +53,9 @@ export const runServerExport = async (
     form.append('ply', plyGz, 'scene.ply.gz');
     (extraPlyGz ?? []).forEach((b, i) => form.append('extraPly', b, `scene-${i + 1}.ply.gz`));
     if (poster) form.append('poster', poster, 'poster.jpg');
-    (annotationImages ?? []).forEach(img => form.append('annotationImage', new Blob([img.data as BlobPart]), img.name));
+    (annotationImages ?? []).forEach((img) =>
+        form.append('annotationImage', new Blob([img.data as BlobPart]), img.name)
+    );
     form.append('options', JSON.stringify(options));
     const startRes = await fetch(`${location.origin}/api/export`, { method: 'POST', body: form });
     if (!startRes.ok) throw new Error(`server export failed to start (${startRes.status})`);
@@ -54,7 +68,7 @@ export const runServerExport = async (
             let e;
             try {
                 e = JSON.parse(ev.data);
-            } catch (err) {
+            } catch {
                 es.close();
                 reject(new Error(`unexpected SSE data: ${ev.data}`));
                 return;
@@ -92,7 +106,10 @@ export class PublishExistsError extends Error {
     }
 }
 
-export const checkPublishExists = async (subfolder: string, name: string): Promise<{ exists: boolean; count: number }> => {
+export const checkPublishExists = async (
+    subfolder: string,
+    name: string
+): Promise<{ exists: boolean; count: number }> => {
     const qs = new URLSearchParams();
     if (subfolder) qs.set('subfolder', subfolder);
     qs.set('name', name);
@@ -115,7 +132,9 @@ export const runServerPublish = async (
     form.append('ply', plyGz, 'scene.ply.gz');
     (extraPlyGz ?? []).forEach((b, i) => form.append('extraPly', b, `scene-${i + 1}.ply.gz`));
     if (poster) form.append('poster', poster, 'poster.jpg');
-    (annotationImages ?? []).forEach(img => form.append('annotationImage', new Blob([img.data as BlobPart]), img.name));
+    (annotationImages ?? []).forEach((img) =>
+        form.append('annotationImage', new Blob([img.data as BlobPart]), img.name)
+    );
     form.append('options', JSON.stringify(options));
     const startRes = await fetch(`${location.origin}/api/publish`, { method: 'POST', body: form });
     if (startRes.status === 409) {
@@ -126,7 +145,11 @@ export const runServerPublish = async (
         // A 400 carries the reason (e.g. an invalid brand URL); show it rather
         // than a bare status code.
         const body = await startRes.json().catch(() => ({}));
-        throw new Error(body.error ? `server publish failed to start: ${body.error}` : `server publish failed to start (${startRes.status})`);
+        throw new Error(
+            body.error
+                ? `server publish failed to start: ${body.error}`
+                : `server publish failed to start (${startRes.status})`
+        );
     }
     const { jobId } = await startRes.json();
     if (!jobId) throw new Error('server did not return a job id');
@@ -137,7 +160,7 @@ export const runServerPublish = async (
             let e;
             try {
                 e = JSON.parse(ev.data);
-            } catch (err) {
+            } catch {
                 es.close();
                 reject(new Error(`unexpected SSE data: ${ev.data}`));
                 return;
@@ -240,7 +263,7 @@ export const uploadRender = async (
         xhr.open('POST', `${location.origin}/api/upload`);
 
         xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable && e.total > 0) onProgress(UPLOAD_SHARE * e.loaded / e.total);
+            if (e.lengthComputable && e.total > 0) onProgress((UPLOAD_SHARE * e.loaded) / e.total);
         };
         xhr.upload.onload = () => {
             onProgress(UPLOAD_SHARE);
@@ -282,14 +305,14 @@ export const uploadRender = async (
             let e;
             try {
                 e = JSON.parse(ev.data);
-            } catch (err) {
+            } catch {
                 es.close();
                 reject(new Error(`unexpected SSE data: ${ev.data}`));
                 return;
             }
             if (e.kind === 'progress') {
                 if (typeof e.value === 'number') {
-                    onProgress(UPLOAD_SHARE + (1 - UPLOAD_SHARE) * e.value / 100);
+                    onProgress(UPLOAD_SHARE + ((1 - UPLOAD_SHARE) * e.value) / 100);
                 }
             } else if (e.kind === 'done') {
                 es.close();
@@ -350,7 +373,7 @@ export const runVideoCompress = async (
             let e;
             try {
                 e = JSON.parse(ev.data);
-            } catch (err) {
+            } catch {
                 es.close();
                 reject(new Error(`unexpected SSE data: ${ev.data}`));
                 return;

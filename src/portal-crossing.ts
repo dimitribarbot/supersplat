@@ -35,29 +35,29 @@
 type CrossingMode = 'idle' | 'blocked' | 'loading';
 
 type CrossingState = {
-    mode: CrossingMode,
-    target: number | null   // blocked: scene awaited; loading: scene polled; idle: null
+    mode: CrossingMode;
+    target: number | null; // blocked: scene awaited; loading: scene polled; idle: null
 };
 
 type CrossingEvent =
     // A crossing (or anim-timeline / camera-reset assertion) wants `target`
     // active. loaded = the switch can be performed now (its entity exists or its load is in flight); ready = no overlay needed (SOG
     // scenes once loaded; streaming scenes once revealed or pinned resident).
-    { type: 'crossing', target: number, loaded: boolean, ready: boolean } |
+    | { type: 'crossing'; target: number; loaded: boolean; ready: boolean }
     // A frame with no pending crossing (only blocked reacts: user retreated).
-    { type: 'noCrossing' } |
+    | { type: 'noCrossing' }
     // The wiring's reveal poll decided `target` is visibly present.
-    { type: 'revealed', target: number };
+    | { type: 'revealed'; target: number };
 
 type OverlayDirective = 'keep' | 'show' | 'poll' | 'hide';
 
 type CrossingActions = {
-    switchTo: number | null,    // perform the scene switch (entities/collision/pins)
-    overlay: OverlayDirective,
-    markReady: number | null    // record this scene as revealed
+    switchTo: number | null; // perform the scene switch (entities/collision/pins)
+    overlay: OverlayDirective;
+    markReady: number | null; // record this scene as revealed
 };
 
-type CrossingResult = { state: CrossingState, actions: CrossingActions };
+type CrossingResult = { state: CrossingState; actions: CrossingActions };
 
 const crossingReducer = (state: CrossingState, event: CrossingEvent): CrossingResult => {
     const none: CrossingActions = { switchTo: null, overlay: 'keep', markReady: null };
@@ -79,7 +79,7 @@ const crossingReducer = (state: CrossingState, event: CrossingEvent): CrossingRe
             // Loaded + ready: switch now. Any pending overlay/poll is dropped
             // WITHOUT marking its abandoned target ready (stale-poll fix).
             if (state.mode === 'loading' && state.target === u) {
-                return { state: state, actions: none };   // already active + polling
+                return { state: state, actions: none }; // already active + polling
             }
             return {
                 state: { mode: 'idle', target: null },
@@ -88,7 +88,7 @@ const crossingReducer = (state: CrossingState, event: CrossingEvent): CrossingRe
         }
         // Loaded but not yet revealed (streaming): switch and run the reveal poll.
         if (state.mode === 'loading' && state.target === u) {
-            return { state: state, actions: none };       // poll already running
+            return { state: state, actions: none }; // poll already running
         }
         return {
             state: { mode: 'loading', target: u },
@@ -117,4 +117,12 @@ const crossingReducer = (state: CrossingState, event: CrossingEvent): CrossingRe
     return { state: state, actions: none };
 };
 
-export { crossingReducer, CrossingState, CrossingEvent, CrossingActions, CrossingResult, CrossingMode, OverlayDirective };
+export {
+    crossingReducer,
+    CrossingState,
+    CrossingEvent,
+    CrossingActions,
+    CrossingResult,
+    CrossingMode,
+    OverlayDirective
+};

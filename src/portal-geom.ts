@@ -1,16 +1,16 @@
 type Vec3 = [number, number, number];
 type Quat = [number, number, number, number];
 
-type InfiniteEdges = { top: boolean, right: boolean, bottom: boolean, left: boolean };
+type InfiniteEdges = { top: boolean; right: boolean; bottom: boolean; left: boolean };
 
 type PortalRect = {
-    position: Vec3,
-    rotation: Quat,   // unit quaternion [x, y, z, w]
-    width: number,
-    height: number,
-    frontUid: number | null,  // scene on the local +Z side
-    backUid: number | null,   // scene on the local -Z side
-    infinite?: InfiniteEdges  // edges extended to the scene boundary (absent = none)
+    position: Vec3;
+    rotation: Quat; // unit quaternion [x, y, z, w]
+    width: number;
+    height: number;
+    frontUid: number | null; // scene on the local +Z side
+    backUid: number | null; // scene on the local -Z side
+    infinite?: InfiniteEdges; // edges extended to the scene boundary (absent = none)
 };
 
 // Crossing test for the segment prev -> cur against the portal rectangle.
@@ -22,17 +22,26 @@ type PortalRect = {
 // no-crossing path is allocation-free: the quaternion-conjugate rotation into
 // the local frame is inlined as scalar math (no arrays, no closures); the only
 // allocation is the result object on an actual crossing (rare).
-const segmentCrossesRect = (prev: Vec3, cur: Vec3, rect: PortalRect): { side: 'front' | 'back', t: number } | null => {
-    const cx = rect.position[0], cy = rect.position[1], cz = rect.position[2];
-    const qx = rect.rotation[0], qy = rect.rotation[1], qz = rect.rotation[2], qw = rect.rotation[3];
+const segmentCrossesRect = (prev: Vec3, cur: Vec3, rect: PortalRect): { side: 'front' | 'back'; t: number } | null => {
+    const cx = rect.position[0],
+        cy = rect.position[1],
+        cz = rect.position[2];
+    const qx = rect.rotation[0],
+        qy = rect.rotation[1],
+        qz = rect.rotation[2],
+        qw = rect.rotation[3];
     const hw = rect.width * 0.5;
     const hh = rect.height * 0.5;
 
     // Inverse (conjugate) rotation, applied inline to both endpoints:
     // local = v + qw*t + (qv x t) with t = 2*(qv x v), qv = (-qx,-qy,-qz).
-    const ivx = -qx, ivy = -qy, ivz = -qz;
+    const ivx = -qx,
+        ivy = -qy,
+        ivz = -qz;
 
-    let x = prev[0] - cx, y = prev[1] - cy, z = prev[2] - cz;
+    let x = prev[0] - cx,
+        y = prev[1] - cy,
+        z = prev[2] - cz;
     let tx = 2 * (ivy * z - ivz * y);
     let ty = 2 * (ivz * x - ivx * z);
     let tz = 2 * (ivx * y - ivy * x);
@@ -40,7 +49,9 @@ const segmentCrossesRect = (prev: Vec3, cur: Vec3, rect: PortalRect): { side: 'f
     const ay = y + qw * ty + (ivz * tx - ivx * tz);
     const az = z + qw * tz + (ivx * ty - ivy * tx);
 
-    x = cur[0] - cx; y = cur[1] - cy; z = cur[2] - cz;
+    x = cur[0] - cx;
+    y = cur[1] - cy;
+    z = cur[2] - cz;
     tx = 2 * (ivy * z - ivz * y);
     ty = 2 * (ivz * x - ivx * z);
     tz = 2 * (ivx * y - ivy * x);
@@ -88,8 +99,14 @@ const segmentCrossesRect = (prev: Vec3, cur: Vec3, rect: PortalRect): { side: 'f
 // Hot path: called every rAF frame. The crossings array is created lazily so the
 // steady state (no crossing this frame) allocates nothing; indexed loops avoid
 // the for..of iterator allocation.
-const resolveActiveSplat = (prev: Vec3, cur: Vec3, portals: PortalRect[], currentUid: number | null, cross = segmentCrossesRect): number | null => {
-    let crossings: { t: number, uid: number | null }[] = null;
+const resolveActiveSplat = (
+    prev: Vec3,
+    cur: Vec3,
+    portals: PortalRect[],
+    currentUid: number | null,
+    cross = segmentCrossesRect
+): number | null => {
+    let crossings: { t: number; uid: number | null }[] = null;
     for (let i = 0; i < portals.length; i++) {
         const p = portals[i];
         const c = cross(prev, cur, p);
@@ -133,8 +150,8 @@ const resolvePortalCrossing = (
     portals: PortalRect[],
     currentUid: number | null,
     cross = segmentCrossesRect
-): { uid: number | null, portalIndex: number | null } => {
-    let crossings: { t: number, uid: number | null, index: number }[] = null;
+): { uid: number | null; portalIndex: number | null } => {
+    let crossings: { t: number; uid: number | null; index: number }[] = null;
     for (let i = 0; i < portals.length; i++) {
         const p = portals[i];
         const c = cross(prev, cur, p);

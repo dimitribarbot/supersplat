@@ -31,14 +31,14 @@
 // viewer-companion/portals.ts.
 
 type TeleportGuardState = {
-    target: number | null,   // scene the jump asserted; null = no guard open
-    until: number            // clock deadline (ms, same base as `now`) of the viewer's camera transition
+    target: number | null; // scene the jump asserted; null = no guard open
+    until: number; // clock deadline (ms, same base as `now`) of the viewer's camera transition
 };
 
 type TeleportGuardResult = {
-    state: TeleportGuardState,
-    active: boolean,   // suppress segment-based crossing detection this frame
-    refire: boolean    // re-assert the guarded crossing (its target is still blocked)
+    state: TeleportGuardState;
+    active: boolean; // suppress segment-based crossing detection this frame
+    refire: boolean; // re-assert the guarded crossing (its target is still blocked)
 };
 
 // Open (or replace) the guard for a jump asserting `target`. durationMs is

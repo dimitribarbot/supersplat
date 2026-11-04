@@ -1,9 +1,9 @@
 // Export-shaped annotation, as it appears in viewerSettingsJson.annotations
 // (produced by annotations.export in src/annotations.ts).
 type AnyAnnotation = {
-    title?: string,
-    text?: string,
-    extras?: { id?: string, scene?: number, i18n?: Record<string, { title?: string, text?: string }> }
+    title?: string;
+    text?: string;
+    extras?: { id?: string; scene?: number; i18n?: Record<string, { title?: string; text?: string }> };
 };
 
 // One baked table entry. Deliberately the exact shape sent back to the host in
@@ -12,25 +12,25 @@ type AnyAnnotation = {
 // (viewer.global.settings.annotations) and into viewer.selectAnnotation(index),
 // which selects by position -- no object-identity matching needed.
 type AnnotationEntry = {
-    index: number,
-    id: string,
-    title: string,
-    text: string,
-    scene: number | null,
+    index: number;
+    id: string;
+    title: string;
+    text: string;
+    scene: number | null;
     // Baked so the runtime can resolve to the visitor's language. Stripped
     // before anything is sent to the host.
-    i18n?: Record<string, { title?: string, text?: string }>,
+    i18n?: Record<string, { title?: string; text?: string }>;
     // The untranslated title, kept so goto-by-name still matches a host that
     // was keyed on it before the visitor's language changed.
-    baseTitle?: string
+    baseTitle?: string;
 };
 
 // A host's reference to an annotation, taken straight off the postMessage
 // payload -- so every field is untrusted and must be type-checked.
 type AnnotationRef = {
-    name?: unknown,
-    id?: unknown,
-    index?: unknown
+    name?: unknown;
+    id?: unknown;
+    index?: unknown;
 };
 
 // Bake the table the runtime companion consumes. Order matches
@@ -42,8 +42,8 @@ const buildAnnotationIndex = (annotations: AnyAnnotation[]): AnnotationEntry[] =
         const entry: AnnotationEntry = {
             index: i,
             id: typeof extras.id === 'string' ? extras.id : '',
-            title: (a && typeof a.title === 'string') ? a.title : '',
-            text: (a && typeof a.text === 'string') ? a.text : '',
+            title: a && typeof a.title === 'string' ? a.title : '',
+            text: a && typeof a.text === 'string' ? a.text : '',
             scene: typeof extras.scene === 'number' ? extras.scene : null
         };
         // Carried through only when non-empty, so an untranslated export's
@@ -70,7 +70,7 @@ const buildAnnotationIndex = (annotations: AnyAnnotation[]): AnnotationEntry[] =
 // bad-request means no usable reference was supplied at all; not-found means one
 // was, but nothing matched. Self-contained (no module-level references) so it is
 // also injected verbatim into the runtime via Function.toString().
-const resolveAnnotationRef = (table: AnnotationEntry[], ref: AnnotationRef): { index: number, reason: string } => {
+const resolveAnnotationRef = (table: AnnotationEntry[], ref: AnnotationRef): { index: number; reason: string } => {
     const entries = table || [];
     const r = ref || {};
     let usable = false;
@@ -93,8 +93,10 @@ const resolveAnnotationRef = (table: AnnotationEntry[], ref: AnnotationRef): { i
         usable = true;
         const want = r.name.trim().toLowerCase();
         for (let i = 0; i < entries.length; i++) {
-            if (entries[i].title.trim().toLowerCase() === want ||
-                (entries[i].baseTitle || '').trim().toLowerCase() === want) {
+            if (
+                entries[i].title.trim().toLowerCase() === want ||
+                (entries[i].baseTitle || '').trim().toLowerCase() === want
+            ) {
                 return { index: i, reason: '' };
             }
         }
@@ -382,13 +384,14 @@ const buildIframeApiInjection = (annotations: AnyAnnotation[]): string => {
     // annotation title containing e.g. "</script>" or a line/paragraph separator
     // cannot break out of the injected script tag.
     const tableJson = JSON.stringify(table)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026')
-    .split(SEP_LINE).join('\\u2028')
-    .split(SEP_PARAGRAPH).join('\\u2029');
-    return `<script>window.__supersplatIframeApi = ${tableJson};</script>` +
-        `<script>${companionRuntime}</script>`;
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026')
+        .split(SEP_LINE)
+        .join('\\u2028')
+        .split(SEP_PARAGRAPH)
+        .join('\\u2029');
+    return `<script>window.__supersplatIframeApi = ${tableJson};</script>` + `<script>${companionRuntime}</script>`;
 };
 
 export { buildAnnotationIndex, buildIframeApiInjection, localizeAnnotationTable, resolveAnnotationRef };

@@ -1,15 +1,15 @@
 import { galleryRuntime, galleryStyle, hasGallery } from './annotation-gallery';
 
 type AnyAnnotation = {
-    title?: string,
-    text?: string,
-    extras?: { url?: string, newTab?: boolean, images?: { src: string, caption: string }[] }
+    title?: string;
+    text?: string;
+    extras?: { url?: string; newTab?: boolean; images?: { src: string; caption: string }[] };
 };
 
 // Build the link table the runtime companion consumes. label is 1-based to
 // match the viewer's auto-generated annotation label (index + 1).
-const buildLinkTable = (annotations: AnyAnnotation[]): { label: number, url: string, newTab: boolean }[] => {
-    const table: { label: number, url: string, newTab: boolean }[] = [];
+const buildLinkTable = (annotations: AnyAnnotation[]): { label: number; url: string; newTab: boolean }[] => {
+    const table: { label: number; url: string; newTab: boolean }[] = [];
     annotations.forEach((a, i) => {
         const url = a.extras?.url;
         if (url) {
@@ -189,14 +189,16 @@ const buildAnnotationLinksInjection = (annotations: AnyAnnotation[]): string => 
     // URL containing e.g. "</script>" or a line/paragraph separator cannot
     // break out of the injected script tag.
     const tableJson = JSON.stringify(table)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
-    return `<style>${companionStyle}${galleryStyle}</style>` +
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+    return (
+        `<style>${companionStyle}${galleryStyle}</style>` +
         `<script>window.__supersplatAnnotationLinks = ${tableJson};</script>` +
-        `<script>${companionRuntime}</script>`;
+        `<script>${companionRuntime}</script>`
+    );
 };
 
 export { buildAnnotationLinksInjection, buildLinkTable };

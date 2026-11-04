@@ -1,4 +1,4 @@
-import { Events } from './events';
+import type { Events } from './events';
 
 // Long-edge ceiling for a stored image. Anything larger is redrawn to fit and
 // re-encoded: a 12 MP phone photo is ~6 MB, and ten of them would otherwise be
@@ -19,7 +19,7 @@ const PASSTHROUGH_MIME: Record<string, string> = {
 // prototype-chain key like "constructor" must not read as a known type.
 const hasOwn = (obj: Record<string, unknown>, key: string): boolean => Object.prototype.hasOwnProperty.call(obj, key);
 
-type EncodingPlan = { reencode: boolean, mime: string, ext: string };
+type EncodingPlan = { reencode: boolean; mime: string; ext: string };
 
 // The pure decision half of the import pipeline: given the source type and
 // pixel dimensions, decide whether the original bytes can be kept and what the
@@ -37,7 +37,7 @@ const planEncoding = (mime: string, width: number, height: number): EncodingPlan
 
 // Decode a picked file, downscale/re-encode it if planEncoding says so, and
 // return the bytes to store. Browser-only (uses createImageBitmap + canvas).
-const encodeAnnotationImage = async (file: File): Promise<{ data: Uint8Array, mime: string, ext: string }> => {
+const encodeAnnotationImage = async (file: File): Promise<{ data: Uint8Array; mime: string; ext: string }> => {
     const bitmap = await createImageBitmap(file);
     try {
         const plan = planEncoding(file.type, bitmap.width, bitmap.height);
@@ -103,7 +103,7 @@ const registerAnnotationImageEvents = (events: Events) => {
 // are missing (a document loaded from an archive that lacked the entry) are
 // skipped: the annotation simply shows one fewer slide.
 const collectAnnotationImages = (events: Events): { path: string; data: Uint8Array }[] => {
-    const refs = (events.invoke('annotations.imageRefs') ?? []) as { imageId: string, ext: string }[];
+    const refs = (events.invoke('annotations.imageRefs') ?? []) as { imageId: string; ext: string }[];
     const out: { path: string; data: Uint8Array }[] = [];
     refs.forEach((ref) => {
         const data = events.invoke('annotationImages.get', ref.imageId) as Uint8Array | null;

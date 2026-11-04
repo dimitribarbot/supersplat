@@ -19,14 +19,13 @@
 // Function.toString(), so each must stay self-contained (no imports, no
 // module-level references, helpers declared inside) and use no backslash
 // escapes and no backticks.
-/* eslint-disable prefer-template -- backticks are banned in the injected bodies, so string concatenation is required */
 
 // Baked by the export server from its VIEWER_BRAND_* env. Trusted.
 export type BrandOperator = {
     name?: string;
-    iconHref?: string;                  // ./brand-icon.<ext>
+    iconHref?: string; // ./brand-icon.<ext>
     iconMime?: string;
-    logoHref?: string;                  // ./brand-logo.<ext>
+    logoHref?: string; // ./brand-logo.<ext>
     url?: string;
 };
 
@@ -110,42 +109,53 @@ export const resolveBrandView = (operator: BrandOperator, client: BrandClient): 
 };
 
 export const brandFragments = (view: BrandView): BrandFragments => {
-    const esc = (value: string): string => value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    const esc = (value: string): string =>
+        value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     const external = ' target="_blank" rel="noopener noreferrer"';
     const tooltip = view.name ? ' title="' + esc(view.name) + '"' : '';
 
     let powered = '';
     if (view.poweredBy) {
         const label = esc(view.poweredBy.name);
-        powered = '<br />Powered by ' + (view.poweredBy.href ? '<a href="' + esc(view.poweredBy.href) + '"' + external + '>' + label + '</a>' : label);
+        powered =
+            '<br />Powered by ' +
+            (view.poweredBy.href
+                ? '<a href="' + esc(view.poweredBy.href) + '"' + external + '>' + label + '</a>'
+                : label);
     }
 
     const fragments: BrandFragments = {
         // Overlay badge: icon only, the name as its tooltip, a link only
         // outside client mode (the viewer sets its href at runtime).
-        badgeOpen: view.badgeLink ?
-            '<a class="sse-viewerBranding sse-hidden"' + tooltip + external + '>' :
-            '<div class="sse-viewerBranding sse-hidden"' + tooltip + '>',
+        badgeOpen: view.badgeLink
+            ? '<a class="sse-viewerBranding sse-hidden"' + tooltip + external + '>'
+            : '<div class="sse-viewerBranding sse-hidden"' + tooltip + '>',
         badgeClose: view.badgeLink ? '</a>' : '</div>',
         // Info panel header: the operator URL or no link at all, never
         // upstream's repository.
-        panelOpen: view.panelHref ?
-            '<a class="sse-viewerTitle" href="' + esc(view.panelHref) + '"' + external + '>' :
-            '<div class="sse-viewerTitle">',
+        panelOpen: view.panelHref
+            ? '<a class="sse-viewerTitle" href="' + esc(view.panelHref) + '"' + external + '>'
+            : '<div class="sse-viewerTitle">',
         panelClose: view.panelHref ? '</a>' : '</div>',
-        attribution: '<div id="brandAttribution">Based on <a href="https://superspl.at/"' + external + '>PlayCanvas SuperSplat Viewer</a>' + powered + '</div>'
+        attribution:
+            '<div id="brandAttribution">Based on <a href="https://superspl.at/"' +
+            external +
+            '>PlayCanvas SuperSplat Viewer</a>' +
+            powered +
+            '</div>'
     };
     if (view.iconHref) {
         fragments.badgeIcon = '<img id="brandBadgeIcon" src="' + esc(view.iconHref) + '" alt="" />';
     }
     // The logo alone, or the icon and the name.
     if (view.logoHref) {
-        fragments.panelLogo = '<img id="brandTitleLogo" src="' + esc(view.logoHref) + '" alt="' + esc(view.name) + '" />';
+        fragments.panelLogo =
+            '<img id="brandTitleLogo" src="' + esc(view.logoHref) + '" alt="' + esc(view.name) + '" />';
         fragments.panelLabel = '';
     } else {
         if (view.iconHref) {

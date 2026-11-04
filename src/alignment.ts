@@ -2,9 +2,9 @@ import { Mat4, Quat, Vec3 } from 'playcanvas';
 
 import { solveAlignmentRaw } from './alignment-solve';
 import { EntityTransformOp } from './edit-ops';
-import { Events } from './events';
-import { Scene } from './scene';
-import { Splat } from './splat';
+import type { Events } from './events';
+import type { Scene } from './scene';
+import type { Splat } from './splat';
 import { Transform } from './transform';
 
 type AlignmentMode = 'rigid' | 'similarity';
@@ -60,7 +60,7 @@ class AlignmentManager {
     previewActive = false;
     previewOld: Transform | null = null;
     lastResult: AlignmentSolveResult | null = null;
-    selected: { id: number, side: AlignmentPickSide } | null = null;
+    selected: { id: number; side: AlignmentPickSide } | null = null;
     private nextPairId = 1;
 
     constructor(events: Events, scene: Scene) {
@@ -93,7 +93,7 @@ class AlignmentManager {
     }
 
     completePairs() {
-        return this.pairs.filter(pair => pair.source && pair.target);
+        return this.pairs.filter((pair) => pair.source && pair.target);
     }
 
     setSource(splat: Splat | null) {
@@ -143,7 +143,7 @@ class AlignmentManager {
     // on release via commitMove).
     setPointWorld(id: number, side: AlignmentPickSide, world: Vec3) {
         const splat = side === 'source' ? this.source : this.target;
-        const pair = this.pairs.find(p => p.id === id);
+        const pair = this.pairs.find((p) => p.id === id);
         if (!splat || !pair || !pair[side]) {
             return;
         }
@@ -204,7 +204,7 @@ class AlignmentManager {
         if (this.selected?.id === id) {
             this.selected = null;
         }
-        this.pairs = this.pairs.filter(pair => pair.id !== id);
+        this.pairs = this.pairs.filter((pair) => pair.id !== id);
         this.changed();
     }
 
@@ -212,7 +212,7 @@ class AlignmentManager {
     // dropped entirely only if it ends up with neither a source nor a target.
     removePoint(id: number, side: AlignmentPickSide) {
         this.revertPreview();
-        const pair = this.pairs.find(p => p.id === id);
+        const pair = this.pairs.find((p) => p.id === id);
         if (!pair || !pair[side]) {
             return;
         }
@@ -221,13 +221,13 @@ class AlignmentManager {
         }
         delete pair[side];
         if (!pair.source && !pair.target) {
-            this.pairs = this.pairs.filter(p => p.id !== id);
+            this.pairs = this.pairs.filter((p) => p.id !== id);
         }
         this.changed();
     }
 
     movePair(id: number, direction: -1 | 1) {
-        const index = this.pairs.findIndex(pair => pair.id === id);
+        const index = this.pairs.findIndex((pair) => pair.id === id);
         const next = index + direction;
         if (index < 0 || next < 0 || next >= this.pairs.length) {
             return;
@@ -375,19 +375,17 @@ class AlignmentManager {
         );
         this.source.move(next.position, next.rotation, next.scale);
 
-        this.events.fire('edit.add', new EntityTransformOp({
-            splat: this.source,
-            oldt,
-            newt: next
-        }), true);
+        this.events.fire(
+            'edit.add',
+            new EntityTransformOp({
+                splat: this.source,
+                oldt,
+                newt: next
+            }),
+            true
+        );
         this.changed();
     }
 }
 
-export {
-    AlignmentManager,
-    AlignmentMode,
-    AlignmentPair,
-    AlignmentPickSide,
-    AlignmentSolveResult
-};
+export { AlignmentManager, AlignmentMode, AlignmentPair, AlignmentPickSide, AlignmentSolveResult };

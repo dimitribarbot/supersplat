@@ -1,9 +1,10 @@
 import { Button, Container, Label } from '@playcanvas/pcui';
 
 import { COLLISION_OVERSIZE_BYTES, formatBytes } from '../collision-size-report';
-import { Events } from '../events';
+import type { Events } from '../events';
+
 import { i18n } from './localization';
-import { Tooltips } from './tooltips';
+import type { Tooltips } from './tooltips';
 
 type ExportSummary = {
     header: string;
@@ -49,7 +50,11 @@ class ExportSummaryDialog extends Container {
         link.append(linkCopy);
         const sectionLabel = new Label({ class: 'summary-section', text: i18n.t('popup.export.summary.collision') });
         const list = new Container({ class: 'summary-list', flex: true, flexDirection: 'column' });
-        const oversizeNote = new Label({ class: 'summary-oversize', text: i18n.t('popup.export.summary.oversize'), hidden: true });
+        const oversizeNote = new Label({
+            class: 'summary-oversize',
+            text: i18n.t('popup.export.summary.oversize'),
+            hidden: true
+        });
         const sizeNote = new Label({ class: 'summary-size-note', hidden: true });
         content.append(message);
         content.append(link);
@@ -106,7 +111,12 @@ class ExportSummaryDialog extends Container {
             let anyOversize = false;
             for (const s of summary.sizes) {
                 const row = new Container({ class: 'summary-row' });
-                row.append(new Label({ class: 'summary-scene', text: i18n.t('popup.export.summary.scene', { index: s.sceneIndex }) }));
+                row.append(
+                    new Label({
+                        class: 'summary-scene',
+                        text: i18n.t('popup.export.summary.scene', { index: s.sceneIndex })
+                    })
+                );
                 const nameLabel = new Label({ class: 'summary-name', text: s.name });
                 nameLabel.dom.title = s.name;
                 row.append(nameLabel);

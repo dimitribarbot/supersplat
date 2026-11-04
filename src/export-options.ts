@@ -1,9 +1,11 @@
 import { collectAnnotationImages } from './annotation-images';
 import type { Pose } from './camera-poses';
-import { Events } from './events';
+import type { Events } from './events';
 import type { WriteTarget } from './io';
 import { buildPortalBundle } from './portal-export';
-import { AnimTrack, defaultPostEffectSettings, ExperienceSettings, SerializeSettings, ViewerExportSettings } from './splat-serialize';
+import type { ExportPortal } from './portal-export';
+import type { AnimTrack, ExperienceSettings, SerializeSettings, ViewerExportSettings } from './splat-serialize';
+import { defaultPostEffectSettings } from './splat-serialize';
 
 type ExportType = 'ply' | 'splat' | 'sog' | 'spz' | 'viewer' | 'viewerSettings';
 
@@ -88,13 +90,18 @@ const buildViewerSettings = (events: Events, choices: ExportChoices): ViewerExpo
     const pose = events.invoke('camera.getPose');
     const p = pose?.position;
     const t = pose?.target;
-    const cameras = (p && t) ? [{
-        initial: {
-            position: [p.x, p.y, p.z] as [number, number, number],
-            target: [t.x, t.y, t.z] as [number, number, number],
-            fov
-        }
-    }] : [];
+    const cameras =
+        p && t
+            ? [
+                  {
+                      initial: {
+                          position: [p.x, p.y, p.z] as [number, number, number],
+                          target: [t.x, t.y, t.z] as [number, number, number],
+                          fov
+                      }
+                  }
+              ]
+            : [];
 
     const animTracks: AnimTrack[] = [];
 
@@ -103,8 +110,8 @@ const buildViewerSettings = (events: Events, choices: ExportChoices): ViewerExpo
         const frameRate = events.invoke('timeline.frameRate');
         const smoothness = events.invoke('timeline.smoothness');
         const orderedPoses = (events.invoke('camera.poses') as Pose[])
-        .filter(entry => entry.frame >= 0 && entry.frame < frames)
-        .sort((a, b) => a.frame - b.frame);
+            .filter((entry) => entry.frame >= 0 && entry.frame < frames)
+            .sort((a, b) => a.frame - b.frame);
 
         if (orderedPoses.length > 0) {
             const times: number[] = [];
@@ -139,21 +146,30 @@ const buildViewerSettings = (events: Events, choices: ExportChoices): ViewerExpo
     const collisionOn = choices.viewerType === 'zip' && !!choices.collision;
 
     // fork: portal multi-scene bundle (absent when the scene has no portals)
-    const portalsRaw = events.invoke('portals.export') ?? [];
-    const startUid = events.invoke('portals.startSplat') ?? null;
+    const portalsRaw = events.invoke<ExportPortal[]>('portals.export') ?? [];
+    const startUid = events.invoke<number | null>('portals.startSplat') ?? null;
     const allSplats = events.invoke('scene.allSplats') ?? [];
-    const availableUids = allSplats.map((s: any) => s.uid);
+    const availableUids = allSplats.map((s) => s.uid);
     const preferredStartUid = events.invoke('selection')?.uid ?? null;
-    const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
-        buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: choices.streaming, collision: collisionOn, preferredStartUid }) :
-        null;
+    const bundle =
+        (events.invoke<number>('portals.count') ?? 0) > 0
+            ? buildPortalBundle({
+                  portals: portalsRaw,
+                  startUid,
+                  availableUids,
+                  streaming: choices.streaming,
+                  collision: collisionOn,
+                  preferredStartUid
+              })
+            : null;
 
     // fork: per-scene collision values chosen in the dialog, index-aligned with
     // the bundle. Fall back to the start scene's values for any scene the
     // choices do not cover (a portal added after the dialog collected them).
     const perScene = choices.perSceneCollision ?? [];
     const fallbackCollision: SceneCollision = { environment: 'indoor', radius: 50, voxelSize: 0.05 };
-    const collisionAt = (index: number): SceneCollision => perScene[index] ?? perScene[0] ?? choices.globalCollision ?? fallbackCollision;
+    const collisionAt = (index: number): SceneCollision =>
+        perScene[index] ?? perScene[0] ?? choices.globalCollision ?? fallbackCollision;
 
     const experienceSettings: ExperienceSettings = {
         version: 2,
@@ -166,15 +182,17 @@ const buildViewerSettings = (events: Events, choices: ExportChoices): ViewerExpo
         annotations: events.invoke('annotations.export', bundle?.sceneUids) ?? [],
         offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
         offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
-        ...(bundle ? {
-            portals: bundle.portals,
-            portalScenes: bundle.portalScenes,
-            portalStart: bundle.portalStart,
-            portalCollision: bundle.portalCollision,
-            portalEnvironments: bundle.sceneUids.map((_, i) => collisionAt(i).environment),
-            portalRadii: bundle.sceneUids.map((_, i) => collisionAt(i).radius),
-            portalVoxelSizes: bundle.sceneUids.map((_, i) => collisionAt(i).voxelSize)
-        } : {}),
+        ...(bundle
+            ? {
+                  portals: bundle.portals,
+                  portalScenes: bundle.portalScenes,
+                  portalStart: bundle.portalStart,
+                  portalCollision: bundle.portalCollision,
+                  portalEnvironments: bundle.sceneUids.map((_, i) => collisionAt(i).environment),
+                  portalRadii: bundle.sceneUids.map((_, i) => collisionAt(i).radius),
+                  portalVoxelSizes: bundle.sceneUids.map((_, i) => collisionAt(i).voxelSize)
+              }
+            : {}),
         startMode: animTracks.length > 0 ? 'animTrack' : 'default'
     };
 

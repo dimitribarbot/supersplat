@@ -14,13 +14,13 @@
 // written literally.
 
 type AnyAnnotation = {
-    extras?: { images?: { src: string, caption: string }[] }
+    extras?: { images?: { src: string; caption: string }[] };
 };
 
 // Does any annotation carry a non-empty gallery? Half of the injection gate in
 // annotation-links.ts (the other half being "any annotation carries a url").
 const hasGallery = (annotations: AnyAnnotation[]): boolean => {
-    return (annotations || []).some(a => (a.extras?.images?.length ?? 0) > 0);
+    return (annotations || []).some((a) => (a.extras?.images?.length ?? 0) > 0);
 };
 
 const galleryRuntime = `

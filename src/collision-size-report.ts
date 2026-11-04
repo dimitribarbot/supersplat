@@ -42,8 +42,9 @@ const formatBytes = (bytes: number): string => {
 // `#N` when the scene has no resolved name. Shared by the local/server export
 // path (file-handler.ts) and the S3 publish path (s3-publish.ts) so the
 // ordering + fallback contract has one implementation and one set of tests.
-const collisionRows = (sizes: Map<number, number>, sceneNames: string[]) => [...sizes.entries()]
-.sort((a, b) => a[0] - b[0])
-.map(([sceneIndex, bytes]) => ({ sceneIndex, name: sceneNames[sceneIndex] ?? `#${sceneIndex}`, bytes }));
+const collisionRows = (sizes: Map<number, number>, sceneNames: string[]) =>
+    [...sizes.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([sceneIndex, bytes]) => ({ sceneIndex, name: sceneNames[sceneIndex] ?? `#${sceneIndex}`, bytes }));
 
 export { collisionSceneIndex, formatBytes, collisionRows, COLLISION_OVERSIZE_BYTES };

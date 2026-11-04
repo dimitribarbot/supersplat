@@ -1,22 +1,22 @@
-import { Events } from './events';
+import type { Events } from './events';
 import { resolveAnnotationSceneIndex } from './portal-export';
 import { VIEWER_LOCALES } from './viewer-companion/viewer-lang';
 
 // Camera fly-to view stored per annotation (packed arrays for serialization).
 type AnnotationCamera = {
-    position: [number, number, number],
-    target: [number, number, number],
-    fov: number
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
 };
 
 // One attached image. Metadata only: the bytes live in the session store in
 // annotation-images.ts, keyed by imageId, because this record is snapshotted
 // into the undo stack by UpdateAnnotationOp.
 type AnnotationImage = {
-    imageId: string,
-    ext: string,
-    mime: string,
-    caption: string     // visible caption AND alt text; may be empty
+    imageId: string;
+    ext: string;
+    mime: string;
+    caption: string; // visible caption AND alt text; may be empty
 };
 
 // An image record read out of a project file is untrusted input: `imageId` and
@@ -31,10 +31,14 @@ type AnnotationImage = {
 const IMAGE_ID_RE = /^annimg_\d+$/;
 const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp'];
 
-const isSafeImageRecord = (img: any): boolean => {
-    return !!img &&
-        typeof img.imageId === 'string' && IMAGE_ID_RE.test(img.imageId) &&
-        typeof img.ext === 'string' && IMAGE_EXTS.includes(img.ext);
+const isSafeImageRecord = (img: { imageId?: unknown; ext?: unknown } | null | undefined): boolean => {
+    return (
+        !!img &&
+        typeof img.imageId === 'string' &&
+        IMAGE_ID_RE.test(img.imageId) &&
+        typeof img.ext === 'string' &&
+        IMAGE_EXTS.includes(img.ext)
+    );
 };
 
 // Locale codes a translation may be stored under. Owned by viewer-lang.ts
@@ -48,13 +52,13 @@ const TRANSLATION_LOCALES = VIEWER_LOCALES;
 // missing field falls back to the annotation's base value, per field, so a
 // half-finished translation never blanks anything.
 type AnnotationTranslation = {
-    title?: string,
-    text?: string,
-    url?: string,
+    title?: string;
+    text?: string;
+    url?: string;
     // imageId -> caption. Keyed by id rather than by list position so
     // reordering or removing an image cannot silently reattach a caption to a
     // different picture.
-    captions?: Record<string, string>
+    captions?: Record<string, string>;
 };
 
 // A translations map read out of a project file is untrusted input, exactly as
@@ -63,27 +67,30 @@ type AnnotationTranslation = {
 // an unexpected locale key into that payload. Unknown locales, non-string
 // values and caption keys that are not real image ids are DROPPED, never
 // repaired.
-const sanitizeTranslations = (raw: any): Record<string, AnnotationTranslation> => {
+const sanitizeTranslations = (raw: unknown): Record<string, AnnotationTranslation> => {
     const out: Record<string, AnnotationTranslation> = {};
     if (!raw || typeof raw !== 'object') {
         return out;
     }
     TRANSLATION_LOCALES.forEach((code) => {
-        const entry = raw[code];
+        const entry = (raw as Record<string, unknown>)[code] as Record<string, unknown> | undefined;
         if (!entry || typeof entry !== 'object') {
             return;
         }
         const clean: AnnotationTranslation = {};
         (['title', 'text', 'url'] as const).forEach((field) => {
-            if (typeof entry[field] === 'string') {
-                clean[field] = entry[field];
+            const value = entry[field];
+            if (typeof value === 'string') {
+                clean[field] = value;
             }
         });
         if (entry.captions && typeof entry.captions === 'object') {
+            const rawCaptions = entry.captions as Record<string, unknown>;
             const captions: Record<string, string> = {};
-            Object.keys(entry.captions).forEach((imageId) => {
-                if (IMAGE_ID_RE.test(imageId) && typeof entry.captions[imageId] === 'string') {
-                    captions[imageId] = entry.captions[imageId];
+            Object.keys(rawCaptions).forEach((imageId) => {
+                const caption = rawCaptions[imageId];
+                if (IMAGE_ID_RE.test(imageId) && typeof caption === 'string') {
+                    captions[imageId] = caption;
                 }
             });
             if (Object.keys(captions).length > 0) {
@@ -114,7 +121,7 @@ const hasTranslationContent = (t: AnnotationTranslation | undefined): boolean =>
     if (t.title || t.text || t.url) {
         return true;
     }
-    return Object.values(t.captions ?? {}).some(c => !!c);
+    return Object.values(t.captions ?? {}).some((c) => !!c);
 };
 
 // Deep copy for the undo stack and for the working copy the dialog edits.
@@ -135,27 +142,27 @@ const cloneTranslations = (t: Record<string, AnnotationTranslation>): Record<str
 // Editor-internal annotation record. Positions/cameras are packed arrays so
 // serialization is a straight copy (mirrors camera-poses.ts packing style).
 type AnnotationData = {
-    id: string,
-    position: [number, number, number],
-    title: string,
-    text: string,
-    url: string,
-    newTab: boolean,
+    id: string;
+    position: [number, number, number];
+    title: string;
+    text: string;
+    url: string;
+    newTab: boolean;
     // Which action this annotation offers in the viewer. `url`/`newTab` and
     // `images` are both retained across a mode switch (so flipping back and
     // forth loses nothing); this field decides which one is live, which is
     // what makes "link or gallery, never both" a property of the data rather
     // than a rule the UI has to police.
-    linkType: 'none' | 'url' | 'images',
-    images: AnnotationImage[],
+    linkType: 'none' | 'url' | 'images';
+    images: AnnotationImage[];
     // Per-language overrides for title/text/url/captions. Empty for an
     // untranslated annotation; the base fields above are the fallback.
-    translations: Record<string, AnnotationTranslation>,
+    translations: Record<string, AnnotationTranslation>;
     // Editor splat this annotation belongs to (session-scoped uid), or null.
     // Resolved to an export scene index at export time; persisted by document
     // splat index (see docSerialize.annotations) because uids are not stable.
-    sceneUid: number | null,
-    camera: AnnotationCamera
+    sceneUid: number | null;
+    camera: AnnotationCamera;
 };
 
 // On-disk annotation record: AnnotationData plus a stable splat reference as an
@@ -166,24 +173,24 @@ type AnnotationData = {
 // docDeserialize reads the field via `any` and sanitizeTranslations treats a
 // missing map the same as an empty one, so no `?` is needed here to express it.
 type AnnotationDocData = AnnotationData & {
-    sceneIndex?: number | null
+    sceneIndex?: number | null;
 };
 
 // Export-shaped annotation matching splat-serialize.ts `Annotation`. The link
 // rides in `extras`, which the viewer transports but ignores.
 type AnnotationExport = {
-    position: [number, number, number],
-    title: string,
-    text: string,
-    camera: { initial: { position: [number, number, number], target: [number, number, number], fov: number } },
+    position: [number, number, number];
+    title: string;
+    text: string;
+    camera: { initial: { position: [number, number, number]; target: [number, number, number]; fov: number } };
     extras: {
-        url?: string,
-        newTab?: boolean,
-        images?: { src: string, caption: string }[],
-        scene?: number,
-        id?: string,
-        i18n?: Record<string, { title?: string, text?: string, url?: string, captions?: string[] }>
-    }
+        url?: string;
+        newTab?: boolean;
+        images?: { src: string; caption: string }[];
+        scene?: number;
+        id?: string;
+        i18n?: Record<string, { title?: string; text?: string; url?: string; captions?: string[] }>;
+    };
 };
 
 class AddAnnotationOp {
@@ -310,7 +317,7 @@ const registerAnnotationsEvents = (events: Events) => {
     // Returns the live internal array — callers read it (e.g. each frame) but must not mutate it.
     events.function('annotations.list', () => annotations);
 
-    events.function('annotations.byId', (id: string) => annotations.find(a => a.id === id) ?? null);
+    events.function('annotations.byId', (id: string) => annotations.find((a) => a.id === id) ?? null);
 
     events.function('annotations.selected', () => selectedId);
 
@@ -329,7 +336,7 @@ const registerAnnotationsEvents = (events: Events) => {
     });
 
     events.on('annotations.removeRaw', (id: string) => {
-        const i = annotations.findIndex(a => a.id === id);
+        const i = annotations.findIndex((a) => a.id === id);
         if (i >= 0) {
             annotations.splice(i, 1);
             if (selectedId === id) {
@@ -341,7 +348,7 @@ const registerAnnotationsEvents = (events: Events) => {
     });
 
     events.on('annotations.updateRaw', (id: string, patch: Partial<Omit<AnnotationData, 'id'>>) => {
-        const a = annotations.find(x => x.id === id);
+        const a = annotations.find((x) => x.id === id);
         if (a) {
             Object.assign(a, patch);
             fireChanged();
@@ -352,7 +359,7 @@ const registerAnnotationsEvents = (events: Events) => {
     // selection (see above), which would close the annotation toolbar on every
     // click of a move button.
     events.on('annotations.moveRaw', (id: string, toIndex: number) => {
-        const from = annotations.findIndex(a => a.id === id);
+        const from = annotations.findIndex((a) => a.id === id);
         if (from < 0) {
             return;
         }
@@ -405,10 +412,11 @@ const registerAnnotationsEvents = (events: Events) => {
             // the src anyway would give the viewer a broken slide it still
             // counts ("2 / 3"). Asked over the event bus rather than by
             // importing annotation-images.ts, which owns the store.
-            const liveImages = a.images.filter(img => events.invoke('annotationImages.has', img.imageId));
-            const images = (a.linkType === 'images') ?
-                liveImages.map(img => ({ src: `annotations/${img.imageId}.${img.ext}`, caption: img.caption })) :
-                [];
+            const liveImages = a.images.filter((img) => events.invoke('annotationImages.has', img.imageId));
+            const images =
+                a.linkType === 'images'
+                    ? liveImages.map((img) => ({ src: `annotations/${img.imageId}.${img.ext}`, caption: img.caption }))
+                    : [];
 
             // Per-language overrides, emitted alongside the base strings the
             // viewer falls back to.
@@ -429,10 +437,10 @@ const registerAnnotationsEvents = (events: Events) => {
             // applies the isUrl and images.length rules above, which are
             // per-annotation export rules rather than part of "does this
             // translation have content".
-            const i18n: Record<string, any> = {};
+            const i18n: Record<string, { title?: string; text?: string; url?: string; captions?: string[] }> = {};
             Object.keys(a.translations ?? {}).forEach((code) => {
                 const t = a.translations[code];
-                const entry: any = {};
+                const entry: { title?: string; text?: string; url?: string; captions?: string[] } = {};
                 if (t.title) {
                     entry.title = t.title;
                 }
@@ -443,7 +451,7 @@ const registerAnnotationsEvents = (events: Events) => {
                     entry.url = t.url;
                 }
                 if (images.length > 0 && t.captions) {
-                    const captions = liveImages.map(img => t.captions[img.imageId] ?? '');
+                    const captions = liveImages.map((img) => t.captions[img.imageId] ?? '');
                     while (captions.length > 0 && captions[captions.length - 1] === '') {
                         captions.pop();
                     }
@@ -511,7 +519,7 @@ const registerAnnotationsEvents = (events: Events) => {
                 url: a.url,
                 newTab: a.newTab,
                 linkType: a.linkType,
-                images: a.images.map(img => ({ ...img })),
+                images: a.images.map((img) => ({ ...img })),
                 translations: cloneTranslations(a.translations),
                 sceneUid: a.sceneUid,
                 camera: {
@@ -523,8 +531,8 @@ const registerAnnotationsEvents = (events: Events) => {
             if (uidToIndex) {
                 // always write a value (null, never undefined) so the field
                 // survives JSON.stringify and marks the record as new-format
-                const i = (a.sceneUid === null) ? undefined : uidToIndex.get(a.sceneUid);
-                doc.sceneIndex = (typeof i === 'number') ? i : null;
+                const i = a.sceneUid === null ? undefined : uidToIndex.get(a.sceneUid);
+                doc.sceneIndex = typeof i === 'number' ? i : null;
             }
             return doc;
         });
@@ -534,13 +542,13 @@ const registerAnnotationsEvents = (events: Events) => {
         // the index field is authoritative when present (uids are session-scoped
         // and only valid in the session that saved them); legacy documents
         // without it simply have no association
-        const indexToUid = (remap && Array.isArray(remap.indexToUid)) ? remap.indexToUid : null;
+        const indexToUid = remap && Array.isArray(remap.indexToUid) ? remap.indexToUid : null;
         const fromIndex = (index: number | null | undefined): number | null => {
             if (!indexToUid || typeof index !== 'number') {
                 return null;
             }
             const uid = indexToUid[index];
-            return (typeof uid === 'number') ? uid : null;
+            return typeof uid === 'number' ? uid : null;
         };
 
         annotations.length = 0;
@@ -558,7 +566,9 @@ const registerAnnotationsEvents = (events: Events) => {
                     // legacy documents have neither field: a record carrying a
                     // url was, by definition, a link annotation
                     linkType: d.linkType ?? (d.url ? 'url' : 'none'),
-                    images: Array.isArray(d.images) ? d.images.filter(isSafeImageRecord).map(img => ({ ...img })) : [],
+                    images: Array.isArray(d.images)
+                        ? d.images.filter(isSafeImageRecord).map((img) => ({ ...img }))
+                        : [],
                     translations: sanitizeTranslations(d.translations),
                     sceneUid: indexToUid ? fromIndex(d.sceneIndex) : (d.sceneUid ?? null),
                     camera: d.camera ?? { position: [0, 0, 0], target: [0, 0, 1], fov: 60 }

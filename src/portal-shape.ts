@@ -23,12 +23,7 @@ import { vertexShader, fragmentShader } from './shaders/off-limits-zone-shader';
 // viewer collision math uses (rectangle in local XY, normal local Z), so the
 // editor entity needs no orientation-correction: its rotation IS the zone
 // rotation, which is what the gizmos read/write.
-const CORNERS = [
-    -0.5, -0.5, 0,
-    0.5, -0.5, 0,
-    0.5, 0.5, 0,
-    -0.5, 0.5, 0
-];
+const CORNERS = [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0];
 const INDICES = [0, 1, 2, 0, 2, 3];
 
 // Cyan, semi-transparent; brighter when selected (8-bit alpha for setColors32).
@@ -76,8 +71,12 @@ class PortalShape extends Element {
         this.material.cull = CULLFACE_NONE;
         this.material.blendState = new BlendState(
             true,
-            BLENDEQUATION_ADD, BLENDMODE_SRC_ALPHA, BLENDMODE_ONE_MINUS_SRC_ALPHA,
-            BLENDEQUATION_ADD, BLENDMODE_ONE, BLENDMODE_ONE_MINUS_SRC_ALPHA
+            BLENDEQUATION_ADD,
+            BLENDMODE_SRC_ALPHA,
+            BLENDMODE_ONE_MINUS_SRC_ALPHA,
+            BLENDEQUATION_ADD,
+            BLENDMODE_ONE,
+            BLENDMODE_ONE_MINUS_SRC_ALPHA
         );
         this.material.update();
 

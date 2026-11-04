@@ -15,7 +15,9 @@ type Vec3Like = { x: number; y: number; z: number };
 // (it re-applies the table's PLY transform before voxelizing, round-tripping the
 // geometry back to world space), so the camera world position is used directly
 // with no coordinate flip. Falls back to the origin when there is no camera.
-const collisionSeedFromSettings = (viewerSettingsJson: any): Vec3Like => {
+const collisionSeedFromSettings = (viewerSettingsJson: {
+    cameras?: { initial?: { position?: number[] } }[];
+}): Vec3Like => {
     const p = viewerSettingsJson?.cameras?.[0]?.initial?.position;
     if (Array.isArray(p) && p.length >= 3) {
         return { x: p[0], y: p[1], z: p[2] };
@@ -29,9 +31,9 @@ const collisionSeedFromSettings = (viewerSettingsJson: any): Vec3Like => {
 //   outdoor -> per-column floor fill (CLI --voxel-floor-fill 1.6); no seed used.
 // Carve (--voxel-carve) is deliberately not used.
 const collisionVoxelOptions = (environment: CollisionEnvironment, seed: Vec3Like) => {
-    return environment === 'indoor' ?
-        { navExteriorRadius: 1.6, navSeed: seed } :
-        { floorFill: true, floorFillDilation: 1.6 };
+    return environment === 'indoor'
+        ? { navExteriorRadius: 1.6, navSeed: seed }
+        : { floorFill: true, floorFillDilation: 1.6 };
 };
 
 // Flip a world-space point into the PLY/DataTable space the columns use

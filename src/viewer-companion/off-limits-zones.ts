@@ -1,11 +1,11 @@
 import { segmentBlockedByWall } from './off-limits-collision';
 
 type ZoneLike = {
-    position: [number, number, number],
-    rotation: [number, number, number, number],
-    width: number,
-    height: number,
-    infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean }
+    position: [number, number, number];
+    rotation: [number, number, number, number];
+    width: number;
+    height: number;
+    infinite?: { top: boolean; right: boolean; bottom: boolean; left: boolean };
 };
 
 // Localized default messages, keyed by primary language subtag. Mirrors the
@@ -144,14 +144,16 @@ const buildOffLimitsZonesInjection = (zones: ZoneLike[], message: string): strin
     // Escape characters unsafe inside an HTML <script> context so the payload
     // cannot break out of the injected script tag (mirrors annotation-links.ts).
     const payloadJson = JSON.stringify(payload)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
-    return `<style>${companionStyle}</style>` +
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+    return (
+        `<style>${companionStyle}</style>` +
         `<script>window.__supersplatOffLimitsZones = ${payloadJson};</script>` +
-        `<script>${companionRuntime}</script>`;
+        `<script>${companionRuntime}</script>`
+    );
 };
 
 export { buildOffLimitsZonesInjection, resolveOffLimitsMessage, DEFAULT_MESSAGES };

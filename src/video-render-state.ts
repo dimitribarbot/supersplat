@@ -1,6 +1,6 @@
 import { Vec3 } from 'playcanvas';
 
-import { Events } from './events';
+import type { Events } from './events';
 
 // Force the portal walkthrough on for the duration of a video render.
 //
@@ -40,7 +40,7 @@ const withWalkthrough = async <T>(events: Events, render: () => Promise<T>): Pro
 
     const soloWas = !!events.invoke('scene.solo.active');
     const selectionWas = events.invoke('selection') ?? null;
-    const visibleWas = new Map(splats().map(s => [s.uid, s.visible]));
+    const visibleWas = new Map(splats().map((s) => [s.uid, s.visible]));
 
     events.fire('portals.walkthrough.set', true);
 
@@ -82,8 +82,11 @@ const withWalkthrough = async <T>(events: Events, render: () => Promise<T>): Pro
 //
 // speed 0 means no fly-to tween: the editor should simply be where it was.
 const withVideoRenderState = async <T>(events: Events, render: () => Promise<T>): Promise<T> => {
-    const cameraWas = events.invoke('camera.getPose') as
-        { position: { x: number, y: number, z: number }, target: { x: number, y: number, z: number }, fov: number } | null;
+    const cameraWas = events.invoke('camera.getPose') as {
+        position: { x: number; y: number; z: number };
+        target: { x: number; y: number; z: number };
+        fov: number;
+    } | null;
 
     // Freeze the on-screen view FIRST — before any state changes — and reveal it
     // LAST. Two separate things would otherwise be visible: the walkthrough/solo
@@ -97,11 +100,15 @@ const withVideoRenderState = async <T>(events: Events, render: () => Promise<T>)
         return await withWalkthrough(events, render);
     } finally {
         if (cameraWas) {
-            events.fire('camera.setPose', {
-                position: new Vec3(cameraWas.position.x, cameraWas.position.y, cameraWas.position.z),
-                target: new Vec3(cameraWas.target.x, cameraWas.target.y, cameraWas.target.z),
-                fov: cameraWas.fov
-            }, 0);
+            events.fire(
+                'camera.setPose',
+                {
+                    position: new Vec3(cameraWas.position.x, cameraWas.position.y, cameraWas.position.z),
+                    target: new Vec3(cameraWas.target.x, cameraWas.target.y, cameraWas.target.z),
+                    fov: cameraWas.fov
+                },
+                0
+            );
         }
 
         // after the camera restore, so the reveal never shows the render's

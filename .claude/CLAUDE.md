@@ -13,7 +13,8 @@ Run from the repo root (front-end app):
 - `npm run build` — production build via Rollup → `dist/` (default `BUILD_TYPE=release`).
 - `npm run watch` — rebuild on change (no HMR; refresh the browser manually).
 - `npm run develop` — debug build (`BUILD_TYPE=debug`) + static server on **http://localhost:3333**. Use this for pure front-end work.
-- `npm run lint` — ESLint over `src` (`eslint src`).
+- `npm run lint` / `npm run lint:fix` — ESLint over `src` plus the root config files.
+- `npm run fmt` / `npm run fmt:fix` — Prettier check / write over the same set (upstream CI runs `fmt` then `lint`).
 - `npm run test` — Vitest (`test/**/*.test.ts`, Node environment), then upstream's Node harness (`tsc -p test/tsconfig.json` emits `src` to `test/.build`, then `test/queue-ordering.mjs` runs). Upstream's other harnesses (`test/editor-commands.mjs`, `test/webmcp.mjs`) run with `node --import ./test/register.mjs <file>` after that emit.
 - Single test: `npx vitest run test/portals.test.ts` (or `npx vitest run -t "<name>"` to filter by test name; drop `run` to watch).
 
@@ -30,7 +31,6 @@ Note: there is no root vitest config; the server has its own (`server/vitest.con
 ## Environment notes (from project memory)
 
 - Prefer Bash (Git Bash) over PowerShell for git/npm/npx. Run commands plainly — no `cd`/`git -C`/`npm --prefix` pointing at the cwd (triggers permission prompts).
-- ESLint is pinned to v10 and **crashes on `import/order` autofix**; don't re-attempt import-x reordering. Leave import ordering as-is.
 - Never `rm package-lock.json` to apply a dependency change on Windows — it prunes cross-platform binaries. Use targeted `npm install <pkg>`.
 
 ## Architecture
@@ -99,4 +99,4 @@ These have their own design docs and session hand-off memos under `docs/superpow
 ## TypeScript / lint config
 
 - `tsconfig.json`: `strictNullChecks: false`, `strictPropertyInitialization: false`, `noImplicitAny: true`, bundler resolution, targets ES2022 + DOM + WebWorker. `src/debug.ts` is excluded (test scratch file).
-- ESLint extends `@playcanvas/eslint-config`; `no-explicit-any`, `no-unused-vars`, and most jsdoc rules are turned off. Match the surrounding import ordering and style rather than reformatting.
+- ESLint is upstream's `@playcanvas/eslint-config/typescript` (v3) and formatting is Prettier (`prettier.config.mjs`); `no-explicit-any`, `no-unused-vars` and `no-empty-function` are errors. Use real types or `unknown` rather than `any`; `events.invoke` of a function not listed in `events.ts`'s `Results` returns `unknown`, so pass a type parameter (`events.invoke<number>('portals.count')`).

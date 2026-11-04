@@ -1,11 +1,13 @@
-import { Mat4, Vec3 } from 'playcanvas';
+import type { Mat4 } from 'playcanvas';
+import { Vec3 } from 'playcanvas';
 
 import { ElementType } from './element';
-import { Events } from './events';
-import { PortalRect, resolveActiveSplat } from './portal-geom';
-import { PortalData } from './portals';
-import { Scene } from './scene';
-import { Splat } from './splat';
+import type { Events } from './events';
+import type { PortalRect } from './portal-geom';
+import { resolveActiveSplat } from './portal-geom';
+import type { PortalData } from './portals';
+import type { Scene } from './scene';
+import type { Splat } from './splat';
 
 // Drives the in-editor multi-scene walkthrough. While walkthrough mode is on,
 // only one splat is visible at a time; crossing a portal rectangle swaps which.
@@ -34,7 +36,7 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
 
     const buildRects = () => {
         const data = events.invoke('portals.list') as PortalData[];
-        rects = data.map(p => ({
+        rects = data.map((p) => ({
             position: p.position,
             rotation: p.rotation,
             width: p.width,
@@ -50,9 +52,9 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
         havePrev = false;
         snapshot.clear();
         const list = splats();
-        list.forEach(s => snapshot.set(s.uid, s.visible));
+        list.forEach((s) => snapshot.set(s.uid, s.visible));
         const start = events.invoke('portals.startSplat') as number | null;
-        activeUid = (start !== null && list.some(s => s.uid === start)) ? start : (list[0]?.uid ?? null);
+        activeUid = start !== null && list.some((s) => s.uid === start) ? start : (list[0]?.uid ?? null);
         applyVisibility();
         buildRects();
     };
@@ -98,8 +100,12 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
         }
         const cur = cameraWorldTransform.getTranslation(curVec);
         if (havePrev) {
-            prevTuple[0] = prev.x; prevTuple[1] = prev.y; prevTuple[2] = prev.z;
-            curTuple[0] = cur.x; curTuple[1] = cur.y; curTuple[2] = cur.z;
+            prevTuple[0] = prev.x;
+            prevTuple[1] = prev.y;
+            prevTuple[2] = prev.z;
+            curTuple[0] = cur.x;
+            curTuple[1] = cur.y;
+            curTuple[2] = cur.z;
             const newUid = resolveActiveSplat(prevTuple, curTuple, rects, activeUid);
             if (newUid !== activeUid) {
                 activeUid = newUid;

@@ -1,6 +1,5 @@
 import {
     bakeTransform,
-    DataTable,
     dataTableToChunkSource,
     logger as splatTransformLogger,
     MemoryFileSystem,
@@ -11,19 +10,30 @@ import {
     writeLodSource,
     writeSog,
     writeVoxel,
-    ZipFileSystem,
-    type ChunkSource,
-    type DeviceCreator,
-    type FileSystem,
-    type LogEvent,
-    type Renderer
+    ZipFileSystem
+} from '@playcanvas/splat-transform';
+import type {
+    DataTable,
+    ChunkSource,
+    DeviceCreator,
+    FileSystem,
+    LogEvent,
+    Renderer
 } from '@playcanvas/splat-transform';
 
-import { collisionSeedFromSettings, collisionVoxelOptions, seedToPlySpace, subsetRowsWithinRadius, voxelResolutionLadder, type CollisionEnvironment } from './collision-voxel-options';
-import { Events } from './events';
+import {
+    collisionSeedFromSettings,
+    collisionVoxelOptions,
+    seedToPlySpace,
+    subsetRowsWithinRadius,
+    voxelResolutionLadder
+} from './collision-voxel-options';
+import type { CollisionEnvironment } from './collision-voxel-options';
+import type { Events } from './events';
 import { buildAnnotationI18nInjection } from './viewer-companion/annotation-i18n';
 import { buildAnnotationLinksInjection } from './viewer-companion/annotation-links';
-import { injectBrand, injectBrandJs, type BrandInput } from './viewer-companion/brand';
+import { injectBrand, injectBrandJs } from './viewer-companion/brand';
+import type { BrandInput } from './viewer-companion/brand';
 import { buildDeviceFallbackInjection } from './viewer-companion/device-fallback';
 import { buildEarlyLodClampInjection } from './viewer-companion/early-lod-clamp';
 import { buildIframeApiInjection } from './viewer-companion/iframe-api';
@@ -33,6 +43,7 @@ import { buildPortalsInjection } from './viewer-companion/portals';
 import { injectPoster } from './viewer-companion/poster';
 import { patchViewerBootstrap } from './viewer-companion/viewer-bootstrap';
 import { buildViewerLangInjection } from './viewer-companion/viewer-lang';
+import type { AnnotationJson, ViewerSettingsJson } from './viewer-companion/viewer-settings-json';
 import { patchViewerEngine, VIEWER_ENGINE_PATCH_COUNT } from './viewer-engine-patch';
 
 // Apply the fork's viewer patches (see viewer-engine-patch.ts) to the viewer
@@ -46,10 +57,14 @@ const patchEngineLoaderInMemFs = (memFs: { results: Map<string, Uint8Array> }): 
     }
     const { source, patched, handlePublished } = patchViewerEngine(new TextDecoder().decode(raw));
     if (!handlePublished) {
-        throw new Error('Viewer export failed: could not publish the viewer handle (the bundled supersplat-viewer changed shape)');
+        throw new Error(
+            'Viewer export failed: could not publish the viewer handle (the bundled supersplat-viewer changed shape)'
+        );
     }
     if (patched < VIEWER_ENGINE_PATCH_COUNT) {
-        console.warn(`Viewer engine patch: ${patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`);
+        console.warn(
+            `Viewer engine patch: ${patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`
+        );
     }
     if (patched > 0) {
         memFs.results.set('index.js', new TextEncoder().encode(source));
@@ -79,7 +94,7 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
 // memFs null (single-file HTML) -> inline as a data URI.
 const applyPoster = (
     html: string,
-    viewerSettingsJson: any,
+    viewerSettingsJson: ViewerSettingsJson,
     posterBytes: Uint8Array | undefined,
     memFs: { results: Map<string, Uint8Array> } | null
 ): string => {
@@ -110,11 +125,7 @@ type Brand = BrandInput & {
     files: { filename: string; data: Uint8Array }[];
 };
 
-const applyBrand = (
-    html: string,
-    brand: Brand | undefined,
-    memFs: { results: Map<string, Uint8Array> }
-): string => {
+const applyBrand = (html: string, brand: Brand | undefined, memFs: { results: Map<string, Uint8Array> }): string => {
     if (!brand) {
         return html;
     }
@@ -147,17 +158,19 @@ const applyAnnotationImages = (
     });
 };
 
+type AnnotationI18n = NonNullable<AnnotationJson['extras']>['i18n'];
+
 // Drops the `captions` array from every language entry of an annotation's
 // `extras.i18n` (the images that array is aligned to no longer ship), and
 // removes any language entry that this leaves empty -- a translation with
 // nothing left to say costs nothing.
-const stripAnnotationI18nCaptions = (i18n: any): any => {
+const stripAnnotationI18nCaptions = (i18n: AnnotationI18n | undefined): AnnotationI18n | undefined => {
     if (!i18n) {
         return undefined;
     }
-    const out: Record<string, any> = {};
+    const out: AnnotationI18n = {};
     Object.keys(i18n).forEach((code) => {
-        const { captions, ...rest } = i18n[code] ?? {};
+        const { captions: _captions, ...rest } = i18n[code] ?? {};
         if (Object.keys(rest).length > 0) {
             out[code] = rest;
         }
@@ -177,17 +190,17 @@ const stripAnnotationI18nCaptions = (i18n: any): any => {
 // injection time would be too late; this runs before writeHtml. Applied inside
 // writeViewerCore so the browser and the Node export server are covered by one
 // insertion point.
-const stripHtmlGalleries = (viewerSettingsJson: any): any => {
+const stripHtmlGalleries = (viewerSettingsJson: ViewerSettingsJson): ViewerSettingsJson => {
     if (!viewerSettingsJson?.annotations?.length) {
         return viewerSettingsJson;
     }
     return {
         ...viewerSettingsJson,
-        annotations: viewerSettingsJson.annotations.map((a: any) => (
-            a?.extras?.images ?
-                { ...a, extras: { ...a.extras, images: undefined, i18n: stripAnnotationI18nCaptions(a.extras.i18n) } } :
-                a
-        ))
+        annotations: viewerSettingsJson.annotations.map((a) =>
+            a?.extras?.images
+                ? { ...a, extras: { ...a.extras, images: undefined, i18n: stripAnnotationI18nCaptions(a.extras.i18n) } }
+                : a
+        )
     };
 };
 
@@ -204,9 +217,7 @@ const stripHtmlGalleries = (viewerSettingsJson: any): any => {
 // or garbled export produced silently. Passing a replacer FUNCTION sidesteps
 // this: its return value is inserted verbatim, with no pattern semantics.
 const insertBeforeBodyClose = (html: string, injection: string): string => {
-    return html.includes('</body>') ?
-        html.replace('</body>', () => `${injection}</body>`) :
-        html + injection;
+    return html.includes('</body>') ? html.replace('</body>', () => `${injection}</body>`) : html + injection;
 };
 
 // Inject the shared language runtime into an HTML string before </body>.
@@ -223,7 +234,7 @@ const injectViewerLang = (html: string): string => {
 
 // Inject the annotation-link companion into an HTML string before </body>.
 // No-op (returns the input) when there are no annotation links.
-const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string => {
+const injectAnnotationLinks = (html: string, viewerSettingsJson: ViewerSettingsJson): string => {
     const injection = buildAnnotationLinksInjection(viewerSettingsJson?.annotations ?? []);
     if (!injection) {
         return html;
@@ -238,7 +249,7 @@ const injectAnnotationLinks = (html: string, viewerSettingsJson: any): string =>
 // Chain position: this must run BEFORE nothing in particular -- it polls for
 // the viewer handle like every other companion -- but it must be present on
 // every path that carries annotations, which is both of them.
-const injectAnnotationI18n = (html: string, viewerSettingsJson: any): string => {
+const injectAnnotationI18n = (html: string, viewerSettingsJson: ViewerSettingsJson): string => {
     const injection = buildAnnotationI18nInjection(viewerSettingsJson?.annotations ?? []);
     if (!injection) {
         return html;
@@ -252,7 +263,7 @@ const injectAnnotationI18n = (html: string, viewerSettingsJson: any): string => 
 // an empty list rather than silence. It needs no bootstrap soft-replace of its
 // own -- the engine patch publishes window.__supersplatViewer -- and the
 // runtime polls for that handle, so chain position does not matter.
-const injectIframeApi = (html: string, viewerSettingsJson: any): string => {
+const injectIframeApi = (html: string, viewerSettingsJson: ViewerSettingsJson): string => {
     const injection = buildIframeApiInjection(viewerSettingsJson?.annotations ?? []);
     return insertBeforeBodyClose(html, injection);
 };
@@ -293,7 +304,7 @@ const injectLoadingBar = (html: string): string => {
 
 // Inject the off-limits-zones companion into an HTML string before </body>.
 // No-op (returns the input) when there are no zones.
-const injectOffLimitsZones = (html: string, viewerSettingsJson: any): string => {
+const injectOffLimitsZones = (html: string, viewerSettingsJson: ViewerSettingsJson): string => {
     const injection = buildOffLimitsZonesInjection(
         viewerSettingsJson?.offLimitsZones ?? [],
         viewerSettingsJson?.offLimitsMessage ?? ''
@@ -306,7 +317,7 @@ const injectOffLimitsZones = (html: string, viewerSettingsJson: any): string => 
 
 // Inject the portals companion into an HTML string before </body>.
 // No-op (returns the input) when there are no portals.
-const injectPortals = (html: string, viewerSettingsJson: any): string => {
+const injectPortals = (html: string, viewerSettingsJson: ViewerSettingsJson): string => {
     const injection = buildPortalsInjection(viewerSettingsJson);
     if (!injection) {
         return html;
@@ -336,15 +347,27 @@ type PhaseInfo = { key: string; params?: Record<string, string | number>; en: st
 // prefix (including any "Scene i/N" part) preserved verbatim for the server/log path;
 // the browser rebuilds a localized version from `scene` + `key`/`params`. `key` is
 // omitted for scene-only prefixes (the package path, which has no phase label).
-type ProgressPrefix = { en: string; key?: string; params?: Record<string, string | number>; scene?: { index: number; total: number } };
+type ProgressPrefix = {
+    en: string;
+    key?: string;
+    params?: Record<string, string | number>;
+    scene?: { index: number; total: number };
+};
 
 // Phase-label descriptors. English lives here (single source for the server/log
 // path, which never loads a locale file); the matching i18n keys live in the locale
 // JSONs for the browser. Keep the two in sync when adding a phase.
 const PHASES = {
     preparingViewer: (): PhaseInfo => ({ key: 'export.progress.preparing-viewer', en: 'Preparing viewer' }),
-    generatingCollision: (): PhaseInfo => ({ key: 'export.progress.generating-collision', en: 'Generating collision data' }),
-    buildingLod: (level: number, levelCount: number): PhaseInfo => ({ key: 'export.progress.building-lod', params: { level, levelCount }, en: `Building detail level ${level} of ${levelCount}` }),
+    generatingCollision: (): PhaseInfo => ({
+        key: 'export.progress.generating-collision',
+        en: 'Generating collision data'
+    }),
+    buildingLod: (level: number, levelCount: number): PhaseInfo => ({
+        key: 'export.progress.building-lod',
+        params: { level, levelCount },
+        en: `Building detail level ${level} of ${levelCount}`
+    }),
     packagingChunks: (): PhaseInfo => ({ key: 'export.progress.packaging-chunks', en: 'Packaging streaming chunks' })
 };
 
@@ -369,7 +392,13 @@ const withScene = (info: PhaseInfo, scene?: { index: number; total: number }): P
 // would wipe our text -- so re-open it ourselves first. Re-firing progressStart is
 // what the library's own depth-0 scopes do on every writer, so this is not a new
 // pattern; the server path (file-handler.ts) keeps one dialog open regardless.
-const fireExtracting = (events: Events | undefined, index: number, total: number, header: string, headerKey: string): void => {
+const fireExtracting = (
+    events: Events | undefined,
+    index: number,
+    total: number,
+    header: string,
+    headerKey: string
+): void => {
     events?.fire('progressStart', header, undefined, headerKey);
     events?.fire('progressUpdate', {
         text: `Scene ${index}/${total}: Extracting scene data`,
@@ -391,49 +420,49 @@ const fireExtracting = (events: Events | undefined, index: number, total: number
 // export.step.* locale keys. GPU / non-GPU label variants share one key.
 const LIBRARY_STEP_KEYS: Record<string, string> = {
     'Allocating output table': 'export.step.allocating-output-table',
-    'BFS': 'export.step.bfs',
+    BFS: 'export.step.bfs',
     'Build voxels': 'export.step.build-voxels',
     'Building BVH': 'export.step.building-bvh',
     'Building grid': 'export.step.building-grid',
     'Building per-splat cache': 'export.step.building-per-splat-cache',
     'Building tree': 'export.step.building-tree',
-    'Carve': 'export.step.carve',
-    'chunking': 'export.step.chunking',
+    Carve: 'export.step.carve',
+    chunking: 'export.step.chunking',
     'Collision mesh': 'export.step.collision-mesh',
     'Column walk': 'export.step.column-walk',
-    'Combining': 'export.step.combining',
+    Combining: 'export.step.combining',
     'Computing edge costs': 'export.step.computing-edge-costs',
     'Computing edge costs (GPU)': 'export.step.computing-edge-costs',
     'computing merge priorities': 'export.step.computing-merge-priorities',
     'Copying kept splats': 'export.step.copying-kept-splats',
-    'Cropping': 'export.step.cropping',
+    Cropping: 'export.step.cropping',
     'Cropping grid': 'export.step.cropping-grid',
-    'Cull': 'export.step.cull',
+    Cull: 'export.step.cull',
     'Decimate generation': 'export.step.decimate-generation',
-    'decoding': 'export.step.decoding',
-    'Dilating': 'export.step.dilating',
-    'Encoding': 'export.step.encoding',
-    'Extracting': 'export.step.extracting',
+    decoding: 'export.step.decoding',
+    Dilating: 'export.step.dilating',
+    Encoding: 'export.step.encoding',
+    Extracting: 'export.step.extracting',
     'Extracting voxel faces': 'export.step.extracting-voxel-faces',
     'Fill exterior': 'export.step.fill-exterior',
     'Fill floor': 'export.step.fill-floor',
-    'Filtering': 'export.step.filtering',
+    Filtering: 'export.step.filtering',
     'Finding nearest neighbors': 'export.step.finding-nearest-neighbors',
     'Finding nearest neighbors (GPU)': 'export.step.finding-nearest-neighbors',
     'k-means': 'export.step.k-means',
     'Loading grid': 'export.step.loading-grid',
-    'merging': 'export.step.merging',
+    merging: 'export.step.merging',
     'Merging coplanar faces': 'export.step.merging-coplanar-faces',
     'Merging splats': 'export.step.merging-splats',
-    'Partitioning': 'export.step.partitioning',
-    'rasterizing': 'export.step.rasterizing',
+    Partitioning: 'export.step.partitioning',
+    rasterizing: 'export.step.rasterizing',
     'reading positions': 'export.step.reading-positions',
-    'Render': 'export.step.render',
+    Render: 'export.step.render',
     'Scanning bounds': 'export.step.scanning-bounds',
     'Selecting merges': 'export.step.selecting-merges',
     'Selecting pairs': 'export.step.selecting-pairs',
-    'Voxelizing': 'export.step.voxelizing',
-    'Writing': 'export.step.writing'
+    Voxelizing: 'export.step.voxelizing',
+    Writing: 'export.step.writing'
 };
 
 // Bundle a library step name with its i18n key (if known) for the progress `loc`.
@@ -451,7 +480,15 @@ const nameLoc = (name: string): { name: string; nameKey?: string } => {
 // splat-transform step name) so the browser can localize the sub-line while `text`
 // stays English. Keeping both leaves output bytes and the parity guarantee untouched
 // (progress is UI-only).
-const createProgressRenderer = (header: string, events?: Events, getPrefix?: () => ProgressPrefix | undefined, countSteps?: () => boolean, onLog?: (level: string, text: string) => void, shouldCancel?: () => boolean, headerKey?: string): Renderer => {
+const createProgressRenderer = (
+    header: string,
+    events?: Events,
+    getPrefix?: () => ProgressPrefix | undefined,
+    countSteps?: () => boolean,
+    onLog?: (level: string, text: string) => void,
+    shouldCancel?: () => boolean,
+    headerKey?: string
+): Renderer => {
     // Active scopes carrying a counter, ordered outermost-first. The outermost
     // is the meaningful unit (e.g. the chunk number during packaging); inner SOG
     // sub-steps are ignored so the count stays stable across a unit. The counter
@@ -464,7 +501,7 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
     // English line (server/SSE/log + browser fallback); `loc` carries the structured
     // parts so the browser can localize (see the progressUpdate handler in editor.ts).
     // `name` is splat-transform's own step label and stays English in both paths.
-    const stepUpdate = (name: string): { text: string; progress: number; loc?: any } => {
+    const stepUpdate = (name: string): { text: string; progress: number; loc?: unknown } => {
         const prefix = getPrefix?.();
         const counter = countSteps?.() ? counters[0] : undefined;
         const counterStr = counter ? ` (${counter.index}/${counter.total})` : '';
@@ -477,7 +514,10 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
         // (if any) first, then the phase label (absent for scene-only prefixes).
         const segments: { key: string; params?: Record<string, string | number> }[] = [];
         if (prefix.scene) {
-            segments.push({ key: 'export.progress.scene', params: { index: prefix.scene.index, total: prefix.scene.total } });
+            segments.push({
+                key: 'export.progress.scene',
+                params: { index: prefix.scene.index, total: prefix.scene.total }
+            });
         }
         if (prefix.key) {
             segments.push({ key: prefix.key, params: prefix.params });
@@ -485,7 +525,11 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
         return {
             text: `${prefix.en}${counterStr}: ${name}`,
             progress: 0,
-            loc: { segments, counter: counter ? { index: counter.index, total: counter.total } : undefined, ...nameLoc(name) }
+            loc: {
+                segments,
+                counter: counter ? { index: counter.index, total: counter.total } : undefined,
+                ...nameLoc(name)
+            }
         };
     };
 
@@ -496,7 +540,10 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
             // library's logger emits these synchronously from inside its work
             // loops and does not catch renderer exceptions). Never throw on
             // scope/bar *end* events, which also fire during unwind cleanup.
-            if (shouldCancel?.() && (event.kind === 'scopeStart' || event.kind === 'barStart' || event.kind === 'barTick')) {
+            if (
+                shouldCancel?.() &&
+                (event.kind === 'scopeStart' || event.kind === 'barStart' || event.kind === 'barTick')
+            ) {
                 throw new Error('export cancelled');
             }
             switch (event.kind) {
@@ -514,7 +561,12 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
                         events?.fire('progressUpdate', {
                             text: `Step ${event.index} of ${event.total}: ${event.name}`,
                             progress: 0,
-                            loc: { segments: [{ key: 'export.progress.step', params: { index: event.index, total: event.total } }], ...nameLoc(event.name) }
+                            loc: {
+                                segments: [
+                                    { key: 'export.progress.step', params: { index: event.index, total: event.total } }
+                                ],
+                                ...nameLoc(event.name)
+                            }
                         });
                     } else {
                         events?.fire('progressUpdate', { text: event.name, progress: 0, loc: nameLoc(event.name) });
@@ -533,7 +585,7 @@ const createProgressRenderer = (header: string, events?: Events, getPrefix?: () 
                     break;
                 case 'barTick':
                     events?.fire('progressUpdate', {
-                        progress: event.total > 0 ? 100 * event.current / event.total : 0
+                        progress: event.total > 0 ? (100 * event.current) / event.total : 0
                     });
                     break;
                 case 'barEnd':
@@ -603,16 +655,18 @@ const buildStreamingLodSource = async (
             break;
         }
         onPhase?.(PHASES.buildingLod(level, levelCount));
-        const simplified = await processDataTable(prev, [{ kind: 'decimate', count: target, percent: null }], { createDevice });
+        const simplified = await processDataTable(prev, [{ kind: 'decimate', count: target, percent: null }], {
+            createDevice
+        });
         levels.push(simplified);
         prev = simplified;
         if (target < MIN_LOD_SPLATS) {
-            break;  // current level dropped below the floor: terminal level
+            break; // current level dropped below the floor: terminal level
         }
         level++;
     }
 
-    const levelCounts = levels.map(l => l.numRows);
+    const levelCounts = levels.map((l) => l.numRows);
     // v3 writeLodSource wants a STRUCTURAL multi-LOD source (LOD i = detail level i),
     // not a `lod`-tagged flat table. Each decimated level is one single-LOD source;
     // stack them. lod0 is tagged Transform.PLY, but v3's decimate bakes each
@@ -621,7 +675,7 @@ const buildStreamingLodSource = async (
     // before stacking: a no-op for lod0, and the IDENTITY->PLY delta for the
     // decimated levels, so all levels share Transform.PLY and stackLods' match
     // assertion holds. writeLodSource then bakes PLY (fast-path no-op).
-    const mainSource = stackLods(levels.map(l => bakeTransform(dataTableToChunkSource(l), Transform.PLY)));
+    const mainSource = stackLods(levels.map((l) => bakeTransform(dataTableToChunkSource(l), Transform.PLY)));
     return { mainSource, levelCounts };
 };
 
@@ -638,7 +692,7 @@ const COLLISION_VOXEL_FLOOR = 0.4;
 const writeCollisionVoxel = async (
     memFs: MemoryFileSystem,
     dataTable: DataTable,
-    viewerSettingsJson: any,
+    viewerSettingsJson: ViewerSettingsJson,
     createDevice: DeviceCreator,
     collision: { environment: CollisionEnvironment; radius?: number; voxelSize?: number }
 ): Promise<void> => {
@@ -664,27 +718,34 @@ const writeCollisionVoxel = async (
     for (let i = 0; i < ladder.length; i++) {
         const voxelResolution = ladder[i];
         try {
-            await writeVoxel({
-                filename: 'index.voxel.json',
-                dataTable: subset,
-                voxelResolution,
-                opacityCutoff: 0.1,
-                createDevice,
-                ...collisionVoxelOptions(collision.environment, seed)
-            }, memFs);
+            await writeVoxel(
+                {
+                    filename: 'index.voxel.json',
+                    dataTable: subset,
+                    voxelResolution,
+                    opacityCutoff: 0.1,
+                    createDevice,
+                    ...collisionVoxelOptions(collision.environment, seed)
+                },
+                memFs
+            );
             return;
         } catch (err) {
             if (i < ladder.length - 1) {
-                console.warn(`Collision voxelization failed at ${voxelResolution} m voxels (${(err as Error)?.message ?? err}); retrying at ${ladder[i + 1]} m.`);
+                console.warn(
+                    `Collision voxelization failed at ${voxelResolution} m voxels (${(err as Error)?.message ?? err}); retrying at ${ladder[i + 1]} m.`
+                );
                 continue;
             }
             // Final rung: log the exact underlying error for diagnosis, then
             // surface an actionable summary.
             console.error('Collision voxelization failed (underlying error):', err);
-            if ((err as any)?.cause !== undefined) {
-                console.error('  cause:', (err as any).cause);
+            if ((err as { cause?: unknown })?.cause !== undefined) {
+                console.error('  cause:', (err as { cause?: unknown }).cause);
             }
-            throw new Error(`Collision generation failed - the region is still too large to voxelize at ${voxelResolution} m voxels. Reduce the collision radius or increase the voxel size. (${(err as Error)?.message ?? err})`);
+            throw new Error(
+                `Collision generation failed - the region is still too large to voxelize at ${voxelResolution} m voxels. Reduce the collision radius or increase the voxel size. (${(err as Error)?.message ?? err})`
+            );
         }
     }
 };
@@ -742,24 +803,30 @@ const writePortalScene = async (
     }
     if (scene.streaming) {
         const { mainSource, levelCounts } = await buildStreamingLodSource(dataTable, createDevice, (info) => {
-            onPhase?.(info, false);   // decimation passes carry their level in the label
+            onPhase?.(info, false); // decimation passes carry their level in the label
         });
         counts = levelCounts;
         onPhase?.(PHASES.packagingChunks(), true);
-        await writeLodSource({
-            filename: '/lod-meta.json',
-            mainSource,
-            envSource: null,
-            iterations: 10,
-            createDevice,
-            chunkCount: 512,
-            chunkExtent: 16
-        }, sub);
+        await writeLodSource(
+            {
+                filename: '/lod-meta.json',
+                mainSource,
+                envSource: null,
+                iterations: 10,
+                createDevice,
+                chunkCount: 512,
+                chunkExtent: 16
+            },
+            sub
+        );
         // Release the stacked per-level sources so the decimated LOD chain is
         // collectable before the namespacing pass (the CLI closes here too).
         await mainSource.close();
     } else {
-        await writeSog({ filename: 'scene.sog', dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' }, sub);
+        await writeSog(
+            { filename: 'scene.sog', dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' },
+            sub
+        );
     }
     // Namespace every emitted key under scenes/<index>/
     for (const [name, data] of sub.results.entries()) {
@@ -778,10 +845,12 @@ const repointCollisionUrl = (memFs: MemoryFileSystem): void => {
         throw new Error('Collision export failed: writeHtml did not produce index.html');
     }
     const html = new TextDecoder().decode(rawHtml);
-    const search = 'url.searchParams.get(\'collision\') ?? url.searchParams.get(\'voxel\')';
+    const search = "url.searchParams.get('collision') ?? url.searchParams.get('voxel')";
     const repointed = html.replace(search, `${search} ?? './index.voxel.json'`);
     if (repointed === html) {
-        throw new Error('Collision export failed: could not repoint viewer collisionUrl (writeHtml output format changed)');
+        throw new Error(
+            'Collision export failed: could not repoint viewer collisionUrl (writeHtml output format changed)'
+        );
     }
     memFs.results.set('index.html', new TextEncoder().encode(repointed));
 };
@@ -794,12 +863,13 @@ const repointCollisionUrl = (memFs: MemoryFileSystem): void => {
 // `(annotationImages ?? []).forEach is not a function` deep inside a GPU
 // export. Named fields make that class of mistake unrepresentable.
 //
-// viewerSettingsJson is typed `any` here to avoid a circular import with
-// splat-serialize.ts (which owns the ExperienceSettings type). The browser
+// viewerSettingsJson is the structural ViewerSettingsJson here to avoid a
+// circular import with splat-serialize.ts (which owns the ExperienceSettings
+// type). The browser
 // wrapper in splat-serialize.ts retains the strong ExperienceSettings type.
 type ViewerCoreOptions = {
     dataTable: DataTable;
-    viewerSettingsJson: any;
+    viewerSettingsJson: ViewerSettingsJson;
     viewerType: 'html' | 'package' | 'streaming';
     createDevice: DeviceCreator;
     fs: FileSystem;
@@ -820,7 +890,20 @@ type ViewerCoreOptions = {
 // Module-private: only called by writeViewerCore, which hands its own options
 // straight through (viewerType is always 'streaming' here and goes unread).
 const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
-    const { dataTable, viewerSettingsJson, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, brand, annotationImages } = options;
+    const {
+        dataTable,
+        viewerSettingsJson,
+        createDevice,
+        fs,
+        events,
+        onLog,
+        shouldCancel,
+        collision,
+        extraScenes,
+        posterBytes,
+        brand,
+        annotationImages
+    } = options;
     // Phase label prefixed onto splat-transform's low-level progress steps so
     // the repeated decimation and chunk-compression passes read clearly.
     // `counted` enables the splat-transform per-unit counter (chunk number)
@@ -832,7 +915,17 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     // (which carry "Scene 2/N: …" etc.). No prefix for a single-scene export.
     const total = 1 + (extraScenes?.length ?? 0);
     const primaryScene = total > 1 ? { index: 1, total } : undefined;
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting streaming viewer', events, () => phase, () => counted, onLog, shouldCancel, 'export.progress.exporting-streaming'));
+    splatTransformLogger.setRenderer(
+        createProgressRenderer(
+            'Exporting streaming viewer',
+            events,
+            () => phase,
+            () => counted,
+            onLog,
+            shouldCancel,
+            'export.progress.exporting-streaming'
+        )
+    );
 
     const memFs = new MemoryFileSystem();
 
@@ -840,14 +933,17 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     // produce (we only want its index.html/css/js/settings.json shell).
     phase = withScene(PHASES.preparingViewer(), primaryScene);
     const placeholder = dataTable.clone({ rows: [0] });
-    await writeHtml({
-        filename: 'index.html',
-        dataTable: placeholder,
-        viewerSettingsJson,
-        bundle: false,
-        iterations: 10,
-        createDevice
-    }, memFs);
+    await writeHtml(
+        {
+            filename: 'index.html',
+            dataTable: placeholder,
+            viewerSettingsJson,
+            bundle: false,
+            iterations: 10,
+            createDevice
+        },
+        memFs
+    );
 
     // Voxelize the full-resolution table now, before buildStreamingLodSource
     // consumes/mutates it.
@@ -859,29 +955,36 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     // Streaming bundle: lod-meta.json + per-LOD SOG chunk folders. Decimation's
     // per-pass count is an estimate, so the level number lives in the label and
     // the per-step counter stays off here.
-    const { mainSource, levelCounts: primaryLodCounts } = await buildStreamingLodSource(dataTable, createDevice, (info) => {
-        phase = withScene(info, primaryScene);
-    });
+    const { mainSource, levelCounts: primaryLodCounts } = await buildStreamingLodSource(
+        dataTable,
+        createDevice,
+        (info) => {
+            phase = withScene(info, primaryScene);
+        }
+    );
 
     // Chunk packaging emits one accurate {index,total} per chunk - surface it.
     phase = withScene(PHASES.packagingChunks(), primaryScene);
     counted = true;
-    await writeLodSource({
-        // Absolute root so splat-transform's pathe `resolve(outputDir, ...)` for
-        // each per-LOD chunk short-circuits on the absolute base instead of
-        // prepending the process CWD. On Node a relative 'lod-meta.json' would
-        // resolve chunk paths against process.cwd() (e.g. C:/.../server/0_0/...),
-        // leaking the server's working directory into the ZIP entry names; the
-        // leading '/' yields the same '/'-rooted keys the browser already
-        // produces, which are normalised to relative entries below.
-        filename: '/lod-meta.json',
-        mainSource,
-        envSource: null,
-        iterations: 10,
-        createDevice,
-        chunkCount: 512,   // ~gaussians per chunk, in thousands (splat-transform default)
-        chunkExtent: 16    // ~chunk size in world units / metres (splat-transform default)
-    }, memFs);
+    await writeLodSource(
+        {
+            // Absolute root so splat-transform's pathe `resolve(outputDir, ...)` for
+            // each per-LOD chunk short-circuits on the absolute base instead of
+            // prepending the process CWD. On Node a relative 'lod-meta.json' would
+            // resolve chunk paths against process.cwd() (e.g. C:/.../server/0_0/...),
+            // leaking the server's working directory into the ZIP entry names; the
+            // leading '/' yields the same '/'-rooted keys the browser already
+            // produces, which are normalised to relative entries below.
+            filename: '/lod-meta.json',
+            mainSource,
+            envSource: null,
+            iterations: 10,
+            createDevice,
+            chunkCount: 512, // ~gaussians per chunk, in thousands (splat-transform default)
+            chunkExtent: 16 // ~chunk size in world units / metres (splat-transform default)
+        },
+        memFs
+    );
     await mainSource.close();
 
     // Write each extra portal scene's streaming bundle (lod-meta.json + chunk
@@ -900,7 +1003,17 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
         };
         for (let i = 0; i < extraScenes.length; i++) {
             sceneRef = { index: i + 2, total: extraScenes.length + 1 };
-            extraLodCounts.push(await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, onSceneProgress, () => fireExtracting(events, i + 2, total, 'Exporting streaming viewer', 'export.progress.exporting-streaming')));
+            extraLodCounts.push(
+                await writePortalScene(memFs, i + 1, extraScenes[i], createDevice, onSceneProgress, () =>
+                    fireExtracting(
+                        events,
+                        i + 2,
+                        total,
+                        'Exporting streaming viewer',
+                        'export.progress.exporting-streaming'
+                    )
+                )
+            );
         }
     }
 
@@ -920,16 +1033,19 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     const html = new TextDecoder().decode(rawHtml);
     const repointed = patchViewerBootstrap(html, { contentUrl: './lod-meta.json' });
     if (repointed === null) {
-        throw new Error('Streaming export failed: could not repoint default content URL to lod-meta.json (viewer bootstrap seam changed)');
+        throw new Error(
+            'Streaming export failed: could not repoint default content URL to lod-meta.json (viewer bootstrap seam changed)'
+        );
     }
     const settingsWithLods = { ...viewerSettingsJson, portalSceneLodCounts: [primaryLodCounts, ...extraLodCounts] };
     const withPoster = applyPoster(repointed, settingsWithLods, posterBytes, memFs);
-    const withAnnotations = injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), settingsWithLods), settingsWithLods);
+    const withAnnotations = injectAnnotationI18n(
+        injectAnnotationLinks(injectViewerLang(withPoster), settingsWithLods),
+        settingsWithLods
+    );
     const withZones = injectOffLimitsZones(withAnnotations, settingsWithLods);
     const withPortals = injectPortals(withZones, settingsWithLods);
-    const withCompanions = injectLoadingBar(
-        injectEarlyLodClamp(injectDeviceFallback(withPortals))
-    );
+    const withCompanions = injectLoadingBar(injectEarlyLodClamp(injectDeviceFallback(withPortals)));
     const withApi = injectIframeApi(withCompanions, settingsWithLods);
     memFs.results.set('index.html', new TextEncoder().encode(applyBrand(withApi, brand, memFs)));
     patchEngineLoaderInMemFs(memFs);
@@ -956,8 +1072,26 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
     }
 };
 
-const writeSogCore = async (dataTable: DataTable, iterations: number, createDevice: DeviceCreator, fs: FileSystem, events?: Events, onLog?: (level: string, text: string) => void, shouldCancel?: () => boolean): Promise<void> => {
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SOG', events, undefined, undefined, onLog, shouldCancel, 'export.progress.exporting-sog'));
+const writeSogCore = async (
+    dataTable: DataTable,
+    iterations: number,
+    createDevice: DeviceCreator,
+    fs: FileSystem,
+    events?: Events,
+    onLog?: (level: string, text: string) => void,
+    shouldCancel?: () => boolean
+): Promise<void> => {
+    splatTransformLogger.setRenderer(
+        createProgressRenderer(
+            'Exporting SOG',
+            events,
+            undefined,
+            undefined,
+            onLog,
+            shouldCancel,
+            'export.progress.exporting-sog'
+        )
+    );
     try {
         await writeSog({ filename: 'output.sog', dataTable, bundle: true, iterations, createDevice }, fs);
     } catch (err) {
@@ -980,7 +1114,20 @@ type ExtraPortalScene = {
 };
 
 const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
-    const { dataTable, viewerType, createDevice, fs, events, onLog, shouldCancel, collision, extraScenes, posterBytes, brand, annotationImages } = options;
+    const {
+        dataTable,
+        viewerType,
+        createDevice,
+        fs,
+        events,
+        onLog,
+        shouldCancel,
+        collision,
+        extraScenes,
+        posterBytes,
+        brand,
+        annotationImages
+    } = options;
     // Reassigned below for the single-file html path.
     let { viewerSettingsJson } = options;
     // A single-file HTML export carries no image files, so it must not advertise
@@ -999,15 +1146,17 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
     let scenePrefix: ProgressPrefix | undefined;
     const getScenePrefix = () => scenePrefix;
 
-    splatTransformLogger.setRenderer(createProgressRenderer(
-        'Exporting HTML',
-        events,
-        hasPortalScenes ? getScenePrefix : undefined,
-        undefined,
-        onLog,
-        shouldCancel,
-        'export.progress.exporting-html'
-    ));
+    splatTransformLogger.setRenderer(
+        createProgressRenderer(
+            'Exporting HTML',
+            events,
+            hasPortalScenes ? getScenePrefix : undefined,
+            undefined,
+            onLog,
+            shouldCancel,
+            'export.progress.exporting-html'
+        )
+    );
     try {
         if (viewerType === 'html') {
             // Interim guard: HTML export cannot carry extra portal scenes (the single-file
@@ -1015,24 +1164,49 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
             // produced so the export fails loudly rather than silently omitting scenes.
             // Future work: embed scene payloads as data-URIs or use a ZIP-wrapped HTML.
             if (hasPortalScenes) {
-                throw new Error('Portal multi-scene export is only supported with the Package (ZIP) format. Disable streaming / choose Package format and re-export.');
+                throw new Error(
+                    'Portal multi-scene export is only supported with the Package (ZIP) format. Disable streaming / choose Package format and re-export.'
+                );
             }
             const memFs = new MemoryFileSystem();
-            await writeHtml({ filename: 'output.html', dataTable, viewerSettingsJson, bundle: true, iterations: 10, createDevice }, memFs);
+            await writeHtml(
+                { filename: 'output.html', dataTable, viewerSettingsJson, bundle: true, iterations: 10, createDevice },
+                memFs
+            );
             const raw = memFs.results.get('output.html');
             if (!raw) {
                 throw new Error('HTML export failed: writeHtml did not produce output.html');
             }
             // Single-file output: the poster is inlined as a data URI (no memFs).
             const withPoster = applyPoster(new TextDecoder().decode(raw), viewerSettingsJson, posterBytes, null);
-            const injected = injectIframeApi(injectLoadingBar(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson), viewerSettingsJson))), viewerSettingsJson);
+            const injected = injectIframeApi(
+                injectLoadingBar(
+                    injectDeviceFallback(
+                        injectPortals(
+                            injectOffLimitsZones(
+                                injectAnnotationI18n(
+                                    injectAnnotationLinks(injectViewerLang(withPoster), viewerSettingsJson),
+                                    viewerSettingsJson
+                                ),
+                                viewerSettingsJson
+                            ),
+                            viewerSettingsJson
+                        )
+                    )
+                ),
+                viewerSettingsJson
+            );
             // Single-file export inlines the engine in the HTML: patch it there.
             const enginePatch = patchViewerEngine(injected);
             if (!enginePatch.handlePublished) {
-                throw new Error('HTML export failed: could not publish the viewer handle (the bundled supersplat-viewer changed shape)');
+                throw new Error(
+                    'HTML export failed: could not publish the viewer handle (the bundled supersplat-viewer changed shape)'
+                );
             }
             if (enginePatch.patched < VIEWER_ENGINE_PATCH_COUNT) {
-                console.warn(`Viewer engine patch (html): ${enginePatch.patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`);
+                console.warn(
+                    `Viewer engine patch (html): ${enginePatch.patched}/${VIEWER_ENGINE_PATCH_COUNT} patterns matched (bundled engine changed?)`
+                );
             }
             const writer = await fs.createWriter('output.html');
             await writer.write(new TextEncoder().encode(enginePatch.source));
@@ -1045,7 +1219,10 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
             if (hasPortalScenes) {
                 scenePrefix = { en: `Scene 1/${total}`, scene: { index: 1, total } };
             }
-            await writeHtml({ filename: 'index.html', dataTable, viewerSettingsJson, bundle: false, iterations: 10, createDevice }, memFs);
+            await writeHtml(
+                { filename: 'index.html', dataTable, viewerSettingsJson, bundle: false, iterations: 10, createDevice },
+                memFs
+            );
             if (collision) {
                 await writeCollisionVoxel(memFs, dataTable, viewerSettingsJson, createDevice, collision);
             }
@@ -1062,17 +1239,34 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
                 for (let i = 0; i < extraScenes!.length; i++) {
                     const index = i + 1;
                     scenePrefix = { en: `Scene ${index + 1}/${total}`, scene: { index: index + 1, total } };
-                    extraCounts.push(await writePortalScene(
-                        memFs, index, extraScenes![i], createDevice,
-                        undefined, () => fireExtracting(events, index + 1, total, 'Exporting HTML', 'export.progress.exporting-html')
-                    ));
+                    extraCounts.push(
+                        await writePortalScene(memFs, index, extraScenes![i], createDevice, undefined, () =>
+                            fireExtracting(events, index + 1, total, 'Exporting HTML', 'export.progress.exporting-html')
+                        )
+                    );
                 }
             }
-            const sogSettings = hasPortalScenes ?
-                { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] } :
-                viewerSettingsJson;
+            const sogSettings = hasPortalScenes
+                ? { ...viewerSettingsJson, portalSceneLodCounts: [[dataTable.numRows], ...extraCounts] }
+                : viewerSettingsJson;
             const withPoster = applyPoster(new TextDecoder().decode(rawIndex), sogSettings, posterBytes, memFs);
-            const injected = injectIframeApi(injectLoadingBar(injectDeviceFallback(injectPortals(injectOffLimitsZones(injectAnnotationI18n(injectAnnotationLinks(injectViewerLang(withPoster), sogSettings), sogSettings), sogSettings), sogSettings))), sogSettings);
+            const injected = injectIframeApi(
+                injectLoadingBar(
+                    injectDeviceFallback(
+                        injectPortals(
+                            injectOffLimitsZones(
+                                injectAnnotationI18n(
+                                    injectAnnotationLinks(injectViewerLang(withPoster), sogSettings),
+                                    sogSettings
+                                ),
+                                sogSettings
+                            ),
+                            sogSettings
+                        )
+                    )
+                ),
+                sogSettings
+            );
             memFs.results.set('index.html', new TextEncoder().encode(applyBrand(injected, brand, memFs)));
             patchEngineLoaderInMemFs(memFs);
             applyAnnotationImages(annotationImages, memFs);
@@ -1099,4 +1293,13 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
     }
 };
 
-export { createProgressRenderer, injectIframeApi, injectViewerLang, stripHtmlGalleries, writeSogCore, writeViewerCore, AnnotationImageFile, ViewerCoreOptions };
+export {
+    createProgressRenderer,
+    injectIframeApi,
+    injectViewerLang,
+    stripHtmlGalleries,
+    writeSogCore,
+    writeViewerCore,
+    AnnotationImageFile,
+    ViewerCoreOptions
+};

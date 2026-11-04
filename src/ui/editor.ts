@@ -1,17 +1,21 @@
 import { Container, Label } from '@playcanvas/pcui';
-import { Mat4 } from 'playcanvas';
+import type { Mat4 } from 'playcanvas';
 
-import { AppearancePanel } from './appearance-panel';
-import { DataPanel } from './data-panel';
-import { Events } from '../events';
-import { ExportSettings } from '../export-settings';
+import { version } from '../../package.json';
+import type { Events } from '../events';
+import { probeExportCapabilities, runVideoCompress } from '../export-server-client';
+import type { ExportSettings } from '../export-settings';
 import type { BlobReadSource } from '../io';
+import { withVideoRenderState } from '../video-render-state';
+
 import { AboutPopup } from './about-popup';
 import { AnnotationImagesDialog } from './annotation-images-dialog';
 import { AnnotationTranslationsDialog } from './annotation-translations-dialog';
+import { AppearancePanel } from './appearance-panel';
 import { BottomToolbar } from './bottom-toolbar';
 import { CameraInfoOverlay } from './camera-info-overlay';
 import { ClipboardMenu } from './clipboard-menu';
+import { DataPanel } from './data-panel';
 import { ExportPopup } from './export-popup';
 import { ExportSummaryDialog } from './export-summary-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
@@ -21,7 +25,8 @@ import { OverdrawLegend } from './overdraw-legend';
 import { OverlaysPanel } from './overlays-panel';
 import { PerfOverlay } from './perf-overlay';
 import logo from './playcanvas-logo.png';
-import { Popup, ShowOptions } from './popup';
+import type { ShowOptions } from './popup';
+import { Popup } from './popup';
 import { Progress } from './progress';
 import { PublishSettingsDialog } from './publish-settings-dialog';
 import { RightToolbar } from './right-toolbar';
@@ -35,9 +40,6 @@ import { TimelinePanel } from './timeline-panel';
 import { Tooltips } from './tooltips';
 import { VideoSettingsDialog } from './video-settings-dialog';
 import { ViewCube } from './view-cube';
-import { version } from '../../package.json';
-import { probeExportCapabilities, runVideoCompress } from '../export-server-client';
-import { withVideoRenderState } from '../video-render-state';
 
 // ts compiler and vscode find this type, but eslint does not
 type FilePickerAcceptType = unknown;
@@ -78,7 +80,9 @@ const withRenderedTempFile = async (
         if (rendered === false) return;
         await use(await tempHandle.getFile());
     } finally {
-        await opfs.removeEntry(tempName).catch(() => {});
+        await opfs.removeEntry(tempName).catch(() => {
+            /* the temp entry may already be gone */
+        });
     }
 };
 
@@ -315,9 +319,12 @@ class EditorUI {
             return exportPopup.show(exportType, splatNames, settings);
         });
 
-        events.function('show.savePopup', (filename: string, directory?: FileSystemDirectoryHandle, source?: BlobReadSource) => {
-            return exportPopup.show('ssproj', [filename], { directory }, source);
-        });
+        events.function(
+            'show.savePopup',
+            (filename: string, directory?: FileSystemDirectoryHandle, source?: BlobReadSource) => {
+                return exportPopup.show('ssproj', [filename], { directory }, source);
+            }
+        );
 
         events.function('show.publishSettingsDialog', async () => {
             // In server mode with S3 configured, publish to the S3 Space instead
@@ -325,7 +332,7 @@ class EditorUI {
             const caps = await probeExportCapabilities();
             if (caps?.publish) {
                 const splats = events.invoke('scene.splats');
-                const options = await s3PublishDialog.show(splats.map((s: any) => s.name));
+                const options = await s3PublishDialog.show(splats.map((s) => s.name));
                 if (options) {
                     await events.invoke('scene.publishS3', options);
                 }
@@ -364,9 +371,20 @@ class EditorUI {
                     let writable;
                     let fileHandle: FileSystemFileHandle | undefined;
 
-                    const imageFileTypes: Record<string, { description: string, accept: Record<`${string}/${string}`, `.${string}`[]>, extension: string }> = {
+                    const imageFileTypes: Record<
+                        string,
+                        {
+                            description: string;
+                            accept: Record<`${string}/${string}`, `.${string}`[]>;
+                            extension: string;
+                        }
+                    > = {
                         png: { description: 'PNG Image', accept: { 'image/png': ['.png'] }, extension: '.png' },
-                        jpeg: { description: 'JPEG Image', accept: { 'image/jpeg': ['.jpg', '.jpeg'] }, extension: '.jpg' },
+                        jpeg: {
+                            description: 'JPEG Image',
+                            accept: { 'image/jpeg': ['.jpg', '.jpeg'] },
+                            extension: '.jpg'
+                        },
                         webp: { description: 'WebP Image', accept: { 'image/webp': ['.webp'] }, extension: '.webp' }
                     };
                     const imageFileType = imageFileTypes[imageSettings.format];
@@ -377,13 +395,13 @@ class EditorUI {
                     // user a click rather than a wasted render.
                     if (s3) {
                         const ext = imageFileType.extension.slice(1);
-                        if (!await events.invoke('render.s3.confirm', s3, ext)) {
+                        if (!(await events.invoke('render.s3.confirm', s3, ext))) {
                             return;
                         }
                         await withRenderedTempFile(
                             'render-image',
-                            stream => events.invoke('render.image', imageSettings, stream),
-                            file => events.invoke('render.s3.upload', file, s3, ext)
+                            (stream) => events.invoke('render.image', imageSettings, stream),
+                            (file) => events.invoke('render.s3.upload', file, s3, ext)
                         );
                         return;
                     }
@@ -391,10 +409,12 @@ class EditorUI {
                     if (window.showSaveFilePicker) {
                         fileHandle = await window.showSaveFilePicker({
                             id: 'SuperSplatImageFileExport',
-                            types: [{
-                                description: imageFileType.description,
-                                accept: imageFileType.accept
-                            }],
+                            types: [
+                                {
+                                    description: imageFileType.description,
+                                    accept: imageFileType.accept
+                                }
+                            ],
                             suggestedName: `${events.invoke('render.baseFilename')}${imageFileType.extension}`
                         });
 
@@ -437,10 +457,10 @@ class EditorUI {
 
                     // Codec name mapping for display
                     const codecNames: Record<string, string> = {
-                        'h264': 'H.264',
-                        'h265': 'H.265',
-                        'vp9': 'VP9',
-                        'av1': 'AV1'
+                        h264: 'H.264',
+                        h265: 'H.265',
+                        vp9: 'VP9',
+                        av1: 'AV1'
                     };
                     const codecName = codecNames[videoSettings.codec] || videoSettings.codec.toUpperCase();
                     const compress = videoSettings.compress;
@@ -449,34 +469,44 @@ class EditorUI {
                         // The saved file is always the compressed WebM; the
                         // format/codec selects describe the master instead.
                         fileExtension = '.webm';
-                        filePickerTypes = [{
-                            description: 'WebM Video (VP9)',
-                            accept: { 'video/webm': ['.webm'] }
-                        }];
+                        filePickerTypes = [
+                            {
+                                description: 'WebM Video (VP9)',
+                                accept: { 'video/webm': ['.webm'] }
+                            }
+                        ];
                     } else if (videoSettings.format === 'webm') {
                         fileExtension = '.webm';
-                        filePickerTypes = [{
-                            description: `WebM Video (${codecName})`,
-                            accept: { 'video/webm': ['.webm'] }
-                        }];
+                        filePickerTypes = [
+                            {
+                                description: `WebM Video (${codecName})`,
+                                accept: { 'video/webm': ['.webm'] }
+                            }
+                        ];
                     } else if (videoSettings.format === 'mov') {
                         fileExtension = '.mov';
-                        filePickerTypes = [{
-                            description: `MOV Video (${codecName})`,
-                            accept: { 'video/quicktime': ['.mov'] }
-                        }];
+                        filePickerTypes = [
+                            {
+                                description: `MOV Video (${codecName})`,
+                                accept: { 'video/quicktime': ['.mov'] }
+                            }
+                        ];
                     } else if (videoSettings.format === 'mkv') {
                         fileExtension = '.mkv';
-                        filePickerTypes = [{
-                            description: `MKV Video (${codecName})`,
-                            accept: { 'video/x-matroska': ['.mkv'] }
-                        }];
+                        filePickerTypes = [
+                            {
+                                description: `MKV Video (${codecName})`,
+                                accept: { 'video/x-matroska': ['.mkv'] }
+                            }
+                        ];
                     } else {
                         fileExtension = '.mp4';
-                        filePickerTypes = [{
-                            description: `MP4 Video (${codecName})`,
-                            accept: { 'video/mp4': ['.mp4'] }
-                        }];
+                        filePickerTypes = [
+                            {
+                                description: `MP4 Video (${codecName})`,
+                                accept: { 'video/mp4': ['.mp4'] }
+                            }
+                        ];
                     }
 
                     const suggested = `${events.invoke('render.baseFilename')}${fileExtension}`;
@@ -486,7 +516,7 @@ class EditorUI {
                     // (multi-minute) render so a collision costs the user a
                     // click rather than the whole render.
                     const s3Ext = s3 ? fileExtension.slice(1) : '';
-                    if (s3 && !await events.invoke('render.s3.confirm', s3, s3Ext)) {
+                    if (s3 && !(await events.invoke('render.s3.confirm', s3, s3Ext))) {
                         return;
                     }
 
@@ -495,8 +525,11 @@ class EditorUI {
                             'video-master',
                             // walkthrough wraps the render only: it must be back
                             // to normal while the upload runs
-                            stream => withVideoRenderState(events, () => events.invoke('render.video', videoSettings, stream)),
-                            file => events.invoke('render.s3.upload', file, s3, s3Ext)
+                            (stream) =>
+                                withVideoRenderState(events, () =>
+                                    events.invoke('render.video', videoSettings, stream)
+                                ),
+                            (file) => events.invoke('render.s3.upload', file, s3, s3Ext)
                         );
                         return;
                     }
@@ -526,7 +559,9 @@ class EditorUI {
                     }
 
                     if (!compress) {
-                        const result = await withVideoRenderState(events, () => events.invoke('render.video', videoSettings, writable));
+                        const result = await withVideoRenderState(events, () =>
+                            events.invoke('render.video', videoSettings, writable)
+                        );
 
                         // if the render was cancelled, remove the empty file left on disk
                         if (result === false && fileHandle?.remove) {
@@ -549,7 +584,9 @@ class EditorUI {
                         // walkthrough wraps the render only: the compression job
                         // that follows can run for minutes, and the editor should
                         // look normal throughout it
-                        const rendered = await withVideoRenderState(events, () => events.invoke('render.video', videoSettings, tempWritable));
+                        const rendered = await withVideoRenderState(events, () =>
+                            events.invoke('render.video', videoSettings, tempWritable)
+                        );
                         if (rendered === false) {
                             if (fileHandle?.remove) {
                                 await fileHandle.remove();
@@ -565,13 +602,18 @@ class EditorUI {
 
                         let output: Blob;
                         try {
-                            output = await runVideoCompress(master, {
-                                targetMB: compress.targetMB,
-                                frameRate: videoSettings.frameRate,
-                                frames: compress.frames
-                            }, (p) => {
-                                events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
-                            }, controller.signal);
+                            output = await runVideoCompress(
+                                master,
+                                {
+                                    targetMB: compress.targetMB,
+                                    frameRate: videoSettings.frameRate,
+                                    frames: compress.frames
+                                },
+                                (p) => {
+                                    events.fire('progressUpdate', { text: p.message, progress: p.value, loc: p.loc });
+                                },
+                                controller.signal
+                            );
                         } catch (error) {
                             if (controller.signal.aborted) {
                                 if (fileHandle?.remove) {
@@ -603,7 +645,9 @@ class EditorUI {
                             downloadBlob(output, suggested);
                         }
                     } finally {
-                        await opfs.removeEntry(tempName).catch(() => {});
+                        await opfs.removeEntry(tempName).catch(() => {
+                            /* the temp entry may already be gone */
+                        });
                     }
                 } catch (error) {
                     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -661,7 +705,7 @@ class EditorUI {
 
             try {
                 const { width, height } = events.invoke('targetSize');
-                const pixels = await events.invoke('render.offscreen', width, height) as Uint8Array;
+                const pixels = (await events.invoke('render.offscreen', width, height)) as Uint8Array;
 
                 // a second freeze may have replaced this cover while we awaited
                 if (!pixels || viewCover !== cover) {
@@ -694,11 +738,13 @@ class EditorUI {
             // present before revealing, or the reveal flashes the render's last
             // pose. The overlays resume with the cover, and the camera is back
             // where it started, so their held positions are already correct.
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-                viewFrozen = false;
-                events.fire('view.frozen', false);
-                cover.remove();
-            }));
+            requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                    viewFrozen = false;
+                    events.fire('view.frozen', false);
+                    cover.remove();
+                })
+            );
         });
 
         events.function('showPopup', (options: ShowOptions) => {
@@ -740,26 +786,38 @@ class EditorUI {
             progress.onCancel = cancellable ? () => events.fire('progressCancel') : null;
         });
 
-        events.on('progressUpdate', (options: { text?: string, progress?: number, loc?: { segments?: { key: string, params?: Record<string, string | number> }[], counter?: { index: number, total: number }, name?: string, nameKey?: string } }) => {
-            if (options.loc) {
-                // Localized export sub-line: translate each segment (scene prefix,
-                // phase label), join with ": ", then append splat-transform's step
-                // counter and its step name (localized via nameKey when known, else
-                // the English name). Mirrors the English `text` the server/log path
-                // composes in splat-export-core.ts.
-                const { segments = [], counter, name, nameKey } = options.loc;
-                let text = segments.map(s => i18n.t(s.key, s.params)).join(': ');
-                if (counter) text += ` (${counter.index}/${counter.total})`;
-                const stepName = nameKey ? i18n.t(nameKey) : name;
-                if (stepName) text += (text ? ': ' : '') + stepName;
-                progress.setText(text);
-            } else if (options.text !== undefined) {
-                progress.setText(options.text);
+        events.on(
+            'progressUpdate',
+            (options: {
+                text?: string;
+                progress?: number;
+                loc?: {
+                    segments?: { key: string; params?: Record<string, string | number> }[];
+                    counter?: { index: number; total: number };
+                    name?: string;
+                    nameKey?: string;
+                };
+            }) => {
+                if (options.loc) {
+                    // Localized export sub-line: translate each segment (scene prefix,
+                    // phase label), join with ": ", then append splat-transform's step
+                    // counter and its step name (localized via nameKey when known, else
+                    // the English name). Mirrors the English `text` the server/log path
+                    // composes in splat-export-core.ts.
+                    const { segments = [], counter, name, nameKey } = options.loc;
+                    let text = segments.map((s) => i18n.t(s.key, s.params)).join(': ');
+                    if (counter) text += ` (${counter.index}/${counter.total})`;
+                    const stepName = nameKey ? i18n.t(nameKey) : name;
+                    if (stepName) text += (text ? ': ' : '') + stepName;
+                    progress.setText(text);
+                } else if (options.text !== undefined) {
+                    progress.setText(options.text);
+                }
+                if (options.progress !== undefined) {
+                    progress.setProgress(options.progress);
+                }
             }
-            if (options.progress !== undefined) {
-                progress.setProgress(options.progress);
-            }
-        });
+        );
 
         events.on('progressEnd', () => {
             progress.hidden = true;
@@ -773,19 +831,27 @@ class EditorUI {
         canvas.height = Math.ceil(canvasContainer.dom.offsetHeight * pixelRatio);
 
         ['contextmenu', 'gesturestart', 'gesturechange', 'gestureend'].forEach((event) => {
-            document.addEventListener(event, (e) => {
-                e.preventDefault();
-            }, true);
+            document.addEventListener(
+                event,
+                (e) => {
+                    e.preventDefault();
+                },
+                true
+            );
         });
 
         // whenever the canvas container is clicked, set keyboard focus on the body
-        canvasContainer.dom.addEventListener('pointerdown', (event: PointerEvent) => {
-            // set focus on the body if user is busy pressing on the canvas or a child of the tools
-            // element
-            if (event.target === canvas || toolsContainer.dom.contains(event.target as Node)) {
-                document.body.focus();
-            }
-        }, true);
+        canvasContainer.dom.addEventListener(
+            'pointerdown',
+            (event: PointerEvent) => {
+                // set focus on the body if user is busy pressing on the canvas or a child of the tools
+                // element
+                if (event.target === canvas || toolsContainer.dom.contains(event.target as Node)) {
+                    document.body.focus();
+                }
+            },
+            true
+        );
     }
 }
 

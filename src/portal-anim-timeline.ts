@@ -1,5 +1,6 @@
 import { CubicSpline } from './anim/spline';
-import { PortalRect, Vec3, resolveActiveSplat, segmentCrossesRect } from './portal-geom';
+import type { PortalRect, Vec3 } from './portal-geom';
+import { resolveActiveSplat, segmentCrossesRect } from './portal-geom';
 
 // Subset of the serialized AnimTrack (see export-popup.ts assembleViewerOptions)
 // that this module needs to reproduce the viewer's camera path.
@@ -34,7 +35,7 @@ const buildSpline = (track: PortalAnimTrack): CubicSpline => {
         points.push(fov[i]);
     }
 
-    const extra = (duration === times[times.length - 1] / frameRate) ? 1 : 0;
+    const extra = duration === times[times.length - 1] / frameRate ? 1 : 0;
     return CubicSpline.fromPointsLooping((duration + extra) * frameRate, times, points, smoothness);
 };
 

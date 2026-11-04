@@ -1,63 +1,57 @@
 import {
-    DataTable,
     logger as splatTransformLogger,
     materializeToDataTable,
     Transform,
     writeSpz,
     createChunkDataPool,
-    writeSource,
-    type FileSystem,
-    type ChunkData,
-    type ChunkDataPool,
-    type ChunkLayer,
-    type ChunkSource,
-    type ChunkSourceMetadata,
-    type LayerLayout,
-    type Options,
-    type OutputFormat,
-    type ReadRequest,
-    type SHBands,
-    type Writer
+    writeSource
 } from '@playcanvas/splat-transform';
-import {
-    defaultPostEffectSettings,
-    type AnimTrack,
-    type Camera,
-    type CameraPose,
-    type ExperienceSettings as BaseExperienceSettings,
-    type PostEffectSettings
+import type {
+    DataTable,
+    FileSystem,
+    ChunkData,
+    ChunkDataPool,
+    ChunkLayer,
+    ChunkSource,
+    ChunkSourceMetadata,
+    LayerLayout,
+    Options,
+    OutputFormat,
+    ReadRequest,
+    SHBands,
+    Writer
+} from '@playcanvas/splat-transform';
+import { defaultPostEffectSettings } from '@playcanvas/splat-transform/viewer-settings';
+import type {
+    AnimTrack,
+    Camera,
+    CameraPose,
+    ExperienceSettings as BaseExperienceSettings,
+    PostEffectSettings
 } from '@playcanvas/splat-transform/viewer-settings';
-import {
-    Mat3,
-    Mat4,
-    PIXELFORMAT_BGRA8,
-    Quat,
-    Texture,
-    Vec3,
-    WebgpuGraphicsDevice
-} from 'playcanvas';
+import { Mat3, Mat4, PIXELFORMAT_BGRA8, Quat, Texture, Vec3, WebgpuGraphicsDevice } from 'playcanvas';
 
 import { ColorGrade, createGradeTerms, dcDecode, dcEncode, sigmoid } from './color-grade';
 import type { EditorSplatResource } from './editor-splat-resource';
-import { Events } from './events';
+import type { Events } from './events';
 import { groupInstancesByChunk } from './gaussian-instances';
 import { PermutedChunkSource } from './io';
 import { SHRotation } from './sh-utils';
-import { Splat } from './splat';
+import type { Splat } from './splat';
 import { createProgressRenderer, writeSogCore, writeViewerCore } from './splat-export-core';
 import { State } from './splat-state';
 
 type SerializeSettings = {
-    shBands?: number;               // number of bands to export, zero-padding missing coefficients. defaults to the source bands
-    selected?: boolean;             // only export selected gaussians. used for copy/paste
-    minOpacity?: number;            // filter out gaussians with alpha less than or equal to minAlpha
-    removeInvalid?: boolean;        // filter out gaussians with invalid data (NaN/Infinity)
+    shBands?: number; // number of bands to export, zero-padding missing coefficients. defaults to the source bands
+    selected?: boolean; // only export selected gaussians. used for copy/paste
+    minOpacity?: number; // filter out gaussians with alpha less than or equal to minAlpha
+    removeInvalid?: boolean; // filter out gaussians with invalid data (NaN/Infinity)
 
     // the following options are used when serializing for document save.
     // keepWorldTransform flows through the streaming source; keepStateData
     // is accepted for compatibility but the streaming writers never export state.
-    keepStateData?: boolean;        // keep the state data array
-    keepWorldTransform?: boolean;   // don't apply the world transform when resolving splat transforms
+    keepStateData?: boolean; // keep the state data array
+    keepWorldTransform?: boolean; // don't apply the world transform when resolving splat transforms
 };
 
 // The published-experience wire format. The shared base comes from
@@ -65,27 +59,49 @@ type SerializeSettings = {
 // extensions (off-limits zones and the multi-scene portal walkthrough) and are
 // ignored by upstream viewers.
 type ExperienceSettings = BaseExperienceSettings & {
-    offLimitsZones: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number, infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean } }[],
-    offLimitsMessage: string,
+    offLimitsZones: {
+        position: [number, number, number];
+        rotation: [number, number, number, number];
+        width: number;
+        height: number;
+        infinite?: { top: boolean; right: boolean; bottom: boolean; left: boolean };
+    }[];
+    offLimitsMessage: string;
     // multi-scene portal walkthrough (absent unless portals exist)
-    portals?: { position: [number, number, number], rotation: [number, number, number, number], width: number, height: number, front: number | null, back: number | null, infinite?: { top: boolean, right: boolean, bottom: boolean, left: boolean } }[],
-    portalScenes?: string[],
-    portalStart?: number,
-    portalCollision?: (string | null)[],
-    portalEnvironments?: ('indoor' | 'outdoor')[],
-    portalRadii?: number[],
-    portalVoxelSizes?: number[],
-    portalSceneLodCounts?: number[][]   // [sceneIndex][lodLevel] = splat count; index 0 = primary, level 0 = finest
+    portals?: {
+        position: [number, number, number];
+        rotation: [number, number, number, number];
+        width: number;
+        height: number;
+        front: number | null;
+        back: number | null;
+        infinite?: { top: boolean; right: boolean; bottom: boolean; left: boolean };
+    }[];
+    portalScenes?: string[];
+    portalStart?: number;
+    portalCollision?: (string | null)[];
+    portalEnvironments?: ('indoor' | 'outdoor')[];
+    portalRadii?: number[];
+    portalVoxelSizes?: number[];
+    portalSceneLodCounts?: number[][]; // [sceneIndex][lodLevel] = splat count; index 0 = primary, level 0 = finest
 };
 
 type ViewerExportSettings = {
     type: 'html' | 'zip';
     streaming?: boolean;
     experienceSettings: ExperienceSettings;
-    collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number };   // undefined = disabled
+    collision?: { environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number }; // undefined = disabled
     events?: Events;
     // resolved per-scene export inputs for a portal walkthrough (index 0 = primary, omitted)
-    portalScenes?: { splat: Splat; url: string; collisionUrl: string | null; environment: 'indoor' | 'outdoor'; radius: number; voxelSize: number; seed: [number, number, number] }[];
+    portalScenes?: {
+        splat: Splat;
+        url: string;
+        collisionUrl: string | null;
+        environment: 'indoor' | 'outdoor';
+        radius: number;
+        voxelSize: number;
+        seed: [number, number, number];
+    }[];
     // export-time screenshot from the start camera (JPEG bytes); shown blurred
     // by the viewer's stock poster path until the coarse batch is streamed
     poster?: Uint8Array;
@@ -105,7 +121,10 @@ class SplatTransformCache {
     getSHRot: (index: number) => SHRotation;
 
     constructor(splat: Splat, keepWorldTransform = false) {
-        const transforms = new Map<number, { transformIndex: number, mat: Mat4, rot: Quat, scale: Vec3, shRot: SHRotation }>();
+        const transforms = new Map<
+            number,
+            { transformIndex: number; mat: Mat4; rot: Quat; scale: Vec3; shRot: SHRotation }
+        >();
         const { instances } = splat;
         const tmpMat = new Mat4();
         const tmpMat3 = new Mat3();
@@ -251,7 +270,7 @@ const createGpuDevice = async (): Promise<WebgpuGraphicsDevice> => {
 
     // createDevice can also resolve without creating a device (e.g.
     // blocklisted adapters)
-    // @ts-ignore - wgpu is an internal property
+    // @ts-expect-error - wgpu is an internal property
     if (!graphicsDevice.wgpu) {
         throw new WebGPUUnavailableError();
     }
@@ -265,7 +284,6 @@ const createGpuDevice = async (): Promise<WebgpuGraphicsDevice> => {
         format: PIXELFORMAT_BGRA8
     });
 
-    // @ts-ignore - externalBackbuffer is an internal property
     graphicsDevice.externalBackbuffer = cachedBackbuffer;
 
     cachedGpuDevice = graphicsDevice;
@@ -300,12 +318,15 @@ const buildLayouts = (numRest: number): Partial<Record<ChunkLayer, LayerLayout>>
     },
     color: {
         stride: (3 + numRest) * 4,
-        fields: numRest > 0 ? {
-            dc: { byteOffset: 0, components: 3, type: 'float32' },
-            shRest: { byteOffset: 12, components: numRest, type: 'float32' }
-        } : {
-            dc: { byteOffset: 0, components: 3, type: 'float32' }
-        }
+        fields:
+            numRest > 0
+                ? {
+                      dc: { byteOffset: 0, components: 3, type: 'float32' },
+                      shRest: { byteOffset: 12, components: numRest, type: 'float32' }
+                  }
+                : {
+                      dc: { byteOffset: 0, components: 3, type: 'float32' }
+                  }
     }
 });
 
@@ -375,7 +396,10 @@ const filteredIndices = async (splat: Splat, settings: SerializeSettings) => {
             const position = removeInvalid ? pool.acquire('position', source.meta.layouts.position, count) : undefined;
             const geometric = pool.acquire('geometric', source.meta.layouts.geometric, count);
             const color = removeInvalid ? pool.acquire('color', source.meta.layouts.color, count) : undefined;
-            const other = removeInvalid && source.meta.availableLayers.has('other') ? pool.acquire('other', source.meta.layouts.other, count) : undefined;
+            const other =
+                removeInvalid && source.meta.availableLayers.has('other')
+                    ? pool.acquire('other', source.meta.layouts.other, count)
+                    : undefined;
             try {
                 await source.read({ chunkIndex, position, geometric, color, other });
                 const opacity = new Float32Array(geometric.data);
@@ -385,8 +409,14 @@ const filteredIndices = async (splat: Splat, settings: SerializeSettings) => {
                     if (onlySelected && state[instance] !== State.selected) continue;
                     const i = splat.instances.sourceRow[instance] - base;
                     if (minOpacity > 0 && sigmoid(opacity[i * 8 + 7]) < minOpacity) continue;
-                    if (removeInvalid && (!validFloatLayer(position, i) || !validGeometric(geometric, i) ||
-                        !validFloatLayer(color, i) || (other && !validOther(other, i)))) continue;
+                    if (
+                        removeInvalid &&
+                        (!validFloatLayer(position, i) ||
+                            !validGeometric(geometric, i) ||
+                            !validFloatLayer(color, i) ||
+                            (other && !validOther(other, i)))
+                    )
+                        continue;
                     accepted[instance] = 1;
                     total++;
                 }
@@ -461,7 +491,8 @@ class SuperSplatChunkSource implements ChunkSource {
     }
 
     static async create(splats: Splat[], settings: SerializeSettings) {
-        const outputBands = settings.shBands ?? (splats.length ? Math.max(...splats.map(s => s.resource.shBands)) : 0);
+        const outputBands =
+            settings.shBands ?? (splats.length ? Math.max(...splats.map((s) => s.resource.shBands)) : 0);
         const entries: ExportEntry[] = [];
         let start = 0;
         for (const splat of splats) {
@@ -496,7 +527,12 @@ class SuperSplatChunkSource implements ChunkSource {
     // `instanceIndices` selects instances of `entry.splat`; the static data is
     // gathered by their source rows, while the palette and grade lookups stay in
     // instance space (two instances of one row can carry different transforms)
-    private async readGroup(entry: ExportEntry, instanceIndices: Uint32Array, outputOffset: number, request: ReadRequest) {
+    private async readGroup(
+        entry: ExportEntry,
+        instanceIndices: Uint32Array,
+        outputOffset: number,
+        request: ReadRequest
+    ) {
         const { splat, transform, grade: gradeCache } = entry;
         const source = splat.resource.source;
         const { sourceRow } = splat.instances;
@@ -512,7 +548,9 @@ class SuperSplatChunkSource implements ChunkSource {
 
         const count = indices.length;
         const position = request.position ? pool.acquire('position', source.meta.layouts.position, count) : undefined;
-        const geometric = request.geometric ? pool.acquire('geometric', source.meta.layouts.geometric, count) : undefined;
+        const geometric = request.geometric
+            ? pool.acquire('geometric', source.meta.layouts.geometric, count)
+            : undefined;
         const color = request.color ? pool.acquire('color', source.meta.layouts.color, count) : undefined;
         try {
             await source.read({ indices, indexOffset: 0, count, position, geometric, color });
@@ -545,7 +583,12 @@ class SuperSplatChunkSource implements ChunkSource {
                 if (dstGeometric) {
                     const src = i * 8;
                     const dst = (outputOffset + i) * 8;
-                    rotationValue.set(srcGeometric[src + 1], srcGeometric[src + 2], srcGeometric[src + 3], srcGeometric[src]);
+                    rotationValue.set(
+                        srcGeometric[src + 1],
+                        srcGeometric[src + 2],
+                        srcGeometric[src + 3],
+                        srcGeometric[src]
+                    );
                     rotationValue.mul2(transform.getRot(instance), rotationValue);
                     dstGeometric[dst] = rotationValue.w;
                     dstGeometric[dst + 1] = rotationValue.x;
@@ -556,8 +599,9 @@ class SuperSplatChunkSource implements ChunkSource {
                     dstGeometric[dst + 5] = Math.log(Math.exp(srcGeometric[src + 5]) * scale.y);
                     dstGeometric[dst + 6] = Math.log(Math.exp(srcGeometric[src + 6]) * scale.z);
                     const grade = gradeCache.get(instance);
-                    dstGeometric[dst + 7] = grade.hasTransparency ?
-                        grade.applyOpacity(srcGeometric[src + 7]) : srcGeometric[src + 7];
+                    dstGeometric[dst + 7] = grade.hasTransparency
+                        ? grade.applyOpacity(srcGeometric[src + 7])
+                        : srcGeometric[src + 7];
                 }
                 if (dstColor) {
                     const grade = gradeCache.get(instance);
@@ -618,7 +662,9 @@ class SuperSplatChunkSource implements ChunkSource {
             const maxCount = entry.splat.resource.source.meta.chunkSize;
             let groupCount = 1;
             while (offset + groupCount < count && groupCount < maxCount) {
-                const nextRow = isGather ? request.indices[request.indexOffset + offset + groupCount] : chunkBase + offset + groupCount;
+                const nextRow = isGather
+                    ? request.indices[request.indexOffset + offset + groupCount]
+                    : chunkBase + offset + groupCount;
                 if (this.findEntry(nextRow) !== entry) break;
                 groupCount++;
             }
@@ -633,7 +679,7 @@ class SuperSplatChunkSource implements ChunkSource {
     }
 
     close(): Promise<void> {
-        this.pools.forEach(pool => pool.destroy());
+        this.pools.forEach((pool) => pool.destroy());
         this.pools.clear();
         return Promise.resolve();
     }
@@ -643,7 +689,10 @@ class SuperSplatChunkSource implements ChunkSource {
  * Build a ChunkSource + matching pool over the given splats, or null if nothing
  * passes the export filter.
  */
-const createExportSource = async (splats: Splat[], settings: SerializeSettings): Promise<{ source: ChunkSource, pool: ChunkDataPool } | null> => {
+const createExportSource = async (
+    splats: Splat[],
+    settings: SerializeSettings
+): Promise<{ source: ChunkSource; pool: ChunkDataPool } | null> => {
     const source = await SuperSplatChunkSource.create(splats, settings);
     if (source.meta.numGaussians === 0) {
         return null;
@@ -677,7 +726,6 @@ const writeSplatFile = async (
         pool.destroy();
     }
 };
-
 
 /**
  * Write a resource's static gaussian data, restricted to `rows` (in-memory row
@@ -715,13 +763,16 @@ const writeResourceFile = async (
     // relabel as PLY space so the writer bakes nothing (see above)
     const raw: ChunkSource = {
         meta: { ...source.meta, transform: Transform.PLY.clone() },
-        read: request => source.read(request),
+        read: (request) => source.read(request),
         close: () => source.close()
     };
 
     const pool = createChunkDataPool({ chunkSize: raw.meta.chunkSize });
     try {
-        await writeSource({ filename, outputFormat: 'ply', source: raw, pool, options: {}, createDevice: createGpuDevice }, fs);
+        await writeSource(
+            { filename, outputFormat: 'ply', source: raw, pool, options: {}, createDevice: createGpuDevice },
+            fs
+        );
     } finally {
         pool.destroy();
     }
@@ -762,15 +813,23 @@ const extractDataTable = async (splats: Splat[], settings: SerializeSettings): P
 // exact count (missing bands are zero-padded), so without the cap a 0-band
 // scene next to a 3-band one would ship 45 zero coefficients per gaussian.
 const portalSceneSettings = (settings: SerializeSettings, splats: Splat[]): SerializeSettings => {
-    const sceneBands = splats.length ? Math.max(...splats.map(s => s.resource.shBands)) : 0;
+    const sceneBands = splats.length ? Math.max(...splats.map((s) => s.resource.shBands)) : 0;
     return { ...settings, shBands: Math.min(settings.shBands ?? sceneBands, sceneBands) };
 };
 
-const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSettings, options: ViewerExportSettings, fs: FileSystem): Promise<void> => {
+const serializeViewer = async (
+    splats: Splat[],
+    serializeSettings: SerializeSettings,
+    options: ViewerExportSettings,
+    fs: FileSystem
+): Promise<void> => {
     const { experienceSettings, events, collision } = options;
     const portal = !!(experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1);
-    const dataTable = await extractDataTable(splats, portal ? portalSceneSettings(serializeSettings, splats) : serializeSettings);
-    const viewerType = options.type === 'html' ? 'html' : (options.streaming ? 'streaming' : 'package');
+    const dataTable = await extractDataTable(
+        splats,
+        portal ? portalSceneSettings(serializeSettings, splats) : serializeSettings
+    );
+    const viewerType = options.type === 'html' ? 'html' : options.streaming ? 'streaming' : 'package';
 
     // Build per-scene extra descriptors for a portal walkthrough. The primary
     // scene is index 0 (the passed `splats` / `dataTable`); extra scenes are
@@ -779,17 +838,18 @@ const serializeViewer = async (splats: Splat[], serializeSettings: SerializeSett
     // writeViewerCore, one at a time, so a multi-scene walkthrough no longer
     // holds every scene's float32 columns at once. The Splat elements are
     // already resident in the editor, so the descriptor itself costs nothing.
-    const extraScenes = portal ?
-        options.portalScenes?.map(entry => ({
-            collisionUrl: entry.collisionUrl,
-            environment: entry.environment,
-            radius: entry.radius,
-            voxelSize: entry.voxelSize,
-            seed: entry.seed,
-            streaming: options.streaming ?? false,
-            loadDataTable: () => extractDataTable([entry.splat], portalSceneSettings(serializeSettings, [entry.splat]))
-        })) ?? [] :
-        [];
+    const extraScenes = portal
+        ? (options.portalScenes?.map((entry) => ({
+              collisionUrl: entry.collisionUrl,
+              environment: entry.environment,
+              radius: entry.radius,
+              voxelSize: entry.voxelSize,
+              seed: entry.seed,
+              streaming: options.streaming ?? false,
+              loadDataTable: () =>
+                  extractDataTable([entry.splat], portalSceneSettings(serializeSettings, [entry.splat]))
+          })) ?? [])
+        : [];
 
     await writeViewerCore({
         dataTable,
@@ -841,18 +901,31 @@ type SpzSettings = SerializeSettings & {
 const serializeSpz = async (splats: Splat[], settings: SpzSettings, fs: FileSystem): Promise<void> => {
     const { version = 4, events } = settings;
 
-    splatTransformLogger.setRenderer(createProgressRenderer('Exporting SPZ', events, undefined, undefined, undefined, undefined, 'export.progress.exporting-spz'));
+    splatTransformLogger.setRenderer(
+        createProgressRenderer(
+            'Exporting SPZ',
+            events,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            'export.progress.exporting-spz'
+        )
+    );
 
     // Extract splat data to DataTable
     const dataTable = await extractDataTable(splats, settings);
 
     // unwind the logger's top-level scope on error (see serializeSog)
     try {
-        await writeSpz({
-            filename: 'output.spz',
-            dataTable,
-            version
-        }, fs);
+        await writeSpz(
+            {
+                filename: 'output.spz',
+                dataTable,
+                version
+            },
+            fs
+        );
     } catch (err) {
         splatTransformLogger.unwindAll(true);
         throw err;

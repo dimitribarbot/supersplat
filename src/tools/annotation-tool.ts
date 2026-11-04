@@ -1,11 +1,18 @@
 import { BooleanInput, Button, Container, Label, SelectInput, TextInput } from '@playcanvas/pcui';
 import { Entity, TranslateGizmo, Vec3 } from 'playcanvas';
 
-import { AddAnnotationOp, AnnotationCamera, AnnotationData, hasTranslationContent, MoveAnnotationOp, RemoveAnnotationOp, UpdateAnnotationOp } from '../annotations';
+import type { AnnotationCamera, AnnotationData } from '../annotations';
+import {
+    AddAnnotationOp,
+    hasTranslationContent,
+    MoveAnnotationOp,
+    RemoveAnnotationOp,
+    UpdateAnnotationOp
+} from '../annotations';
 import { ElementType } from '../element';
-import { Events } from '../events';
-import { Scene } from '../scene';
-import { Splat } from '../splat';
+import type { Events } from '../events';
+import type { Scene } from '../scene';
+import type { Splat } from '../splat';
 import { i18n } from '../ui/localization';
 
 const p = new Vec3();
@@ -28,7 +35,7 @@ class AnnotationTool {
             class: ['select-toolbar', 'annotations-toolbar'],
             hidden: true
         });
-        bar.dom.addEventListener('pointerdown', e => e.stopPropagation());
+        bar.dom.addEventListener('pointerdown', (e) => e.stopPropagation());
 
         const titleLabel = new Label({ text: i18n.t('panel.annotations.title') });
         const titleInput = new TextInput({ class: 'annotations-toolbar-input' });
@@ -91,13 +98,14 @@ class AnnotationTool {
         // wired into a portal yet. Mirrors portal-tool.ts's option construction.
         const splatList = () => scene.getElementsByType(ElementType.splat) as Splat[];
         const splatName = (splat: Splat) => {
-            const filename = splat.name ?? (splat.asset.file as any)?.filename ?? `Splat ${splat.uid}`;
+            const filename =
+                splat.name ?? (splat.asset.file as { filename?: string })?.filename ?? `Splat ${splat.uid}`;
             return `${splat.uid}: ${filename}`;
         };
         const refreshSceneOptions = () => {
             sceneInput.options = [
                 { v: NO_SCENE, t: i18n.t('panel.annotations.scene-none') },
-                ...splatList().map(splat => ({ v: splat.uid, t: splatName(splat) }))
+                ...splatList().map((splat) => ({ v: splat.uid, t: splatName(splat) }))
             ];
         };
 
@@ -134,9 +142,9 @@ class AnnotationTool {
             sceneInput.hidden = !hasPortals;
             if (hasPortals) {
                 refreshSceneOptions();
-                const options = sceneInput.options as { v: number, t: string }[];
+                const options = sceneInput.options as { v: number; t: string }[];
                 // a splat deleted since assignment leaves a dangling uid -> show "None"
-                sceneInput.value = options.some(o => o.v === a.sceneUid) ? a.sceneUid : NO_SCENE;
+                sceneInput.value = options.some((o) => o.v === a.sceneUid) ? a.sceneUid : NO_SCENE;
             }
             // the ends are dead rather than silently no-op
             const list = events.invoke('annotations.list') as AnnotationData[];
@@ -154,12 +162,15 @@ class AnnotationTool {
             if (!a || a[field] === value) {
                 return;
             }
-            events.fire('edit.add', new UpdateAnnotationOp(
-                events,
-                a.id,
-                { [field]: a[field] } as Partial<AnnotationData>,
-                { [field]: value } as Partial<AnnotationData>
-            ));
+            events.fire(
+                'edit.add',
+                new UpdateAnnotationOp(
+                    events,
+                    a.id,
+                    { [field]: a[field] } as Partial<AnnotationData>,
+                    { [field]: value } as Partial<AnnotationData>
+                )
+            );
         };
 
         titleInput.on('change', (v: string) => commit('title', v));
@@ -185,14 +196,23 @@ class AnnotationTool {
         // `a[field] === value` test can never be true for it -- comparing
         // component-wise here is what keeps a repeated click from pushing an
         // empty entry onto the undo stack.
-        const samePose = (c: AnnotationCamera, pose: { position: { x: number, y: number, z: number }, target: { x: number, y: number, z: number }, fov: number }) => {
-            return c.position[0] === pose.position.x &&
-                   c.position[1] === pose.position.y &&
-                   c.position[2] === pose.position.z &&
-                   c.target[0] === pose.target.x &&
-                   c.target[1] === pose.target.y &&
-                   c.target[2] === pose.target.z &&
-                   c.fov === pose.fov;
+        const samePose = (
+            c: AnnotationCamera,
+            pose: {
+                position: { x: number; y: number; z: number };
+                target: { x: number; y: number; z: number };
+                fov: number;
+            }
+        ) => {
+            return (
+                c.position[0] === pose.position.x &&
+                c.position[1] === pose.position.y &&
+                c.position[2] === pose.position.z &&
+                c.target[0] === pose.target.x &&
+                c.target[1] === pose.target.y &&
+                c.target[2] === pose.target.z &&
+                c.fov === pose.fov
+            );
         };
 
         // pointerdown + stopPropagation (as in portal-tool.ts) so a press on the
@@ -207,20 +227,27 @@ class AnnotationTool {
             if (!pose || samePose(a.camera, pose)) {
                 return;
             }
-            events.fire('edit.add', new UpdateAnnotationOp(
-                events,
-                a.id,
-                { camera: {
-                    position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
-                    target: [a.camera.target[0], a.camera.target[1], a.camera.target[2]],
-                    fov: a.camera.fov
-                } },
-                { camera: {
-                    position: [pose.position.x, pose.position.y, pose.position.z],
-                    target: [pose.target.x, pose.target.y, pose.target.z],
-                    fov: pose.fov
-                } }
-            ));
+            events.fire(
+                'edit.add',
+                new UpdateAnnotationOp(
+                    events,
+                    a.id,
+                    {
+                        camera: {
+                            position: [a.camera.position[0], a.camera.position[1], a.camera.position[2]],
+                            target: [a.camera.target[0], a.camera.target[1], a.camera.target[2]],
+                            fov: a.camera.fov
+                        }
+                    },
+                    {
+                        camera: {
+                            position: [pose.position.x, pose.position.y, pose.position.z],
+                            target: [pose.target.x, pose.target.y, pose.target.z],
+                            fov: pose.fov
+                        }
+                    }
+                )
+            );
         });
 
         // A disabled PCUI button can still receive a raw dom pointerdown, so the
@@ -292,12 +319,15 @@ class AnnotationTool {
                 }
                 // restore the pre-drag value, then commit the move as one undoable op
                 a.position = [dragStart.x, dragStart.y, dragStart.z];
-                events.fire('edit.add', new UpdateAnnotationOp(
-                    events,
-                    a.id,
-                    { position: [dragStart.x, dragStart.y, dragStart.z] },
-                    { position: [pos.x, pos.y, pos.z] }
-                ));
+                events.fire(
+                    'edit.add',
+                    new UpdateAnnotationOp(
+                        events,
+                        a.id,
+                        { position: [dragStart.x, dragStart.y, dragStart.z] },
+                        { position: [pos.x, pos.y, pos.z] }
+                    )
+                );
             }
         });
 
@@ -404,7 +434,7 @@ class AnnotationTool {
                 return;
             }
             const annotations = events.invoke('annotations.list') as AnnotationData[];
-            const index = annotations.findIndex(x => x.id === id);
+            const index = annotations.findIndex((x) => x.id === id);
             const data = annotations[index];
             if (data) {
                 events.fire('edit.add', new RemoveAnnotationOp(events, data, index));

@@ -3,14 +3,14 @@
  * Provides FileSystem abstraction for browser file operations.
  */
 
-import { type FileSystem, type Writer } from '@playcanvas/splat-transform';
+import type { FileSystem, Writer } from '@playcanvas/splat-transform';
 
 /**
  * Writer implementation for FileSystemWritableFileStream (File System Access API).
  */
 class BrowserFileWriter implements Writer {
     private stream: FileSystemWritableFileStream;
-    private cursor: number = 0;
+    private cursor = 0;
     private ready: Promise<void>;
 
     constructor(stream: FileSystemWritableFileStream) {
@@ -57,13 +57,11 @@ const triggerDownload = (blob: Blob, filename: string): void => {
     // create a "fake" click-event to trigger the download
     if (document.createEvent) {
         const e = document.createEvent('MouseEvents');
-        e.initMouseEvent('click', true, true, window,
-            0, 0, 0, 0, 0, false, false, false,
-            false, 0, null);
+        e.initMouseEvent('click', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
         lnk.dispatchEvent(e);
     } else {
-        // @ts-ignore
-        lnk.fireEvent?.('onclick');
+        // legacy IE event api
+        (lnk as HTMLAnchorElement & { fireEvent?: (type: string) => void }).fireEvent?.('onclick');
     }
 
     window.URL.revokeObjectURL(url);
@@ -82,10 +80,13 @@ const triggerDownload = (blob: Blob, filename: string): void => {
  */
 class BrowserDownloadWriter implements Writer {
     private chunks: Uint8Array[] = [];
-    private cursor: number = 0;
+    private cursor = 0;
     private filename: string;
 
-    constructor(filename: string, private signal?: AbortSignal) {
+    constructor(
+        filename: string,
+        private signal?: AbortSignal
+    ) {
         this.filename = filename;
     }
 
@@ -127,7 +128,11 @@ class BrowserFileSystem implements FileSystem {
      * @param filename - The filename for downloads (fallback mode)
      * @param stream - Optional FileSystemWritableFileStream for direct file access
      */
-    constructor(filename: string, stream?: FileSystemWritableFileStream, private signal?: AbortSignal) {
+    constructor(
+        filename: string,
+        stream?: FileSystemWritableFileStream,
+        private signal?: AbortSignal
+    ) {
         this.filename = filename;
         this.stream = stream;
     }

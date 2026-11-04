@@ -1,13 +1,25 @@
-import { BooleanInput, Button, ColorPicker, Container, Label, SelectInput, SliderInput, TextInput } from '@playcanvas/pcui';
+import {
+    BooleanInput,
+    Button,
+    ColorPicker,
+    Container,
+    Label,
+    SelectInput,
+    SliderInput,
+    TextInput
+} from '@playcanvas/pcui';
 
 import { collectAnnotationImages } from '../annotation-images';
-import { Pose } from '../camera-poses';
+import type { Pose } from '../camera-poses';
+import type { Events } from '../events';
+import { buildPortalBundle } from '../portal-export';
+import type { ExportPortal } from '../portal-export';
+import type { Splat } from '../splat';
+import type { AnimTrack, ExperienceSettings } from '../splat-serialize';
+import { defaultPostEffectSettings } from '../splat-serialize';
+
 import { PerSceneCollisionPanel } from './collision-params';
 import { i18n } from './localization';
-import { Events } from '../events';
-import { buildPortalBundle } from '../portal-export';
-import type { Splat } from '../splat';
-import { AnimTrack, ExperienceSettings, defaultPostEffectSettings } from '../splat-serialize';
 
 // Strip a known splat/scene file extension so the name can serve as the
 // destination folder. Mirrors export-popup's removeKnownExtension; kept local
@@ -37,7 +49,7 @@ export type S3PublishOptions = {
     brandOverride?: { name?: string; iconUrl?: string; logoUrl?: string };
 };
 
-const row = (labelKey: string, widget: any) => {
+const row = (labelKey: string, widget: Parameters<Container['append']>[0]) => {
     const c = new Container({ class: 'row' });
     c.append(new Label({ class: 'label', text: i18n.t(labelKey) }));
     c.append(widget);
@@ -60,22 +72,26 @@ class S3PublishDialog extends Container {
 
         const streaming = new BooleanInput({ class: 'boolean', type: 'toggle', value: true });
         const collision = new BooleanInput({ class: 'boolean', type: 'toggle', value: true });
-        const environment = new SelectInput({ class: 'select',
+        const environment = new SelectInput({
+            class: 'select',
             defaultValue: 'indoor',
             options: [
                 { v: 'indoor', t: i18n.t('popup.export.environment.indoor') },
                 { v: 'outdoor', t: i18n.t('popup.export.environment.outdoor') }
-            ] });
+            ]
+        });
         const radius = new SliderInput({ class: 'slider', min: 5, max: 500, precision: 0, value: 50 });
         const voxelSize = new SliderInput({ class: 'slider', min: 0.02, max: 0.5, precision: 2, value: 0.05 });
         const animation = new BooleanInput({ class: 'boolean', type: 'toggle', value: false });
-        const loop = new SelectInput({ class: 'select',
+        const loop = new SelectInput({
+            class: 'select',
             defaultValue: 'repeat',
             options: [
                 { v: 'none', t: i18n.t('popup.export.loop-mode.none') },
                 { v: 'repeat', t: i18n.t('popup.export.loop-mode.repeat') },
                 { v: 'pingpong', t: i18n.t('popup.export.loop-mode.pingpong') }
-            ] });
+            ]
+        });
         const color = new ColorPicker({ class: 'color-picker', value: [1, 1, 1, 1] });
         const fov = new SliderInput({ class: 'slider', min: 10, max: 120, precision: 0, value: 60 });
         const bands = new SliderInput({ class: 'slider', min: 0, max: 3, precision: 0, value: 3 });
@@ -122,10 +138,23 @@ class S3PublishDialog extends Container {
         // portal-referenced scene, replacing the shared environment/radius/voxel rows.
         const perSceneCollision = new PerSceneCollisionPanel(events);
 
-        [streamingRow, collisionRow, environmentRow].forEach(r => content.append(r.c));
+        [streamingRow, collisionRow, environmentRow].forEach((r) => content.append(r.c));
         content.append(perSceneCollision);
-        [radiusRow, voxelRow, animationRow, loopRow, colorRow, fovRow, bandsRow, subfolderRow, nameRow, publicRow, brandNameRow, brandIconRow, brandLogoRow]
-        .forEach(r => content.append(r.c));
+        [
+            radiusRow,
+            voxelRow,
+            animationRow,
+            loopRow,
+            colorRow,
+            fovRow,
+            bandsRow,
+            subfolderRow,
+            nameRow,
+            publicRow,
+            brandNameRow,
+            brandIconRow,
+            brandLogoRow
+        ].forEach((r) => content.append(r.c));
 
         const footer = new Container({ id: 'footer' });
         const cancelButton = new Button({ class: 'button', text: i18n.t('popup.cancel') });
@@ -170,7 +199,9 @@ class S3PublishDialog extends Container {
             const frameRate = events.invoke('timeline.frameRate');
             const smoothness = events.invoke('timeline.smoothness');
             const orderedPoses = (events.invoke('camera.poses') as Pose[])
-            .slice().filter(p => p.frame >= 0 && p.frame < frames).sort((a, b) => a.frame - b.frame);
+                .slice()
+                .filter((p) => p.frame >= 0 && p.frame < frames)
+                .sort((a, b) => a.frame - b.frame);
             const hasPoses = orderedPoses.length > 0;
 
             // reset
@@ -190,7 +221,10 @@ class S3PublishDialog extends Container {
             fov.value = events.invoke('camera.fov');
             // default to the scene's band count, capped by the viewport setting;
             // higher values pad the missing coefficients with zeros
-            const sceneBands = Math.max(0, ...(events.invoke('scene.splats') as Splat[]).map(s => s.resource.shBands));
+            const sceneBands = Math.max(
+                0,
+                ...(events.invoke('scene.splats') as Splat[]).map((s) => s.resource.shBands)
+            );
             bands.value = Math.min(events.invoke('view.bands'), sceneBands);
             subfolder.value = '';
             // the name becomes the destination folder, so strip any file extension
@@ -205,7 +239,18 @@ class S3PublishDialog extends Container {
                 const pose = events.invoke('camera.getPose');
                 const p = pose?.position;
                 const t = pose?.target;
-                const cameras = (p && t) ? [{ initial: { position: [p.x, p.y, p.z] as [number, number, number], target: [t.x, t.y, t.z] as [number, number, number], fov: fov.value } }] : [];
+                const cameras =
+                    p && t
+                        ? [
+                              {
+                                  initial: {
+                                      position: [p.x, p.y, p.z] as [number, number, number],
+                                      target: [t.x, t.y, t.z] as [number, number, number],
+                                      fov: fov.value
+                                  }
+                              }
+                          ]
+                        : [];
                 const animTracks: AnimTrack[] = [];
                 if (animation.value && hasPoses) {
                     const times: number[] = [];
@@ -218,17 +263,33 @@ class S3PublishDialog extends Container {
                         target.push(op.target.x, op.target.y, op.target.z);
                         fovKeys.push(op.fov ?? fov.value);
                     }
-                    animTracks.push({ name: 'cameraAnim', duration: frames / frameRate, frameRate, loopMode: loop.value as 'none' | 'repeat' | 'pingpong', interpolation: 'spline', smoothness, keyframes: { times, values: { position, target, fov: fovKeys } } });
+                    animTracks.push({
+                        name: 'cameraAnim',
+                        duration: frames / frameRate,
+                        frameRate,
+                        loopMode: loop.value as 'none' | 'repeat' | 'pingpong',
+                        interpolation: 'spline',
+                        smoothness,
+                        keyframes: { times, values: { position, target, fov: fovKeys } }
+                    });
                 }
                 // portal multi-scene bundle (absent when the scene has no portals)
-                const portalsRaw = events.invoke('portals.export') ?? [];
-                const startUid = events.invoke('portals.startSplat') ?? null;
+                const portalsRaw = events.invoke<ExportPortal[]>('portals.export') ?? [];
+                const startUid = events.invoke<number | null>('portals.startSplat') ?? null;
                 const allSplats = events.invoke('scene.allSplats') ?? [];
-                const availableUids = allSplats.map((s: any) => s.uid);
+                const availableUids = allSplats.map((s) => s.uid);
                 const preferredStartUid = events.invoke('selection')?.uid ?? null;
-                const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
-                    buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming: streaming.value, collision: collision.value, preferredStartUid }) :
-                    null;
+                const bundle =
+                    (events.invoke<number>('portals.count') ?? 0) > 0
+                        ? buildPortalBundle({
+                              portals: portalsRaw,
+                              startUid,
+                              availableUids,
+                              streaming: streaming.value,
+                              collision: collision.value,
+                              preferredStartUid
+                          })
+                        : null;
                 const experienceSettings: ExperienceSettings = {
                     version: 2,
                     tonemapping: events.invoke('camera.tonemapping') ?? 'none',
@@ -240,15 +301,19 @@ class S3PublishDialog extends Container {
                     annotations: events.invoke('annotations.export', bundle?.sceneUids) ?? [],
                     offLimitsZones: events.invoke('offLimitsZones.export') ?? [],
                     offLimitsMessage: events.invoke('offLimitsZones.message') ?? '',
-                    ...(bundle ? {
-                        portals: bundle.portals,
-                        portalScenes: bundle.portalScenes,
-                        portalStart: bundle.portalStart,
-                        portalCollision: bundle.portalCollision,
-                        portalEnvironments: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).environment),
-                        portalRadii: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).radius),
-                        portalVoxelSizes: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).voxelSize)
-                    } : {}),
+                    ...(bundle
+                        ? {
+                              portals: bundle.portals,
+                              portalScenes: bundle.portalScenes,
+                              portalStart: bundle.portalStart,
+                              portalCollision: bundle.portalCollision,
+                              portalEnvironments: bundle.sceneUids.map(
+                                  (_, i) => perSceneCollision.valuesAt(i).environment
+                              ),
+                              portalRadii: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).radius),
+                              portalVoxelSizes: bundle.sceneUids.map((_, i) => perSceneCollision.valuesAt(i).voxelSize)
+                          }
+                        : {}),
                     startMode: animation.value ? 'animTrack' : 'default'
                 };
                 const brand = {
@@ -269,15 +334,19 @@ class S3PublishDialog extends Container {
                         // global environment select and chosen via its per-scene card, so
                         // source its environment from there (portalEnvironments[0]); fall back
                         // to the global select for a non-portal publish.
-                        collision: collision.value ? (bundle ? {
-                            environment: perSceneCollision.valuesAt(0).environment,
-                            radius: perSceneCollision.valuesAt(0).radius,
-                            voxelSize: perSceneCollision.valuesAt(0).voxelSize
-                        } : {
-                            environment: environment.value as 'indoor' | 'outdoor',
-                            radius: radius.value,
-                            voxelSize: voxelSize.value
-                        }) : undefined,
+                        collision: collision.value
+                            ? bundle
+                                ? {
+                                      environment: perSceneCollision.valuesAt(0).environment,
+                                      radius: perSceneCollision.valuesAt(0).radius,
+                                      voxelSize: perSceneCollision.valuesAt(0).voxelSize
+                                  }
+                                : {
+                                      environment: environment.value as 'indoor' | 'outdoor',
+                                      radius: radius.value,
+                                      voxelSize: voxelSize.value
+                                  }
+                            : undefined,
                         experienceSettings,
                         annotationImages: collectAnnotationImages(events)
                     },
@@ -288,14 +357,14 @@ class S3PublishDialog extends Container {
             return new Promise<null | S3PublishOptions>((resolve) => {
                 onCancel = () => resolve(null);
                 onPublish = () => {
-                    if (!name.value.trim()) return;   // name is required
+                    if (!name.value.trim()) return; // name is required
                     let urlsOk = true;
                     [brandIconUrl, brandLogoUrl].forEach((input) => {
                         const v = input.value.trim();
                         input.error = !!v && !validHttpsUrl(v);
                         if (input.error) urlsOk = false;
                     });
-                    if (!urlsOk) return;   // the server stays the authority
+                    if (!urlsOk) return; // the server stays the authority
                     resolve(assemble());
                 };
             }).finally(() => {

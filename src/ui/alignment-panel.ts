@@ -1,10 +1,11 @@
 import { Button, Container, Label, SelectInput } from '@playcanvas/pcui';
 
-import { AlignmentManager, AlignmentPair } from '../alignment';
+import type { AlignmentManager, AlignmentPair } from '../alignment';
 import { ElementType } from '../element';
-import { Events } from '../events';
-import { Scene } from '../scene';
-import { Splat } from '../splat';
+import type { Events } from '../events';
+import type { Scene } from '../scene';
+import type { Splat } from '../splat';
+
 import { i18n } from './localization';
 import alignSvg from './svg/align.svg';
 
@@ -14,7 +15,7 @@ const createSvg = (svgString: string) => {
 };
 
 const fmt = (v: number) => (Number.isFinite(v) ? v.toFixed(4) : '-');
-const fmtPoint = (point?: { position: { x: number, y: number, z: number } }) => {
+const fmtPoint = (point?: { position: { x: number; y: number; z: number } }) => {
     return point ? `${fmt(point.position.x)}, ${fmt(point.position.y)}, ${fmt(point.position.z)}` : '-';
 };
 
@@ -109,15 +110,16 @@ class AlignmentPanel extends Container {
         this.append(actionRow);
 
         const splatName = (splat: Splat) => {
-            const filename = splat.name ?? (splat.asset.file as any)?.filename ?? `Splat ${splat.uid}`;
+            const filename =
+                splat.name ?? (splat.asset.file as { filename?: string })?.filename ?? `Splat ${splat.uid}`;
             return `${splat.uid}: ${filename}`;
         };
 
         const splats = () => scene.getElementsByType(ElementType.splat) as Splat[];
-        const byUid = (uid: number) => splats().find(splat => splat.uid === uid) ?? null;
+        const byUid = (uid: number) => splats().find((splat) => splat.uid === uid) ?? null;
 
         const updateSplatOptions = () => {
-            const options = splats().map(splat => ({ v: splat.uid, t: splatName(splat) }));
+            const options = splats().map((splat) => ({ v: splat.uid, t: splatName(splat) }));
             sourceSelect.options = options;
             targetSelect.options = options;
 

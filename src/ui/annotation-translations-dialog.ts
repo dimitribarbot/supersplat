@@ -1,14 +1,9 @@
 import { Button, Container, Label, TextInput } from '@playcanvas/pcui';
 
-import {
-    AnnotationData,
-    AnnotationTranslation,
-    cloneTranslations,
-    hasTranslationContent,
-    TRANSLATION_LOCALES,
-    UpdateAnnotationOp
-} from '../annotations';
-import { Events } from '../events';
+import type { AnnotationData, AnnotationTranslation } from '../annotations';
+import { cloneTranslations, hasTranslationContent, TRANSLATION_LOCALES, UpdateAnnotationOp } from '../annotations';
+import type { Events } from '../events';
+
 import { i18n } from './localization';
 
 // Modal editor for one annotation's translations. Edits a working COPY: the
@@ -70,7 +65,7 @@ class AnnotationTranslationsDialog extends Container {
         let objectUrls: string[] = [];
 
         const releaseThumbnails = () => {
-            objectUrls.forEach(url => URL.revokeObjectURL(url));
+            objectUrls.forEach((url) => URL.revokeObjectURL(url));
             objectUrls = [];
         };
 
@@ -88,9 +83,9 @@ class AnnotationTranslationsDialog extends Container {
             langList.clear();
             i18n.languages.forEach((lang) => {
                 const row = new Container({
-                    class: hasTranslationContent(working[lang.code]) ?
-                        ['annotation-translations-lang', 'translated'] :
-                        ['annotation-translations-lang']
+                    class: hasTranslationContent(working[lang.code])
+                        ? ['annotation-translations-lang', 'translated']
+                        : ['annotation-translations-lang']
                 });
                 if (lang.code === selected) {
                     row.class.add('selected');
@@ -180,8 +175,8 @@ class AnnotationTranslationsDialog extends Container {
                         thumb.text = i18n.t('popup.annotation-images.missing');
                     }
 
-                    const baseCaption = img.caption ||
-                        i18n.t('popup.annotation-translations.image-n', { index: index + 1 });
+                    const baseCaption =
+                        img.caption || i18n.t('popup.annotation-translations.image-n', { index: index + 1 });
                     const baseLabel = new Label({
                         class: 'annotation-translations-base',
                         text: baseCaption
@@ -273,12 +268,15 @@ class AnnotationTranslationsDialog extends Container {
                         next[code] = clean;
                     }
                 });
-                events.fire('edit.add', new UpdateAnnotationOp(
-                    events,
-                    a.id,
-                    { translations: cloneTranslations(a.translations) },
-                    { translations: next }
-                ));
+                events.fire(
+                    'edit.add',
+                    new UpdateAnnotationOp(
+                        events,
+                        a.id,
+                        { translations: cloneTranslations(a.translations) },
+                        { translations: next }
+                    )
+                );
             }
             this.hide();
         });

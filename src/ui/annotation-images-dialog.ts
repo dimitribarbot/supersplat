@@ -1,8 +1,10 @@
 import { Button, Container, Label, TextInput } from '@playcanvas/pcui';
 
 import { encodeAnnotationImage } from '../annotation-images';
-import { AnnotationData, AnnotationImage, UpdateAnnotationOp } from '../annotations';
-import { Events } from '../events';
+import type { AnnotationData, AnnotationImage } from '../annotations';
+import { UpdateAnnotationOp } from '../annotations';
+import type { Events } from '../events';
+
 import { i18n } from './localization';
 
 const formatSize = (bytes: number): string => {
@@ -83,7 +85,7 @@ class AnnotationImagesDialog extends Container {
         let objectUrls: string[] = [];
 
         const releaseThumbnails = () => {
-            objectUrls.forEach(url => URL.revokeObjectURL(url));
+            objectUrls.forEach((url) => URL.revokeObjectURL(url));
             objectUrls = [];
         };
 
@@ -215,7 +217,7 @@ class AnnotationImagesDialog extends Container {
                 return;
             }
             annotationId = id;
-            working = a.images.map(img => ({ ...img }));
+            working = a.images.map((img) => ({ ...img }));
             rebuild();
             this.hidden = false;
             this.dom.focus();
@@ -232,12 +234,15 @@ class AnnotationImagesDialog extends Container {
         okButton.on('click', () => {
             const a = annotationId ? (events.invoke('annotations.byId', annotationId) as AnnotationData | null) : null;
             if (a) {
-                events.fire('edit.add', new UpdateAnnotationOp(
-                    events,
-                    a.id,
-                    { images: a.images.map(img => ({ ...img })) },
-                    { images: working.map(img => ({ ...img })) }
-                ));
+                events.fire(
+                    'edit.add',
+                    new UpdateAnnotationOp(
+                        events,
+                        a.id,
+                        { images: a.images.map((img) => ({ ...img })) },
+                        { images: working.map((img) => ({ ...img })) }
+                    )
+                );
             }
             this.hide();
         });

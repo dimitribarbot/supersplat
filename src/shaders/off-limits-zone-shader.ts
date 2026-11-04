@@ -1,4 +1,4 @@
-const vertexShader = /* wgsl */`
+const vertexShader = /* wgsl */ `
 attribute vertex_position: vec3f;
 attribute vertex_color: vec4f;
 
@@ -20,7 +20,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 }
 `;
 
-const fragmentShader = /* wgsl */`
+const fragmentShader = /* wgsl */ `
 var zoneDepthTex: texture_2d<f32>;
 
 // [1/farClip, farClip, nearClip, projection] -- published by camera.ts as its own

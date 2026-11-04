@@ -1,11 +1,12 @@
 import { MemoryFileSystem } from '@playcanvas/splat-transform';
 
 import { collisionRows } from './collision-size-report';
-import { Events } from './events';
+import type { Events } from './events';
 import { checkPublishExists, PublishExistsError, runServerPublish } from './export-server-client';
 import { buildPortalUpload } from './portal-upload';
 import { firstWalkthroughPose } from './poster-pose';
-import { portalSceneSettings, SerializeSettings, writeSplatFile } from './splat-serialize';
+import type { SerializeSettings } from './splat-serialize';
+import { portalSceneSettings, writeSplatFile } from './splat-serialize';
 import { i18n } from './ui/localization';
 import type { S3PublishOptions } from './ui/s3-publish-dialog';
 
@@ -34,7 +35,7 @@ const registerS3PublishEvents = (events: Events) => {
             // portal multi-scene upload: when the scene has portals, the PRIMARY
             // scene is the START scene alone; each extra scene uploads its own
             // gzipped PLY + metadata for the server to assemble (mirrors writeViaServer).
-            const es = options.viewerExportSettings.experienceSettings as any;
+            const es = options.viewerExportSettings.experienceSettings;
             const upload = await buildPortalUpload({
                 events,
                 es,
@@ -44,11 +45,22 @@ const registerS3PublishEvents = (events: Events) => {
             const splats = upload ? [upload.startSplat] : events.invoke('scene.splats');
 
             const memFs = new MemoryFileSystem();
-            await writeSplatFile(splats, upload ? portalSceneSettings(serializeSettings, splats) : serializeSettings, 'ply', 'scene.ply', {}, memFs);
+            await writeSplatFile(
+                splats,
+                upload ? portalSceneSettings(serializeSettings, splats) : serializeSettings,
+                'ply',
+                'scene.ply',
+                {},
+                memFs
+            );
             const plyBytes = memFs.results.get('scene.ply');
             if (!plyBytes) {
                 events.fire('progressEnd');
-                await events.invoke('showPopup', { type: 'error', header: i18n.t('popup.publish.failed'), message: i18n.t('popup.publish.s3.nothing-to-publish') });
+                await events.invoke('showPopup', {
+                    type: 'error',
+                    header: i18n.t('popup.publish.failed'),
+                    message: i18n.t('popup.publish.s3.nothing-to-publish')
+                });
                 return;
             }
 
@@ -62,18 +74,21 @@ const registerS3PublishEvents = (events: Events) => {
             // as its own multipart part (never inside the JSON options).
             const bg = (es?.background?.color ?? [0, 0, 0]) as [number, number, number];
             const pose = firstWalkthroughPose(es);
-            const posterBytes = await events.invoke('render.poster', 1920, 1080, bg, pose) as Uint8Array | null;
+            const posterBytes = (await events.invoke('render.poster', 1920, 1080, bg, pose)) as Uint8Array | null;
 
             const annotationImages = options.viewerExportSettings.annotationImages;
             const publishOptions = {
                 subfolder: options.subfolder,
                 name: options.name,
                 public: options.public,
-                overwrite: true,   // already confirmed (or didn't exist)
+                overwrite: true, // already confirmed (or didn't exist)
                 serializeSettings: options.serializeSettings,
                 // S3PublishOptions.viewerExportSettings never carries poster or
                 // image bytes (they travel as their own multipart parts below)
-                viewerExportSettings: { ...options.viewerExportSettings, annotationImages: undefined as { path: string; data: Uint8Array }[] | undefined },
+                viewerExportSettings: {
+                    ...options.viewerExportSettings,
+                    annotationImages: undefined as { path: string; data: Uint8Array }[] | undefined
+                },
                 ...(upload ? { portalExtras: upload.portalExtras } : {}),
                 ...(options.brandOverride ? { brandOverride: options.brandOverride } : {})
             };
@@ -87,13 +102,16 @@ const registerS3PublishEvents = (events: Events) => {
                 },
                 upload?.extraPlyGz,
                 posterBytes ? new Blob([posterBytes as BlobPart], { type: 'image/jpeg' }) : undefined,
-                (annotationImages ?? []).map(img => ({ name: img.path.replace(/^annotations\//, ''), data: img.data }))
+                (annotationImages ?? []).map((img) => ({
+                    name: img.path.replace(/^annotations\//, ''),
+                    data: img.data
+                }))
             );
 
             events.fire('progressEnd');
-            const message = result.url ?
-                i18n.t('popup.publish.s3.public-message') :
-                `${i18n.t('popup.publish.s3.private-message')} ${result.prefix}`;
+            const message = result.url
+                ? i18n.t('popup.publish.s3.public-message')
+                : `${i18n.t('popup.publish.s3.private-message')} ${result.prefix}`;
             if (collisionSizes.size > 0) {
                 // `upload` is the buildPortalUpload result already in scope above;
                 // it returns sceneNames (Task 9 Step 6) so the bundle is resolved once.
@@ -117,7 +135,10 @@ const registerS3PublishEvents = (events: Events) => {
             }
         } catch (error) {
             events.fire('progressEnd');
-            const message = error instanceof PublishExistsError ? i18n.t('popup.publish.s3.exists-message') : (error.message ?? String(error));
+            const message =
+                error instanceof PublishExistsError
+                    ? i18n.t('popup.publish.s3.exists-message')
+                    : (error.message ?? String(error));
             await events.invoke('showPopup', { type: 'error', header: i18n.t('popup.publish.failed'), message });
         }
     });

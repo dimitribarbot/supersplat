@@ -1,4 +1,13 @@
-import { MARKER_SIZE, MARKER_TOOLTIPS, markerHitTest, markerInteractive, markerScale, markerVisible, portalsForScene, resolveMarkerTooltip } from '../portal-marker';
+import {
+    MARKER_SIZE,
+    MARKER_TOOLTIPS,
+    markerHitTest,
+    markerInteractive,
+    markerScale,
+    markerVisible,
+    portalsForScene,
+    resolveMarkerTooltip
+} from '../portal-marker';
 
 // Portal icons for the exported viewer.
 //

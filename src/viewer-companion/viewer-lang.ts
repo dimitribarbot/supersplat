@@ -34,9 +34,10 @@ const resolveLocale = (candidates: string[], keys: string[]): string => {
         }
         const lc = String(candidate).toLowerCase();
         const base = lc.split('-')[0];
-        const match = list.find(k => k.toLowerCase() === lc) ||
-            list.find(k => k.toLowerCase() === base) ||
-            list.find(k => k.toLowerCase().split('-')[0] === base);
+        const match =
+            list.find((k) => k.toLowerCase() === lc) ||
+            list.find((k) => k.toLowerCase() === base) ||
+            list.find((k) => k.toLowerCase().split('-')[0] === base);
         if (match) {
             return match;
         }

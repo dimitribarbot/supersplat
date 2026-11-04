@@ -1,6 +1,7 @@
 import { BooleanInput, Container, Label, TextInput } from '@playcanvas/pcui';
 
-import { RenderUploadTarget } from '../render-upload';
+import type { RenderUploadTarget } from '../render-upload';
+
 import { i18n } from './localization';
 
 // The "Publish to S3" block shared by the image and video render dialogs: a
@@ -31,14 +32,12 @@ type RenderS3Rows = {
 // that will actually validate rather than leaving the user to discover the
 // rejection.
 const toSafeName = (name: string) => {
-    const safe = (name ?? '')
-    .replace(/[^\w.-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    const safe = (name ?? '').replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '');
     // `.` alone is rejected server-side as a path segment
     return safe && safe !== '.' ? safe : 'render';
 };
 
-const row = (widget: any, labelKey: string) => {
+const row = (widget: Parameters<Container['append']>[0], labelKey: string) => {
     const c = new Container({ class: 'row' });
     const label = new Label({ class: 'label' });
     i18n.bindText(label, labelKey);
@@ -108,11 +107,14 @@ const createRenderS3Rows = (onChange?: () => void): RenderS3Rows => {
             syncVisibility();
         },
 
-        target: () => (available && publishBoolean.value ? {
-            subfolder: subfolder.value.trim(),
-            name: name.value.trim(),
-            public: isPublic.value
-        } : null),
+        target: () =>
+            available && publishBoolean.value
+                ? {
+                      subfolder: subfolder.value.trim(),
+                      name: name.value.trim(),
+                      public: isPublic.value
+                  }
+                : null,
 
         isValid: () => !available || !publishBoolean.value || !!name.value.trim()
     };

@@ -27,12 +27,9 @@ import {
     getInputFormat,
     readFile,
     createChunkDataPool,
-    materializeToDataTable,
-    type ChunkSourceMetadata,
-    type ExtraColumn,
-    type Options,
-    type ReadFileSystem
+    materializeToDataTable
 } from '@playcanvas/splat-transform';
+import type { ChunkSourceMetadata, ExtraColumn, Options, ReadFileSystem } from '@playcanvas/splat-transform';
 import { Vec3 } from 'playcanvas';
 
 // --- constants (mirrors splat-transform) ---
@@ -86,11 +83,16 @@ type CompressInfo = {
     envShMax: Vec3;
 };
 
+// The parts of meta.lcc and meta.lcc2 this module reads; both are untrusted JSON.
+type LccAttribute = { name: string; min: number[]; max: number[] };
+type LccJson = { fileType?: string; attributes: LccAttribute[] };
+type Lcc2Meta = { root?: { data?: { env?: { name?: number } }; splatFiles?: string[]; files?: string[] } };
+
 // parse the min/max quantization ranges from meta.lcc (env variants fall back to
 // the scene ranges). Mirrors splat-transform's parseMeta (env fields only).
-const parseMeta = (obj: any): CompressInfo => {
-    const attributes: Record<string, any> = {};
-    obj.attributes.forEach((attr: any) => {
+const parseMeta = (obj: LccJson): CompressInfo => {
+    const attributes: Record<string, LccAttribute> = {};
+    obj.attributes.forEach((attr) => {
         attributes[attr.name] = attr;
     });
     const envScaleMin = new Vec3(attributes.envscale?.min ?? attributes.scale.min);
@@ -101,17 +103,20 @@ const parseMeta = (obj: any): CompressInfo => {
 };
 
 // whether the LCC scene carries spherical harmonics. Mirrors splat-transform's lccHasSH.
-const lccHasSH = (lccJson: any): boolean => {
+const lccHasSH = (lccJson: LccJson): boolean => {
     if (lccJson.fileType === 'Portable') return false;
     if (lccJson.fileType === 'Quality') return true;
-    return lccJson.attributes.findIndex((attr: any) => attr.name === 'shcoef') !== -1;
+    return lccJson.attributes.findIndex((attr) => attr.name === 'shcoef') !== -1;
 };
 
 // decode a packed rotation quaternion into the four rot columns at index `idx`.
 // 3 components at 10 bits each + a 2-bit index of the omitted (largest) component.
 const decodeRotationInto = (
     v: number,
-    rot0: Float32Array, rot1: Float32Array, rot2: Float32Array, rot3: Float32Array,
+    rot0: Float32Array,
+    rot1: Float32Array,
+    rot2: Float32Array,
+    rot3: Float32Array,
     idx: number
 ) => {
     const d0 = (v & 1023) / 1023.0;
@@ -123,13 +128,25 @@ const decodeRotationInto = (
     const qz = d2 * SQRT_2 - SQRT_2_INV;
     const qw = Math.sqrt(1 - Math.min(1.0, qx * qx + qy * qy + qz * qz));
     if (d3 === 0) {
-        rot0[idx] = qz; rot1[idx] = qw; rot2[idx] = qx; rot3[idx] = qy;
+        rot0[idx] = qz;
+        rot1[idx] = qw;
+        rot2[idx] = qx;
+        rot3[idx] = qy;
     } else if (d3 === 1) {
-        rot0[idx] = qz; rot1[idx] = qx; rot2[idx] = qw; rot3[idx] = qy;
+        rot0[idx] = qz;
+        rot1[idx] = qx;
+        rot2[idx] = qw;
+        rot3[idx] = qy;
     } else if (d3 === 2) {
-        rot0[idx] = qz; rot1[idx] = qx; rot2[idx] = qy; rot3[idx] = qw;
+        rot0[idx] = qz;
+        rot1[idx] = qx;
+        rot2[idx] = qy;
+        rot3[idx] = qw;
     } else {
-        rot0[idx] = qw; rot1[idx] = qx; rot2[idx] = qy; rot3[idx] = qz;
+        rot0[idx] = qw;
+        rot1[idx] = qx;
+        rot2[idx] = qy;
+        rot3[idx] = qz;
     }
 };
 
@@ -142,12 +159,23 @@ const deserializeEnvironment = (raw: Uint8Array, compressInfo: CompressInfo, has
         throw new Error('Invalid environment data size');
     }
     const columns = [
-        'x', 'y', 'z',
-        'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity',
-        'scale_0', 'scale_1', 'scale_2',
-        'rot_0', 'rot_1', 'rot_2', 'rot_3'
-    ].concat(hasSH ? new Array(45).fill('').map((_, i) => `f_rest_${i}`) : [])
-    .map(name => new Column(name, new Float32Array(numGaussians)));
+        'x',
+        'y',
+        'z',
+        'f_dc_0',
+        'f_dc_1',
+        'f_dc_2',
+        'opacity',
+        'scale_0',
+        'scale_1',
+        'scale_2',
+        'rot_0',
+        'rot_1',
+        'rot_2',
+        'rot_3'
+    ]
+        .concat(hasSH ? new Array(45).fill('').map((_, i) => `f_rest_${i}`) : [])
+        .map((name) => new Column(name, new Float32Array(numGaussians)));
 
     const { envScaleMin: scaleMin, envScaleMax: scaleMax, envShMin: shMin, envShMax: shMax } = compressInfo;
     const rot0 = columns[10].data as Float32Array;
@@ -165,17 +193,23 @@ const deserializeEnvironment = (raw: Uint8Array, compressInfo: CompressInfo, has
         (columns[4].data as Float32Array)[i] = invSH0ToColor(dataView.getUint8(off + 13) / 255.0);
         (columns[5].data as Float32Array)[i] = invSH0ToColor(dataView.getUint8(off + 14) / 255.0);
         (columns[6].data as Float32Array)[i] = invSigmoid(dataView.getUint8(off + 15) / 255.0);
-        (columns[7].data as Float32Array)[i] = invLinearScale(mix(scaleMin.x, scaleMax.x, dataView.getUint16(off + 16, true) / 65535.0));
-        (columns[8].data as Float32Array)[i] = invLinearScale(mix(scaleMin.y, scaleMax.y, dataView.getUint16(off + 18, true) / 65535.0));
-        (columns[9].data as Float32Array)[i] = invLinearScale(mix(scaleMin.z, scaleMax.z, dataView.getUint16(off + 20, true) / 65535.0));
+        (columns[7].data as Float32Array)[i] = invLinearScale(
+            mix(scaleMin.x, scaleMax.x, dataView.getUint16(off + 16, true) / 65535.0)
+        );
+        (columns[8].data as Float32Array)[i] = invLinearScale(
+            mix(scaleMin.y, scaleMax.y, dataView.getUint16(off + 18, true) / 65535.0)
+        );
+        (columns[9].data as Float32Array)[i] = invLinearScale(
+            mix(scaleMin.z, scaleMax.z, dataView.getUint16(off + 20, true) / 65535.0)
+        );
         decodeRotationInto(dataView.getUint32(off + 22, true), rot0, rot1, rot2, rot3, i);
         // bytes 26-32: normals (skipped, matching splat-transform)
         if (hasSH) {
             for (let j = 0; j < 15; ++j) {
                 const enc = dataView.getUint32(off + 32 + j * 4, true);
-                const nx = (enc & 0x7FF) / 2047.0;
-                const ny = ((enc >> 11) & 0x3FF) / 1023.0;
-                const nz = ((enc >> 21) & 0x7FF) / 2047.0;
+                const nx = (enc & 0x7ff) / 2047.0;
+                const ny = ((enc >> 11) & 0x3ff) / 1023.0;
+                const nz = ((enc >> 21) & 0x7ff) / 2047.0;
                 (columns[14 + j].data as Float32Array)[i] = mix(shMin.x, shMax.x, nx);
                 (columns[14 + j + 15].data as Float32Array)[i] = mix(shMin.y, shMax.y, ny);
                 (columns[14 + j + 30].data as Float32Array)[i] = mix(shMin.z, shMax.z, nz);
@@ -188,7 +222,7 @@ const deserializeEnvironment = (raw: Uint8Array, compressInfo: CompressInfo, has
 // read the LCC v1 environment (environment.bin next to meta.lcc) as a DataTable,
 // or null if there is no skybox / it can't be decoded.
 const readLccV1Environment = async (fileSystem: ReadFileSystem, filename: string): Promise<DataTable | null> => {
-    let lccJson: any;
+    let lccJson: LccJson;
     try {
         lccJson = JSON.parse(new TextDecoder().decode(await readBytes(fileSystem, filename)));
     } catch {
@@ -219,7 +253,7 @@ const readLccV1Environment = async (fileSystem: ReadFileSystem, filename: string
 
 // resolve the LCC2 env chunk filename from meta.lcc2, tolerating the legacy
 // protocol (root.files, needing a '.sog' suffix). Returns null if no env chunk.
-const resolveLcc2EnvFile = (meta: any): string | null => {
+const resolveLcc2EnvFile = (meta: Lcc2Meta): string | null => {
     // env detection: meta.root.data.env.name is the index into the splat files.
     const envIndex = meta?.root?.data?.env?.name;
     if (envIndex === undefined || envIndex === null) {
@@ -255,7 +289,13 @@ const materializeChunk = async (fileSystem: ReadFileSystem, chunkPath: string): 
             const source = await fileSystem.createSource(chunkPath);
             const zipFs = new ZipReadFileSystem(source);
             try {
-                const sources = await readFile({ filename: 'meta.json', inputFormat: 'sog', options: defaultOptions, params: [], fileSystem: zipFs });
+                const sources = await readFile({
+                    filename: 'meta.json',
+                    inputFormat: 'sog',
+                    options: defaultOptions,
+                    params: [],
+                    fileSystem: zipFs
+                });
                 const table = await materializeToDataTable(sources[0], pool);
                 await sources[0].close();
                 return table;
@@ -263,7 +303,13 @@ const materializeChunk = async (fileSystem: ReadFileSystem, chunkPath: string): 
                 zipFs.close();
             }
         }
-        const sources = await readFile({ filename: chunkPath, inputFormat, options: defaultOptions, params: [], fileSystem });
+        const sources = await readFile({
+            filename: chunkPath,
+            inputFormat,
+            options: defaultOptions,
+            params: [],
+            fileSystem
+        });
         const table = await materializeToDataTable(sources[0], pool);
         await sources[0].close();
         return table;
@@ -274,7 +320,7 @@ const materializeChunk = async (fileSystem: ReadFileSystem, chunkPath: string): 
 
 // read the LCC2 environment chunk as a DataTable, or null if there is no skybox.
 const readLcc2Environment = async (fileSystem: ReadFileSystem, filename: string): Promise<DataTable | null> => {
-    let meta: any;
+    let meta: Lcc2Meta;
     try {
         meta = JSON.parse(new TextDecoder().decode(await readBytes(fileSystem, filename)));
     } catch {
@@ -302,10 +348,19 @@ const readLcc2Environment = async (fileSystem: ReadFileSystem, filename: string)
 // maps to the position/geometric/color layers. Everything else in a table is
 // either an f_rest_* SH coefficient or an `other`-layer extra.
 const STANDARD_COLUMNS = [
-    'x', 'y', 'z',
-    'rot_0', 'rot_1', 'rot_2', 'rot_3',
-    'scale_0', 'scale_1', 'scale_2',
-    'f_dc_0', 'f_dc_1', 'f_dc_2',
+    'x',
+    'y',
+    'z',
+    'rot_0',
+    'rot_1',
+    'rot_2',
+    'rot_3',
+    'scale_0',
+    'scale_1',
+    'scale_2',
+    'f_dc_0',
+    'f_dc_1',
+    'f_dc_2',
     'opacity'
 ];
 
@@ -319,7 +374,7 @@ const shRestCount = (shBands: number) => 3 * ((shBands + 1) ** 2 - 1);
 // `other`-layer extra: float32 and float64 both narrow to float32, everything
 // else is read as raw uint32 words.
 const extraTypeOf = (column: Column): ExtraColumn['type'] => {
-    return (column.dataType === 'float32' || column.dataType === 'float64') ? 'float32' : 'uint32';
+    return column.dataType === 'float32' || column.dataType === 'float64' ? 'float32' : 'uint32';
 };
 
 /**
@@ -362,10 +417,7 @@ const extraTypeOf = (column: Column): ExtraColumn['type'] => {
  * @param sceneLayout - the scene source's `meta`; only `shBands` and
  * `extraColumns` are read
  */
-const conformToSceneLayout = (
-    table: DataTable,
-    sceneLayout: Pick<ChunkSourceMetadata, 'shBands' | 'extraColumns'>
-) => {
+const conformToSceneLayout = (table: DataTable, sceneLayout: Pick<ChunkSourceMetadata, 'shBands' | 'extraColumns'>) => {
     const numRows = table.numRows;
     const zeros = (type: ExtraColumn['type']) => {
         return type === 'uint32' ? new Uint32Array(numRows) : new Float32Array(numRows);
@@ -390,9 +442,7 @@ const conformToSceneLayout = (
     // exactly the scene's extras, in the scene's order
     for (const { name, type } of sceneLayout.extraColumns) {
         const column = table.getColumnByName(name);
-        columns.push(column && extraTypeOf(column) === type ?
-            column :
-            new Column(name, zeros(type)));
+        columns.push(column && extraTypeOf(column) === type ? column : new Column(name, zeros(type)));
     }
 
     table.columns = columns;
@@ -417,9 +467,12 @@ const readLccEnvironment = async (
     // so an `...meta.lcc?v=2` still dispatches instead of silently returning
     // null. Matches loader.ts's gate, which is derived the same way.
     const inputFormat = getInputFormat(filename);
-    const table = inputFormat === 'lcc2' ? await readLcc2Environment(fileSystem, filename) :
-        inputFormat === 'lcc' ? await readLccV1Environment(fileSystem, filename) :
-            null;
+    const table =
+        inputFormat === 'lcc2'
+            ? await readLcc2Environment(fileSystem, filename)
+            : inputFormat === 'lcc'
+              ? await readLccV1Environment(fileSystem, filename)
+              : null;
     if (table && sceneLayout) {
         conformToSceneLayout(table, sceneLayout);
     }

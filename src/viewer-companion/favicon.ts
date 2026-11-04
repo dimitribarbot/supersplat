@@ -13,11 +13,8 @@
 // Environment-agnostic (compiled for the export server via dist-shared):
 // string operations only.
 
-const escapeAttr = (text: string): string => text
-.replace(/&/g, '&amp;')
-.replace(/</g, '&lt;')
-.replace(/>/g, '&gt;')
-.replace(/"/g, '&quot;');
+const escapeAttr = (text: string): string =>
+    text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 export const faviconLinkTag = (href: string, mime?: string): string => {
     const type = mime ? ` type="${escapeAttr(mime)}"` : '';

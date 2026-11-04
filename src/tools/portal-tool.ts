@@ -2,12 +2,14 @@ import { Button, Container, Label, NumericInput, SelectInput } from '@playcanvas
 import { Entity, Quat, RotateGizmo, TranslateGizmo, Vec3 } from 'playcanvas';
 
 import { ElementType } from '../element';
-import { Events } from '../events';
+import type { Events } from '../events';
 import { PortalShape } from '../portal-shape';
-import { normalizePortalTransition, PortalTransition } from '../portal-transition';
-import { AddPortalOp, RemovePortalOp, SetStartSplatOp, UpdatePortalEntrypointOp, UpdatePortalOp, PortalData } from '../portals';
-import { Scene } from '../scene';
-import { Splat } from '../splat';
+import type { PortalTransition } from '../portal-transition';
+import { normalizePortalTransition } from '../portal-transition';
+import type { PortalData } from '../portals';
+import { AddPortalOp, RemovePortalOp, SetStartSplatOp, UpdatePortalEntrypointOp, UpdatePortalOp } from '../portals';
+import type { Scene } from '../scene';
+import type { Splat } from '../splat';
 import { i18n } from '../ui/localization';
 
 // temps for projecting a portal's quad corners to screen (click-to-select)
@@ -15,7 +17,12 @@ const qrot = new Quat();
 const lc = new Vec3();
 const wc = [new Vec3(), new Vec3(), new Vec3(), new Vec3()];
 const sc = [new Vec3(), new Vec3(), new Vec3(), new Vec3()];
-const LOCAL_CORNERS = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
+const LOCAL_CORNERS = [
+    [-0.5, -0.5],
+    [0.5, -0.5],
+    [0.5, 0.5],
+    [-0.5, 0.5]
+];
 
 // 2D point-in-triangle (sign test); orientation-agnostic.
 const edgeSign = (px: number, py: number, ax: number, ay: number, bx: number, by: number) => {
@@ -47,7 +54,7 @@ class PortalTool {
 
         // --- floating editor bar ---
         const bar = new Container({ class: ['select-toolbar', 'annotations-toolbar'], hidden: true });
-        bar.dom.addEventListener('pointerdown', e => e.stopPropagation());
+        bar.dom.addEventListener('pointerdown', (e) => e.stopPropagation());
 
         // icon-only: the label moves to the tooltip. E120/E111/E113 are the pcui
         // icon-font plus/move/rotate glyphs -- the same move/rotate the bottom
@@ -92,9 +99,9 @@ class PortalTool {
         const entryClearButton = new Button({ class: 'select-toolbar-mode', icon: 'E132' });
         entryClearButton.dom.title = i18n.t('portals.entrypoint.clear');
 
-        const group = (...els: any[]) => {
+        const group = (...els: Parameters<Container['append']>[0][]) => {
             const c = new Container({ class: 'select-toolbar-group' });
-            els.forEach(el => c.append(el));
+            els.forEach((el) => c.append(el));
             return c;
         };
         bar.append(addButton);
@@ -112,9 +119,9 @@ class PortalTool {
 
         // --- infinite-bounds popup (cross layout) ---
         const boundsPopup = new Container({ class: 'portal-bounds-popup', hidden: true });
-        boundsPopup.dom.addEventListener('pointerdown', e => e.stopPropagation());
+        boundsPopup.dom.addEventListener('pointerdown', (e) => e.stopPropagation());
         const EDGE_DIRS = ['top', 'right', 'bottom', 'left'] as const;
-        type EdgeDir = typeof EDGE_DIRS[number];
+        type EdgeDir = (typeof EDGE_DIRS)[number];
         const edgeGlyph: Record<EdgeDir, string> = { top: '↑', right: '→', bottom: '↓', left: '←' };
         const edgeButtons = {} as Record<EdgeDir, Button>;
         EDGE_DIRS.forEach((dir) => {
@@ -136,7 +143,7 @@ class PortalTool {
                 return;
             }
             const e = edgesOf(z);
-            EDGE_DIRS.forEach(dir => edgeButtons[dir].class[e[dir] ? 'add' : 'remove']('active'));
+            EDGE_DIRS.forEach((dir) => edgeButtons[dir].class[e[dir] ? 'add' : 'remove']('active'));
         };
 
         const positionBoundsPopup = () => {
@@ -170,7 +177,10 @@ class PortalTool {
                 if (!z) return;
                 const oldEdges = edgesOf(z);
                 const newEdges = { ...oldEdges, [dir]: !oldEdges[dir] };
-                events.fire('edit.add', new UpdatePortalOp(events, z.id, { infinite: z.infinite }, { infinite: newEdges }));
+                events.fire(
+                    'edit.add',
+                    new UpdatePortalOp(events, z.id, { infinite: z.infinite }, { infinite: newEdges })
+                );
             });
         });
 
@@ -185,11 +195,12 @@ class PortalTool {
         // --- scene dropdown helpers (mirrors alignment-panel.ts:111-133) ---
         const splatList = () => scene.getElementsByType(ElementType.splat) as Splat[];
         const splatName = (splat: Splat) => {
-            const filename = splat.name ?? (splat.asset.file as any)?.filename ?? `Splat ${splat.uid}`;
+            const filename =
+                splat.name ?? (splat.asset.file as { filename?: string })?.filename ?? `Splat ${splat.uid}`;
             return `${splat.uid}: ${filename}`;
         };
         const refreshSceneOptions = () => {
-            const options = splatList().map(splat => ({ v: splat.uid, t: splatName(splat) }));
+            const options = splatList().map((splat) => ({ v: splat.uid, t: splatName(splat) }));
             frontInput.options = options;
             backInput.options = options;
             startInput.options = options;
@@ -201,8 +212,8 @@ class PortalTool {
                 if (p.backUid !== null) referenced.add(p.backUid);
             });
             entrySceneInput.options = splatList()
-            .filter(s => referenced.has(s.uid))
-            .map(s => ({ v: s.uid, t: splatName(s) }));
+                .filter((s) => referenced.has(s.uid))
+                .map((s) => ({ v: s.uid, t: splatName(s) }));
         };
 
         let suppress = false;
@@ -228,8 +239,8 @@ class PortalTool {
             }
             startInput.value = events.invoke('portals.startSplat') as number | null;
             // entrypoint: reconcile the authoritative selection against current options
-            const epOptions = entrySceneInput.options as { v: number, t: string }[];
-            if (selectedEntryUid != null && !epOptions.some(o => o.v === selectedEntryUid)) {
+            const epOptions = entrySceneInput.options as { v: number; t: string }[];
+            if (selectedEntryUid != null && !epOptions.some((o) => o.v === selectedEntryUid)) {
                 selectedEntryUid = epOptions.length > 0 ? epOptions[0].v : null;
             } else if (selectedEntryUid == null && epOptions.length > 0) {
                 selectedEntryUid = epOptions[0].v;
@@ -335,7 +346,7 @@ class PortalTool {
             // Spawn a vertical wall yawed so its face points back at the camera,
             // so a new portal appears face-on where the author is looking.
             const q = new Quat();
-            q.setFromEulerAngles(0, Math.atan2(cp.x - t.x, cp.z - t.z) * 180 / Math.PI, 0);
+            q.setFromEulerAngles(0, (Math.atan2(cp.x - t.x, cp.z - t.z) * 180) / Math.PI, 0);
             const splats = splatList();
             const data: PortalData = {
                 id: events.invoke('portals.newId') as string,
@@ -422,12 +433,18 @@ class PortalTool {
             if (!moved && !rotated) {
                 return;
             }
-            events.fire('edit.add', new UpdatePortalOp(
-                events,
-                z.id,
-                { position: [dragPos.x, dragPos.y, dragPos.z], rotation: [dragRot.x, dragRot.y, dragRot.z, dragRot.w] },
-                { position: [pos.x, pos.y, pos.z], rotation: [rot.x, rot.y, rot.z, rot.w] }
-            ));
+            events.fire(
+                'edit.add',
+                new UpdatePortalOp(
+                    events,
+                    z.id,
+                    {
+                        position: [dragPos.x, dragPos.y, dragPos.z],
+                        rotation: [dragRot.x, dragRot.y, dragRot.z, dragRot.w]
+                    },
+                    { position: [pos.x, pos.y, pos.z], rotation: [rot.x, rot.y, rot.z, rot.w] }
+                )
+            );
         };
         translateGizmo.on('transform:end', onEnd);
         rotateGizmo.on('transform:end', onEnd);
@@ -437,7 +454,9 @@ class PortalTool {
 
         const updateGizmoSize = () => {
             const { camera, canvas } = scene;
-            const size = camera.ortho ? 1125 / canvas.clientHeight : 1200 / Math.max(canvas.clientWidth, canvas.clientHeight);
+            const size = camera.ortho
+                ? 1125 / canvas.clientHeight
+                : 1200 / Math.max(canvas.clientWidth, canvas.clientHeight);
             translateGizmo.size = size;
             rotateGizmo.size = size;
             entryGizmo.size = size;
@@ -460,12 +479,14 @@ class PortalTool {
         // menu, view cube, the portal bar) which are all appended after it.
         canvasContainer.dom.prepend(epSvg);
         const epNs = epSvg.namespaceURI;
-        const epDots: { circle: SVGCircleElement, label: SVGTextElement }[] = [];
+        const epDots: { circle: SVGCircleElement; label: SVGTextElement }[] = [];
         const epWorld = new Vec3();
         const epScreen = new Vec3();
 
         const drawEntrypoints = () => {
-            const eps = active ? (events.invoke('portals.exportEntrypoints') as Record<string, [number, number, number]>) : {};
+            const eps = active
+                ? (events.invoke('portals.exportEntrypoints') as Record<string, [number, number, number]>)
+                : {};
             const uids = Object.keys(eps);
             while (epDots.length < uids.length) {
                 const circle = document.createElementNS(epNs, 'circle') as SVGCircleElement;
@@ -541,7 +562,7 @@ class PortalTool {
         const edgeMidS = new Vec3();
         const edgeOutS = new Vec3();
         // unit edge midpoints in the portal's local XY frame (scaled by w/h below)
-        const EDGE_MIDS: { dir: EdgeDir, x: number, y: number }[] = [
+        const EDGE_MIDS: { dir: EdgeDir; x: number; y: number }[] = [
             { dir: 'top', x: 0, y: 0.5 },
             { dir: 'right', x: 0.5, y: 0 },
             { dir: 'bottom', x: 0, y: -0.5 },
@@ -551,7 +572,7 @@ class PortalTool {
         const drawEdgeIcons = () => {
             const z = active ? selected() : null;
             const edges = z ? edgesOf(z) : emptyEdges();
-            const dirs = EDGE_MIDS.filter(d => edges[d.dir]);
+            const dirs = EDGE_MIDS.filter((d) => edges[d.dir]);
             while (edgeArrows.length < dirs.length) {
                 const t = document.createElementNS(epNs, 'text') as SVGTextElement;
                 t.setAttribute('fill', '#00ccff');
@@ -591,9 +612,11 @@ class PortalTool {
                     t.setAttribute('visibility', 'hidden');
                     return;
                 }
-                const mx = edgeMidS.x * cw, my = edgeMidS.y * ch;
-                const ox = edgeOutS.x * cw, oy = edgeOutS.y * ch;
-                const angle = Math.atan2(oy - my, ox - mx) * 180 / Math.PI;
+                const mx = edgeMidS.x * cw,
+                    my = edgeMidS.y * ch;
+                const ox = edgeOutS.x * cw,
+                    oy = edgeOutS.y * ch;
+                const angle = (Math.atan2(oy - my, ox - mx) * 180) / Math.PI;
                 t.setAttribute('visibility', 'visible');
                 t.setAttribute('x', `${mx}`);
                 t.setAttribute('y', `${my}`);
@@ -619,7 +642,9 @@ class PortalTool {
             // once the camera has moved clear.
             const cp = events.invoke('camera.getPose')?.position;
             if (cp) {
-                const dx = cp.x - pos[0], dy = cp.y - pos[1], dz = cp.z - pos[2];
+                const dx = cp.x - pos[0],
+                    dy = cp.y - pos[1],
+                    dz = cp.z - pos[2];
                 if (dx * dx + dy * dy + dz * dz < ENTRY_GIZMO_MIN_DIST * ENTRY_GIZMO_MIN_DIST) {
                     entryGizmoArmed = true;
                     return;
@@ -642,11 +667,15 @@ class PortalTool {
             if (selectedEntryUid == null) return;
             const p = entryPivot.getLocalPosition();
             if (p.x === entryDragStart.x && p.y === entryDragStart.y && p.z === entryDragStart.z) return;
-            events.fire('edit.add', new UpdatePortalEntrypointOp(
-                events, selectedEntryUid,
-                [entryDragStart.x, entryDragStart.y, entryDragStart.z],
-                [p.x, p.y, p.z]
-            ));
+            events.fire(
+                'edit.add',
+                new UpdatePortalEntrypointOp(
+                    events,
+                    selectedEntryUid,
+                    [entryDragStart.x, entryDragStart.y, entryDragStart.z],
+                    [p.x, p.y, p.z]
+                )
+            );
         });
 
         // --- click to select by portal center proximity ---
@@ -677,8 +706,10 @@ class PortalTool {
                 if (!allInFront) {
                     continue;
                 }
-                if (pointInTri(offsetX, offsetY, sc[0], sc[1], sc[2]) ||
-                    pointInTri(offsetX, offsetY, sc[0], sc[2], sc[3])) {
+                if (
+                    pointInTri(offsetX, offsetY, sc[0], sc[1], sc[2]) ||
+                    pointInTri(offsetX, offsetY, sc[0], sc[2], sc[3])
+                ) {
                     return z;
                 }
             }
@@ -746,7 +777,7 @@ class PortalTool {
                 return;
             }
             const zones = events.invoke('portals.list') as PortalData[];
-            const index = zones.findIndex(z => z.id === id);
+            const index = zones.findIndex((z) => z.id === id);
             const data = zones[index];
             if (data) {
                 events.fire('edit.add', new RemovePortalOp(events, data, index));
@@ -758,7 +789,7 @@ class PortalTool {
         //     tools are in use. The gizmo + editing are still active-only. ---
         const syncShapes = () => {
             const zones = events.invoke('portals.list') as PortalData[];
-            const liveIds = new Set(zones.map(z => z.id));
+            const liveIds = new Set(zones.map((z) => z.id));
             // remove shapes for deleted portals
             for (const [id, shape] of shapes) {
                 if (!liveIds.has(id)) {

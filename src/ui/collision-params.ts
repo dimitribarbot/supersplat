@@ -1,9 +1,11 @@
 import { Container, Label, SelectInput, SliderInput } from '@playcanvas/pcui';
 
-import { Events } from '../events';
+import type { Events } from '../events';
 import type { SceneCollision } from '../export-options';
-import { i18n } from './localization';
 import { buildPortalBundle } from '../portal-export';
+import type { ExportPortal } from '../portal-export';
+
+import { i18n } from './localization';
 
 const defaults = (): SceneCollision => ({ environment: 'indoor', radius: 50, voxelSize: 0.05 });
 
@@ -23,8 +25,8 @@ class PerSceneCollisionPanel extends Container {
     constructor(events: Events) {
         super({ class: 'per-scene-collision', flex: true, flexDirection: 'column' });
 
-        const values = new Map<number, SceneCollision>();   // uid -> values
-        const order: number[] = [];                          // index -> uid
+        const values = new Map<number, SceneCollision>(); // uid -> values
+        const order: number[] = []; // index -> uid
 
         const card = (uid: number, index: number, name: string) => {
             const v = values.get(uid) ?? defaults();
@@ -35,7 +37,7 @@ class PerSceneCollisionPanel extends Container {
             const head = new Container({ class: 'scene-head' });
             const caret = new Label({ class: 'caret', text: '▸' });
             const title = new Label({ class: 'scene-name', text: name });
-            title.dom.title = name;                          // tooltip fallback when ellipsised
+            title.dom.title = name; // tooltip fallback when ellipsised
             const summary = new Label({ class: 'scene-summary' });
             head.append(caret);
             head.append(title);
@@ -52,9 +54,15 @@ class PerSceneCollisionPanel extends Container {
                 ]
             });
             const radiusSlider = new SliderInput({ class: 'slider', min: 5, max: 500, precision: 0, value: v.radius });
-            const voxelSlider = new SliderInput({ class: 'slider', min: 0.02, max: 0.5, precision: 2, value: v.voxelSize });
+            const voxelSlider = new SliderInput({
+                class: 'slider',
+                min: 0.02,
+                max: 0.5,
+                precision: 2,
+                value: v.voxelSize
+            });
 
-            const row = (labelKey: string, widget: any) => {
+            const row = (labelKey: string, widget: Parameters<Container['append']>[0]) => {
                 const c = new Container({ class: 'row' });
                 c.append(new Label({ class: 'label', text: i18n.t(labelKey) }));
                 c.append(widget);
@@ -65,7 +73,9 @@ class PerSceneCollisionPanel extends Container {
             body.append(row('popup.export.voxel-size', voxelSlider));
 
             const refreshSummary = () => {
-                const envText = i18n.t(v.environment === 'indoor' ? 'popup.export.environment.indoor' : 'popup.export.environment.outdoor');
+                const envText = i18n.t(
+                    v.environment === 'indoor' ? 'popup.export.environment.indoor' : 'popup.export.environment.outdoor'
+                );
                 summary.text = `${envText} · ${v.radius} · ${v.voxelSize}`;
             };
             refreshSummary();
@@ -97,22 +107,32 @@ class PerSceneCollisionPanel extends Container {
             this.clear();
             order.length = 0;
 
-            const portalsRaw = events.invoke('portals.export') ?? [];
-            const startUid = events.invoke('portals.startSplat') ?? null;
+            const portalsRaw = events.invoke<ExportPortal[]>('portals.export') ?? [];
+            const startUid = events.invoke<number | null>('portals.startSplat') ?? null;
             const allSplats = events.invoke('scene.allSplats') ?? [];
-            const availableUids = allSplats.map((s: any) => s.uid);
+            const availableUids = allSplats.map((s) => s.uid);
             const preferredStartUid = events.invoke('selection')?.uid ?? null;
-            const bundle = (events.invoke('portals.count') ?? 0) > 0 ?
-                buildPortalBundle({ portals: portalsRaw, startUid, availableUids, streaming, collision: true, preferredStartUid }) :
-                null;
+            const bundle =
+                (events.invoke<number>('portals.count') ?? 0) > 0
+                    ? buildPortalBundle({
+                          portals: portalsRaw,
+                          startUid,
+                          availableUids,
+                          streaming,
+                          collision: true,
+                          preferredStartUid
+                      })
+                    : null;
             if (!bundle) {
                 this.hidden = true;
                 return;
             }
             this.hidden = false;
             bundle.sceneUids.forEach((uid, index) => {
-                const splat = allSplats.find((s: any) => s.uid === uid);
-                const name = splat ? `${uid}: ${(splat.name ?? splat.asset?.file?.filename ?? uid)}` : `Scene ${index}`;
+                const splat = allSplats.find((s) => s.uid === uid);
+                const name = splat
+                    ? `${uid}: ${splat.name ?? (splat.asset?.file as { filename?: string })?.filename ?? uid}`
+                    : `Scene ${index}`;
                 order.push(uid);
                 this.append(card(uid, index, name));
             });

@@ -16,30 +16,30 @@ type TilePhase = 'dismantle' | 'reconstruct';
 type TransitionPhase = 'idle' | 'dismantling' | 'covered' | 'reconstructing';
 
 type TransitionState = {
-    phase: TransitionPhase,
-    target: number | null   // scene index the crossing is heading for
+    phase: TransitionPhase;
+    target: number | null; // scene index the crossing is heading for
 };
 
 type TransitionEvent =
     // A transition-enabled portal crossing was detected (only acts when idle).
-    { type: 'crossing', target: number } |
+    | { type: 'crossing'; target: number }
     // The dismantle sweep finished. `target` is the crossing re-resolved at that
     // instant: null when the user walked back through the doorway (cancel).
-    { type: 'covered', target: number | null } |
+    | { type: 'covered'; target: number | null }
     // The destination scene is on screen behind the cover (switched and ready,
     // or the loading overlay just hid).
-    { type: 'sceneShown' } |
+    | { type: 'sceneShown' }
     // The reconstruct sweep finished.
-    { type: 'done' } |
+    | { type: 'done' }
     // Error/watchdog path: drop the cover immediately.
-    { type: 'abort' };
+    | { type: 'abort' };
 
 type TransitionActions = {
-    cover: 'none' | 'dismantle' | 'reconstruct' | 'clear',
-    dispatchTarget: number | null   // hand this crossing to crossingReducer
+    cover: 'none' | 'dismantle' | 'reconstruct' | 'clear';
+    dispatchTarget: number | null; // hand this crossing to crossingReducer
 };
 
-type TransitionResult = { state: TransitionState, actions: TransitionActions };
+type TransitionResult = { state: TransitionState; actions: TransitionActions };
 
 // Which cover the exported viewer plays when a portal is crossed. NOT
 // stringified into the viewer -- this is a plain import used by the editor UI,
@@ -70,16 +70,16 @@ const normalizePortalTransition = (v: unknown): PortalTransition => {
 // display does not animate several thousand composited divs. Phones and small
 // laptops hit 26px exactly; only big displays fall back to a coarser grid, and
 // they land around 40-56px -- still ~4x finer than the 110px this replaced.
-const tileGrid = (width: number, height: number): { cols: number, rows: number } => {
+const tileGrid = (width: number, height: number): { cols: number; rows: number } => {
     const TARGET = 26;
     const MAX_TILES = 1200;
-    const w = (typeof width === 'number' && width > 0) ? width : TARGET;
-    const h = (typeof height === 'number' && height > 0) ? height : TARGET;
+    const w = typeof width === 'number' && width > 0 ? width : TARGET;
+    const h = typeof height === 'number' && height > 0 ? height : TARGET;
     let cols = Math.round(w / TARGET);
     if (cols < 6) {
         cols = 6;
     }
-    let rows = Math.round(cols * h / w);
+    let rows = Math.round((cols * h) / w);
     if (rows < 4) {
         rows = 4;
     }
@@ -119,7 +119,7 @@ const tileGrid = (width: number, height: number): { cols: number, rows: number }
 // for a finite grid (the `> 1` clamp below is defensive, not reachable in
 // practice); (ux, uy) is the outward unit vector used for the fly-in / fly-out
 // translation.
-const tileGeometry = (cols: number, rows: number, index: number): { dist: number, ux: number, uy: number } => {
+const tileGeometry = (cols: number, rows: number, index: number): { dist: number; ux: number; uy: number } => {
     const c = index % cols;
     const r = Math.floor(index / cols);
     const dx = (c + 0.5) / cols - 0.5;
@@ -136,7 +136,7 @@ const tileGeometry = (cols: number, rows: number, index: number): { dist: number
 // Stagger for one tile. Dismantle runs edges -> centre (the centre of the
 // outgoing scene is covered last); reconstruct runs centre -> edges.
 const tileDelay = (dist: number, sweep: number, phase: TilePhase): number => {
-    return (phase === 'dismantle') ? (1 - dist) * sweep : dist * sweep;
+    return phase === 'dismantle' ? (1 - dist) * sweep : dist * sweep;
 };
 
 // Transition lifecycle. The wiring applies the returned actions; it never makes

@@ -1,20 +1,20 @@
 // Export-shaped annotation, as it appears in viewerSettingsJson.annotations
 // (produced by annotations.export in src/annotations.ts).
 type AnyAnnotation = {
-    title?: string,
-    text?: string,
+    title?: string;
+    text?: string;
     extras?: {
-        url?: string,
-        images?: { src: string, caption: string }[],
-        i18n?: Record<string, { title?: string, text?: string, url?: string, captions?: string[] }>
-    }
+        url?: string;
+        images?: { src: string; caption: string }[];
+        i18n?: Record<string, { title?: string; text?: string; url?: string; captions?: string[] }>;
+    };
 };
 
 // Injection gate: an export with no translated annotation gets no companion at
 // all, which keeps an untranslated export byte-identical to what it was before
 // this feature existed.
 const hasAnnotationTranslations = (annotations: AnyAnnotation[]): boolean => {
-    return (annotations || []).some(a => Object.keys(a?.extras?.i18n ?? {}).length > 0);
+    return (annotations || []).some((a) => Object.keys(a?.extras?.i18n ?? {}).length > 0);
 };
 
 // Apply one language's overrides to an annotation IN PLACE.
@@ -30,8 +30,8 @@ const hasAnnotationTranslations = (annotations: AnyAnnotation[]): boolean => {
 //
 // Self-contained (no module-level references) so it is injected verbatim into
 // the runtime via Function.toString().
-const applyAnnotationTranslation = (ann: any, lang: string): void => {
-    const extras = (ann && ann.extras) || {};
+const applyAnnotationTranslation = (ann: AnyAnnotation, lang: string): void => {
+    const extras: NonNullable<AnyAnnotation['extras']> = (ann && ann.extras) || {};
     const t = (extras.i18n || {})[lang];
     if (!t) {
         return;

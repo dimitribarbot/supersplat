@@ -26,19 +26,20 @@ type PortalLodMeta = {
 // non-empty (callers fall back to coarsest-only when it is absent). Pure and
 // self-contained for stringification into the runtime.
 const lodMinLevelForBudget = (counts: number[], budget: number): number => {
-    const maxLevel = counts.length - 1;          // coarsest
+    const maxLevel = counts.length - 1; // coarsest
     if (maxLevel < 0) {
         return 0;
     }
     if (!budget || budget <= 0) {
-        return maxLevel;                         // unknown budget -> coarsest only
+        return maxLevel; // unknown budget -> coarsest only
     }
-    let minLevel = maxLevel;                      // always include the coarsest level
-    for (let lv = maxLevel - 1; lv >= 0; lv--) {  // walk toward finer (counts increase)
+    let minLevel = maxLevel; // always include the coarsest level
+    for (let lv = maxLevel - 1; lv >= 0; lv--) {
+        // walk toward finer (counts increase)
         if (counts[lv] <= budget) {
             minLevel = lv;
         } else {
-            break;                               // too big to fully display -> stop
+            break; // too big to fully display -> stop
         }
     }
     return minLevel;
@@ -56,7 +57,7 @@ const collectLodFileUrls = (meta: PortalLodMeta, metaUrl: string, minLevel?: num
         return [];
     }
     const maxLevel = meta.lodLevels - 1;
-    let lo = (typeof minLevel === 'number') ? minLevel : maxLevel;
+    let lo = typeof minLevel === 'number' ? minLevel : maxLevel;
     if (lo < 0) {
         lo = 0;
     }
@@ -144,11 +145,11 @@ const collectSogBlockFileUrls = (blockMeta: PortalSogBlockMeta, blockMetaUrl: st
         return dir + filename;
     };
 
-    const keys = ['means', 'scales', 'quats', 'sh0', 'shN'];
+    const keys: (keyof PortalSogBlockMeta)[] = ['means', 'scales', 'quats', 'sh0', 'shN'];
     const seen: Record<string, boolean> = {};
     const urls: string[] = [];
     for (let i = 0; i < keys.length; i++) {
-        const section = (blockMeta as any)[keys[i]];
+        const section = blockMeta[keys[i]];
         const files = section && section.files;
         if (files) {
             for (let j = 0; j < files.length; j++) {
@@ -252,7 +253,7 @@ const assignPinDepths = (
 ): Record<number, number> => {
     const coarsest = (s: number): number => {
         const c = sceneLodCounts && sceneLodCounts[s];
-        return (c && c.length) ? c.length - 1 : 0;
+        return c && c.length ? c.length - 1 : 0;
     };
     const baseDepth = (s: number): number => {
         const max = coarsest(s);
@@ -268,7 +269,7 @@ const assignPinDepths = (
         }
         let sum = 0;
         for (let lv = d; lv < c.length; lv++) {
-            sum += (c[lv] || 0);
+            sum += c[lv] || 0;
         }
         return sum;
     };
@@ -302,7 +303,7 @@ const assignPinDepths = (
         for (let i = 0; i < neighbours.length; i++) {
             const n = neighbours[i];
             if (depths[n] >= coarsest(n)) {
-                continue;                    // already at its coarsest
+                continue; // already at its coarsest
             }
             const c = cost(n, depths[n]);
             if (c > pickCost) {
@@ -311,7 +312,7 @@ const assignPinDepths = (
             }
         }
         if (pick < 0) {
-            break;                           // no neighbour left to degrade
+            break; // no neighbour left to degrade
         }
         depths[pick] += 1;
     }
@@ -360,9 +361,9 @@ const computeResidentCeiling = (
     if (isMobile) {
         return floor;
     }
-    const gb = (typeof deviceMemoryGb === 'number' && deviceMemoryGb > 0) ? deviceMemoryGb : 8;
+    const gb = typeof deviceMemoryGb === 'number' && deviceMemoryGb > 0 ? deviceMemoryGb : 8;
     const cap = gb * 16000000;
-    const want = Math.min((typeof totalCost === 'number' && totalCost > 0) ? totalCost : 0, cap);
+    const want = Math.min(typeof totalCost === 'number' && totalCost > 0 ? totalCost : 0, cap);
     return Math.max(floor, want);
 };
 
@@ -431,7 +432,7 @@ const selectResidentScenes = (
     let cost = 0;
     const costOf = (i: number): number => {
         const c = sceneCosts && sceneCosts[i];
-        return (typeof c === 'number' && c > 0) ? c : 0;
+        return typeof c === 'number' && c > 0 ? c : 0;
     };
     const admit = (i: number, forced: boolean): void => {
         if (i < 0 || admitted[i]) {
@@ -538,7 +539,7 @@ const startSceneLodFloor = (
     if (typeof assignedDepth !== 'number') {
         return null;
     }
-    return (assignedDepth > Math.max(deviceFinest, 0)) ? assignedDepth : null;
+    return assignedDepth > Math.max(deviceFinest, 0) ? assignedDepth : null;
 };
 
 // Decide whether a pin pump may fetch one LOD-level batch right now, under the
@@ -576,8 +577,8 @@ const pinBatchAllowed = (
     if (activeAtDepth) {
         return true;
     }
-    const threshold = (typeof activePinDepth === 'number') ? activePinDepth :
-        ((typeof deviceFinest === 'number') ? deviceFinest : null);
+    const threshold =
+        typeof activePinDepth === 'number' ? activePinDepth : typeof deviceFinest === 'number' ? deviceFinest : null;
     if (threshold === null) {
         return batchLevel >= sceneCoarsest;
     }
@@ -608,18 +609,24 @@ const pinBatchAllowed = (
 // sampled forever and plan #6's steady-state-zero holds there. Pure and
 // self-contained (no imports, no sibling-function calls) so it can be
 // stringified verbatim into the exported viewer runtime via Function.toString().
-const shouldSampleDeviceFinest = (frame: number, finest: number | null, stableFrames: number, pinConsumed: boolean, floorBelowFinest?: boolean): boolean => {
+const shouldSampleDeviceFinest = (
+    frame: number,
+    finest: number | null,
+    stableFrames: number,
+    pinConsumed: boolean,
+    floorBelowFinest?: boolean
+): boolean => {
     if (finest !== null && finest <= 0) {
-        return false;                    // already at the finest possible level: nothing left to ratchet
+        return false; // already at the finest possible level: nothing left to ratchet
     }
-    const stableCap = floorBelowFinest ? 3600 : 600;   // slow-net: wait for a late ratchet; else settle at ~10s
+    const stableCap = floorBelowFinest ? 3600 : 600; // slow-net: wait for a late ratchet; else settle at ~10s
     if (pinConsumed && finest !== null && stableFrames >= stableCap) {
-        return false;                    // settled and the first pin cycle used it (no finer coming)
+        return false; // settled and the first pin cycle used it (no finer coming)
     }
     if (frame < 600) {
-        return true;                     // initial settle window: sample every frame
+        return true; // initial settle window: sample every frame
     }
-    return frame % 30 === 0;             // steady state: back off
+    return frame % 30 === 0; // steady state: back off
 };
 
 // Reveal gate: the coarsest LOD level a crossing/reveal accepts as "showable".
@@ -644,9 +651,7 @@ const computeRevealLevel = (
     pinDepth: number | null
 ): number => {
     const acceptable = Math.max(coarse - revealMargin, 0);
-    let target = (deviceFinest !== null && deviceFinest !== undefined) ?
-        Math.min(deviceFinest, coarse) :
-        acceptable;
+    let target = deviceFinest !== null && deviceFinest !== undefined ? Math.min(deviceFinest, coarse) : acceptable;
     if (isActive && pinReady && pinDepth !== null && pinDepth !== undefined && pinDepth > target) {
         target = pinDepth;
     }
@@ -677,7 +682,7 @@ const sceneRenderFloor = (
     held: number | null | undefined,
     finestFullyResident: number | null | undefined
 ): number => {
-    let floor = (held !== null && held !== undefined) ? Math.max(canonical, held) : canonical;
+    let floor = held !== null && held !== undefined ? Math.max(canonical, held) : canonical;
     if (finestFullyResident !== null && finestFullyResident !== undefined && finestFullyResident > floor) {
         floor = finestFullyResident;
     }
@@ -710,8 +715,8 @@ const parseBudgetParam = (search: string): number => {
             end = q.length;
         }
         const v = Number(q.substring(k + key.length, end));
-        return (isFinite(v) && v > 0) ? v * 1000000 : 0;
-    } catch (e) {
+        return isFinite(v) && v > 0 ? v * 1000000 : 0;
+    } catch {
         return 0;
     }
 };
@@ -735,7 +740,28 @@ const parseBudgetParam = (search: string): number => {
 // self-contained (no imports, no sibling-function calls) so it can be
 // stringified verbatim into the exported viewer runtime via Function.toString().
 const warmConcurrency = (loadFailures: number): number => {
-    return (typeof loadFailures === 'number' && loadFailures > 0) ? 0 : 4;
+    return typeof loadFailures === 'number' && loadFailures > 0 ? 0 : 4;
 };
 
-export { collectLodFileUrls, lodMinLevelForBudget, collectSogBlockFileUrls, buildPortalAdjacency, desiredResidentScenes, assignPinDepths, computeWarmSet, computeResidentCeiling, selectResidentScenes, sceneResidentToDepth, startSceneLodFloor, shouldSampleDeviceFinest, pinBatchAllowed, computeRevealLevel, sceneRenderFloor, parseBudgetParam, warmConcurrency, PortalLodMeta, PortalLodNode, PortalSogBlockMeta };
+export {
+    collectLodFileUrls,
+    lodMinLevelForBudget,
+    collectSogBlockFileUrls,
+    buildPortalAdjacency,
+    desiredResidentScenes,
+    assignPinDepths,
+    computeWarmSet,
+    computeResidentCeiling,
+    selectResidentScenes,
+    sceneResidentToDepth,
+    startSceneLodFloor,
+    shouldSampleDeviceFinest,
+    pinBatchAllowed,
+    computeRevealLevel,
+    sceneRenderFloor,
+    parseBudgetParam,
+    warmConcurrency,
+    PortalLodMeta,
+    PortalLodNode,
+    PortalSogBlockMeta
+};

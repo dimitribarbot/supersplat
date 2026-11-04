@@ -24,12 +24,13 @@
 // string operations only.
 
 import { patchViewerBootstrap } from './viewer-bootstrap';
+import type { ViewerSettingsJson } from './viewer-settings-json';
 
 // Solid single-color poster (SVG data URI) from the viewer settings'
 // background color ([r,g,b] floats 0..1; defaults to black like the viewer).
-const buildPosterFallbackUrl = (viewerSettingsJson: any): string => {
+const buildPosterFallbackUrl = (viewerSettingsJson: ViewerSettingsJson): string => {
     const c = viewerSettingsJson?.background?.color;
-    const to255 = (v: any) => Math.max(0, Math.min(255, Math.round((typeof v === 'number' ? v : 0) * 255)));
+    const to255 = (v: unknown) => Math.max(0, Math.min(255, Math.round((typeof v === 'number' ? v : 0) * 255)));
     const rgb = `rgb(${to255(c?.[0])},${to255(c?.[1])},${to255(c?.[2])})`;
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="${rgb}"/></svg>`;
     // encodeURIComponent leaves ( and ) alone, but the viewer embeds the URL
@@ -94,15 +95,15 @@ const POSTER_CANVAS_KEEPALIVE = `<script>
 // statement-rewriting anchor was: a second pass appends a second posterUrl
 // key, which the viewer's JSON.parse resolves last-one-wins, so re-injecting
 // replaces the poster rather than no-opping. Every export path calls it once.
-const injectPoster = (html: string, viewerSettingsJson: any, posterUrl?: string | null): string => {
+const injectPoster = (html: string, viewerSettingsJson: ViewerSettingsJson, posterUrl?: string | null): string => {
     const url = posterUrl ?? buildPosterFallbackUrl(viewerSettingsJson);
     const withDefault = patchViewerBootstrap(html, { posterUrl: url });
     if (withDefault === null) {
         return html;
     }
-    return withDefault.includes('</body>') ?
-        withDefault.replace('</body>', `${POSTER_CANVAS_KEEPALIVE}</body>`) :
-        withDefault + POSTER_CANVAS_KEEPALIVE;
+    return withDefault.includes('</body>')
+        ? withDefault.replace('</body>', `${POSTER_CANVAS_KEEPALIVE}</body>`)
+        : withDefault + POSTER_CANVAS_KEEPALIVE;
 };
 
 export { buildPosterFallbackUrl, injectPoster };

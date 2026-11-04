@@ -123,7 +123,7 @@ const PATCHES: EnginePatch[] = [
             '    CULLFACE_NONE: CULLFACE_NONE, BLENDEQUATION_ADD: BLENDEQUATION_ADD,\n' +
             '    BLENDMODE_ONE: BLENDMODE_ONE, BLENDMODE_SRC_ALPHA: BLENDMODE_SRC_ALPHA,\n' +
             '    BLENDMODE_ONE_MINUS_SRC_ALPHA: BLENDMODE_ONE_MINUS_SRC_ALPHA\n' +
-            '}; } catch (ssPcErr) { console.warn(\'portal markers unavailable:\', ssPcErr); }\n' +
+            "}; } catch (ssPcErr) { console.warn('portal markers unavailable:', ssPcErr); }\n" +
             'export { createViewer };',
         applied: 'window.__ssPc = {'
     },
@@ -157,11 +157,11 @@ const PATCHES: EnginePatch[] = [
         // NavInteraction._onPointerUp -- mouse. 12-/16-space indented.
         search:
             '            if (this._mouseClickDelta < TAP_EPSILON) {\n' +
-            '                if (state.cameraMode === \'walk\' && !state.gamingControls) {\n',
+            "                if (state.cameraMode === 'walk' && !state.gamingControls) {\n",
         replace:
             '            if (this._mouseClickDelta < TAP_EPSILON) {\n' +
             '                if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(this._lastPointerOffsetX, this._lastPointerOffsetY)) return;\n' +
-            '                if (state.cameraMode === \'walk\' && !state.gamingControls) {\n'
+            "                if (state.cameraMode === 'walk' && !state.gamingControls) {\n"
     },
     {
         // NavInteraction._onMobileTap -- touch. 8-space indented.
@@ -170,14 +170,14 @@ const PATCHES: EnginePatch[] = [
             '            this._suppressClick = false;\n' +
             '            return;\n' +
             '        }\n' +
-            '        if (state.cameraMode === \'walk\' && !state.gamingControls) {\n',
+            "        if (state.cameraMode === 'walk' && !state.gamingControls) {\n",
         replace:
             '        if (this._suppressClick) {\n' +
             '            this._suppressClick = false;\n' +
             '            return;\n' +
             '        }\n' +
             '        if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(this._lastPointerOffsetX, this._lastPointerOffsetY)) return;\n' +
-            '        if (state.cameraMode === \'walk\' && !state.gamingControls) {\n'
+            "        if (state.cameraMode === 'walk' && !state.gamingControls) {\n"
     },
     // --- fork: the nav hover ring hides while the pointer is over an icon ---
     // NavCursor.updateCursor -- the walk-mode ring that previews where a click
@@ -203,9 +203,7 @@ const PATCHES: EnginePatch[] = [
     // element, so hiding it would take the click-target ring with it, and the
     // instance is not published on window.__supersplatViewer.
     {
-        search:
-            '    updateCursor(offsetX, offsetY) {\n' +
-            '        if (!this.hoverActive || this.navigating) {\n',
+        search: '    updateCursor(offsetX, offsetY) {\n' + '        if (!this.hoverActive || this.navigating) {\n',
         replace:
             '    updateCursor(offsetX, offsetY) {\n' +
             '        if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(offsetX, offsetY)) { this.hoverRing.hide(); return; }\n' +
@@ -227,8 +225,7 @@ const PATCHES: EnginePatch[] = [
     // when handlePublished is false (see splat-export-core.ts).
     {
         search: '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n',
-        replace:
-            `    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n${HANDLE_PUBLISH}    if (typeof window.__ssOnViewer === 'function') { try { window.__ssOnViewer(viewer); } catch (ssHookErr) { console.warn('viewer hook failed:', ssHookErr); } }\n`,
+        replace: `    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n${HANDLE_PUBLISH}    if (typeof window.__ssOnViewer === 'function') { try { window.__ssOnViewer(viewer); } catch (ssHookErr) { console.warn('viewer hook failed:', ssHookErr); } }\n`,
         applied: HANDLE_PUBLISH
     }
 ];
