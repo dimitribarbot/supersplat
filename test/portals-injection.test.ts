@@ -263,9 +263,10 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('applyStartFloor');
         // the clamp survives the viewer's applyPerfSettings re-run (which
         // reopens the start component's lodRangeMin to 0 on these events;
-        // supersplat-viewer 1.38 replaced performanceMode with both)
+        // supersplat-viewer 1.43 replaced stochastic with performanceMode + debugMode)
         expect(out).toContain("ev.on('quality:changed', reassertAfterPerfSettings);");
-        expect(out).toContain("ev.on('stochastic:changed', reassertAfterPerfSettings);");
+        expect(out).toContain("ev.on('performanceMode:changed', reassertAfterPerfSettings);");
+        expect(out).toContain("ev.on('debugMode:changed', reassertAfterPerfSettings);");
         // supersplat-viewer >= 1.37 re-runs applyPerfSettings on every XR
         // enter/exit too, so the clamp must be restored on that event as well
         expect(out).toContain("'xrMode:changed'");
@@ -274,20 +275,20 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('if (pinReady) { pinDesired(); }');
     });
 
-    // An object export's two-hand XR grab (XrManipulation) and the 1.38 Ice
-    // Cream hold both move the start scene's entity; portal scenes, markers,
-    // crossings and zones are world-anchored and would detach from what the
-    // user sees, so portal exports turn both off. A walk-in scene's grab moves
-    // the user instead and is left alone.
-    it('switches off the viewer XR grab when a session starts', () => {
+    // supersplat-viewer 1.43's held splat (an object export, or any scene in
+    // AR) and the Ice Cream hold both move the start scene's entity; portal
+    // scenes, markers, crossings and zones are world-anchored and would detach
+    // from what the user sees, so portal exports turn both off. The held splat
+    // is gated by a viewer-engine patch reading window.__ssPinEntity, which must
+    // be set at script load, before any session can start.
+    it('pins the start scene entity for the viewer XR held splat', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
             portalScenes: ['', 'scenes/1/lod-meta.json'],
             portalStart: 0
         });
-        expect(out).toContain("app.xr.on('start', disableXrGrab);");
-        expect(out).toContain("rig.script.get('xrManipulation')");
-        expect(out).toContain('grab.enabled = false;');
+        expect(out).toContain('window.__ssPinEntity = true;');
+        expect(out).not.toContain('xrManipulation');
     });
 
     it('turns the XR Ice Cream hold back off, after the viewer has seen the change', () => {
@@ -518,6 +519,27 @@ describe('buildPortalsInjection', () => {
         expect(out).toContain('tickTeleportGuard(teleportGuard');
     });
 
+    // In XR the viewer stops updating its camera manager, so crossings must
+    // follow the headset-driven camera entity, swap without a (DOM, so unseen)
+    // cover, and go back to the session's start scene on exit.
+    it('detects crossings from the headset in an XR session', () => {
+        const out = buildPortalsInjection({
+            portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
+            portalScenes: ['', 'scenes/1/scene.sog'],
+            portalStart: 0
+        });
+        expect(out).toContain('var tickXrSession =');
+        expect(out).toContain('tickXrSession(xrSession, xrActive, activeIndex)');
+        expect(out).toContain('viewer.global.camera');
+        expect(out).toContain("var kind = xrActive ? 'none' : transitionKind(cr.portalIndex);");
+        expect(out).toContain("st.cameraMode === 'anim' && timeline && !xrActive");
+        expect(out).toContain('beginTeleport(xs.returnTo);');
+        // window rAF need not run while an immersive session presents: in a
+        // session the frame work runs from the app's update event instead
+        expect(out).toContain('if (!xrActiveNow()) { frame(); }');
+        expect(out).toContain("app.on('update', function () { if (xrActiveNow()) { frame(); } });");
+    });
+
     it('adopts a lazily-built, late-collision overlay instead of assuming it started at scene 0', () => {
         const out = buildPortalsInjection({
             portals: [{ position: [0, 0, 0], rotation: [0, 0, 0, 1], width: 2, height: 2, front: 0, back: 1 }],
@@ -727,6 +749,19 @@ describe('buildPortalsInjection smoke', () => {
         }
         return out;
     };
+
+    // The viewer fullscreens its own root, and a fullscreen page draws only
+    // that subtree: the loading screen, the load-diag badge, both transition
+    // covers and the marker tooltip follow the fullscreen element, or they
+    // vanish in fullscreen. The markers mount late, so they place themselves.
+    it('keeps its page-level overlays drawn in fullscreen', () => {
+        const out = buildPortalsInjection(payload);
+        expect(out).toContain('var followFullscreen = ');
+        expect(out).toContain(
+            'var placeOverlays = followFullscreen(document, function () { return [lBackdrop, loadDiagEl, tileLayer, defocusLayer, markerRoot]; });'
+        );
+        expect(out).toContain('document.body.appendChild(markerRoot);\n      placeOverlays();');
+    });
 
     it('emits exactly two scripts: payload global, then runtime', () => {
         const scripts = extractScripts(buildPortalsInjection(payload));

@@ -73,10 +73,10 @@ export type ExtraSceneMeta = {
 
 // Builds the ExtraPortalScene descriptors the shared export core expects, one
 // per uploaded extra scene, in upload order. loadTableFor(i) supplies the
-// (lazy) table loader for scene i, keeping this function free of the
+// (lazy) loader for scene i's table and splat-model tag, keeping this function free of the
 // gunzip/readFile/materialize plumbing so it can be unit-tested on its own.
 export const buildExtraSceneDescriptors = (metas: ExtraSceneMeta[], loadTableFor: (index: number) => () => Promise<any>) => metas.map((meta, i) => ({
-    loadDataTable: loadTableFor(i),
+    loadScene: loadTableFor(i),
     streaming: meta.streaming,
     collisionUrl: meta.collisionUrl,
     environment: meta.environment,
@@ -156,6 +156,10 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     // DataTable at our boundary (the writers below consume DataTables).
     const chunkPool = createChunkDataPool();
     const dataTable = await materializeToDataTable(sources[0], chunkPool);
+    // The splat-model tag (e.g. 'antialiased') the browser wrote into the PLY
+    // header; a DataTable cannot carry it, so the writers below are handed it
+    // explicitly, as a local export tags its output from the same source.
+    const model = sources[0].meta.model;
     // Release the reader's decode state / the pinned input PLY bytes: the table
     // owns a full copy now. Mirrors src/io/read/loader.ts.
     await sources[0].close();
@@ -165,7 +169,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     const memFs = new MemoryFileSystem();
 
     if (options.fileType === 'compressedPly') {
-        await writeCompressedPly({ filename: options.filename, dataTable }, memFs);
+        await writeCompressedPly({ filename: options.filename, dataTable, model }, memFs);
         return { files: [{ name: options.filename, data: memFs.results.get(options.filename)! }] };
     }
 
@@ -225,7 +229,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     };
 
     if (options.fileType === 'sog') {
-        await writeSogCore(dataTable, options.sogIterations ?? 10, createDevice, memFs, events, onLog, isCancelled);
+        await writeSogCore(dataTable, options.sogIterations ?? 10, createDevice, memFs, events, onLog, isCancelled, model);
         const data = memFs.results.get('output.sog')!;
         console.log(`Created ${options.filename} (${fmtSize(data.length)})`);
         return { files: [{ name: options.filename, data }] };
@@ -245,9 +249,10 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
             erfs.set('extra.ply', new Uint8Array(raw));
             const esources = await readFile({ filename: 'extra.ply', inputFormat: 'ply', options: READ_OPTS, params: [], fileSystem: erfs });
             const t = await materializeToDataTable(esources[0], chunkPool);
+            const sceneModel = esources[0].meta.model;
             await esources[0].close();
             (t as any).transform = Transform.PLY;
-            return t;
+            return { dataTable: t, model: sceneModel };
         });
     };
 
@@ -264,6 +269,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
         const extraScenes = buildExtraScenes();
         await writeViewerCore({
             dataTable,
+            model,
             viewerSettingsJson: options.viewerExportSettings!.experienceSettings,
             viewerType: 'html',
             createDevice,
@@ -290,6 +296,7 @@ export const runExport = async ({ plyGz, options, sink, getDeviceCreator, isCanc
     const brand = resolveBrand(await loadBrand(), options.brandOverride);
     await writeViewerCore({
         dataTable,
+        model,
         viewerSettingsJson: options.viewerExportSettings!.experienceSettings,
         viewerType,
         createDevice,

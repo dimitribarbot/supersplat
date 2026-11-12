@@ -49,6 +49,7 @@ import type { CameraFrame } from './camera';
 import { createGradeTerms, gradeRows, gradeTerms } from './color-grade';
 import type { GradeParams } from './color-grade';
 import { maskByteSize } from './data-processor/histogram-config';
+import { effectiveModel } from './editor-splat-resource';
 import type { Scene } from './scene';
 import { footprintIntersect } from './shaders/footprint-intersect-shader';
 import { projectedSplatDepthReduce } from './shaders/projected-splat-depth-reduce-shader';
@@ -89,6 +90,17 @@ const MOTION_STEP_MS = 50;
 const OCCLUSION_BLOCK = 8;
 
 const roundUp = (value: number, alignment: number) => Math.ceil(value / alignment) * alignment;
+
+// projector viewMode values for Scene.viewOverride
+const VIEW_MODES = { property: 1, selection: 2, layers: 3, shaded: 4 };
+
+// a float's bit pattern as an int, for the log-spaced sort keys
+const floatBits = new Float32Array(1);
+const floatBitsI32 = new Int32Array(floatBits.buffer);
+const toFloatBits = (value: number) => {
+    floatBits[0] = value;
+    return floatBitsI32[0];
+};
 
 type ProjectorVariant = {
     shader: Shader;
@@ -490,9 +502,12 @@ class ProjectedSplatRenderer {
             new UniformFormat('selectionEnabled', UNIFORMTYPE_UINT),
             new UniformFormat('pickOp', UNIFORMTYPE_INT),
             new UniformFormat('minPixelSize', UNIFORMTYPE_FLOAT),
+            new UniformFormat('antiAlias', UNIFORMTYPE_UINT),
             new UniformFormat('near', UNIFORMTYPE_FLOAT),
             new UniformFormat('far', UNIFORMTYPE_FLOAT),
             new UniformFormat('radialSort', UNIFORMTYPE_UINT),
+            new UniformFormat('sortKeyMinBits', UNIFORMTYPE_INT),
+            new UniformFormat('sortKeyScale', UNIFORMTYPE_FLOAT),
             new UniformFormat('capacity', UNIFORMTYPE_UINT),
             new UniformFormat('keepCulled', UNIFORMTYPE_UINT),
             new UniformFormat('minContribution', UNIFORMTYPE_FLOAT),
@@ -505,7 +520,11 @@ class ProjectedSplatRenderer {
             new UniformFormat('occlusionBlocksX', UNIFORMTYPE_UINT),
             new UniformFormat('occlusionBlocksY', UNIFORMTYPE_UINT),
             new UniformFormat('occlusionBlock', UNIFORMTYPE_FLOAT),
-            new UniformFormat('occlusionEnabled', UNIFORMTYPE_UINT)
+            new UniformFormat('occlusionEnabled', UNIFORMTYPE_UINT),
+            new UniformFormat('viewMode', UNIFORMTYPE_UINT),
+            new UniformFormat('viewProp', UNIFORMTYPE_UINT),
+            new UniformFormat('viewRange', UNIFORMTYPE_VEC2),
+            new UniformFormat('viewColor', UNIFORMTYPE_VEC4)
         ]);
         const bindGroupFormat = new BindGroupFormat(this.device, [
             new BindStorageBufferFormat('sortKeys', SHADERSTAGE_COMPUTE),
@@ -881,6 +900,7 @@ class ProjectedSplatRenderer {
         const unselectedColor = events.invoke('unselectedClr');
         const lockedColor = events.invoke('lockedClr');
         const viewBands = events.invoke('view.bands') as number;
+        const antiAlias = events.invoke('view.antiAlias');
         // Size culling is visual only: selection and depth queries need every footprint.
         const minPixelSize = forPick ? 0 : ((events.invoke('view.minPixelSize') as number) ?? 0);
 
@@ -954,6 +974,19 @@ class ProjectedSplatRenderer {
             ? cameraPosition.distance(bound.center) + bound.halfExtents.length()
             : cameraComponent.farClip;
 
+        // perspective sort keys are spaced by log distance, as in the engine's
+        // projector: they span the bit patterns of the distances from ten
+        // doublings inside the near clip out to sortFar, squared for radial
+        // (see the projector shader). Orthographic keys stay linear
+        let sortKeyMinBits = 0;
+        let sortKeyScale = 0;
+        if (!isOrtho) {
+            const nearDist = cameraComponent.nearClip / 1024;
+            sortKeyMinBits = toFloatBits(radialSort ? nearDist * nearDist : nearDist);
+            const bitsRange = toFloatBits(radialSort ? sortFar * sortFar : sortFar) - sortKeyMinBits;
+            sortKeyScale = bitsRange > 0 ? ((1 << SORT_KEY_BITS) - 1) / bitsRange : 0;
+        }
+
         let ringsBase = 0;
         let ringsCount = 0;
 
@@ -970,8 +1003,14 @@ class ProjectedSplatRenderer {
             const compute = this.getCompute(placement, bands);
             const selectionEnabled = selectedSplat === splat && camera.renderOverlays;
             // only the layer the panel is editing previews, and an empty selection
-            // means the whole layer - the rule SplatsColorOp applies
-            const previewMode = pending && selectedSplat === splat ? (instances.numSelected === 0 ? 2 : 1) : 0;
+            // means the whole layer - the rule SplatsColorOp applies. Analysis
+            // views show committed data only, the values get_histogram measures
+            const previewMode =
+                pending && selectedSplat === splat && !this.scene.viewOverride
+                    ? instances.numSelected === 0
+                        ? 2
+                        : 1
+                    : 0;
 
             if (selectionEnabled) {
                 ringsBase = placement.entryBase;
@@ -1025,9 +1064,15 @@ class ProjectedSplatRenderer {
             compute.setParameter('selectionEnabled', selectionEnabled ? 1 : 0);
             compute.setParameter('pickOp', -1);
             compute.setParameter('minPixelSize', minPixelSize);
+            compute.setParameter(
+                'antiAlias',
+                effectiveModel(splat.resource.model, antiAlias) === 'antialiased' ? 1 : 0
+            );
             compute.setParameter('near', cameraComponent.nearClip);
             compute.setParameter('far', sortFar);
             compute.setParameter('radialSort', radialSort ? 1 : 0);
+            compute.setParameter('sortKeyMinBits', sortKeyMinBits);
+            compute.setParameter('sortKeyScale', sortKeyScale);
             compute.setParameter('capacity', this.capacity);
             // culled splats of the selected layer stay projected while the
             // centres overlay is up, so their centres still draw
@@ -1043,6 +1088,15 @@ class ProjectedSplatRenderer {
                 keepRings = 1;
             }
             compute.setParameter('keepRings', keepRings);
+            // render_view's analysis views
+            const viewOverride = this.scene.viewOverride;
+            compute.setParameter('viewMode', viewOverride ? VIEW_MODES[viewOverride.mode] : 0);
+            compute.setParameter('viewProp', viewOverride?.prop ?? 0);
+            compute.setParameter('viewRange', viewOverride?.range ?? [0, 1]);
+            compute.setParameter(
+                'viewColor',
+                viewOverride?.layerColors?.get(splat.uid) ?? viewOverride?.color ?? [1, 1, 1, 1]
+            );
             compute.setParameter('prevDepthMax', this.depthMax);
             compute.setParameter('prevViewProj', this.prevViewProjection.data);
             compute.setParameter('prevView', this.prevView.data);

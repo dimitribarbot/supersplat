@@ -432,6 +432,7 @@ const markerRuntime = `
       markerRoot = document.createElement('div');
       markerRoot.className = 'ss-portal-markers';
       document.body.appendChild(markerRoot);
+      placeOverlays();
       markerTip = document.createElement('div');
       markerTip.className = 'ss-portal-marker-tip';
       markerTip.textContent = resolveMarkerTooltip(markerTooltips, window.__ssLang || 'en');

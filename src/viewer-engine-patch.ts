@@ -10,7 +10,7 @@
 // `hasFailed(url)` (PR #8998) and `inst.octree.destroyed` (PR #9011). The nine
 // engine backport patches are therefore obsolete and have been removed.
 //
-// What remains are six fork-specific patches (NOT upstream backports) that
+// What remains are seven fork-specific patches (NOT upstream backports) that
 // add viewer-APP behaviour absent from any upstream engine version:
 //
 //   1. A spawn-preserving `reseat()` method on the viewer's CameraManager.
@@ -23,6 +23,8 @@
 //      the markers have none by design).
 //   6. A publish of the internal Viewer as `window.__supersplatViewer` plus
 //      the `__ssOnViewer` hook (required: exports fail without it).
+//   7. A `window.__ssPinEntity` gate on the XR session's held splat, which
+//      the portals companion sets so nothing in XR moves the start scene.
 //
 // Retired with supersplat-viewer 1.38 (splat-transform 3.10): grounding VR/AR
 // entry to the floor beneath the camera (the viewer now does this itself from
@@ -209,6 +211,23 @@ const PATCHES: EnginePatch[] = [
             '        if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(offsetX, offsetY)) { this.hoverRing.hide(); return; }\n' +
             '        if (!this.hoverActive || this.navigating) {\n'
     },
+    // --- fork: a portal export's entity stays put in XR ---
+    // supersplat-viewer 1.43 holds the splat in a session (XrObjectGrab) when it
+    // is an object, or any splat in AR: at session start it is placed in front
+    // of the user, scaled to a diorama for a scene, and both hands then grab it
+    // about. Portal scenes, markers, crossings and zones are world-anchored, so
+    // a portal export must keep the entity where it was authored. `holding` is
+    // decided here, at each session start, in a closure no companion can reach,
+    // and gates every one of those movers (objectGrab.enabled, place(), the AR
+    // placement) while handing the session the walk-in navigation instead
+    // (grabMove, teleport). The portals companion sets window.__ssPinEntity at
+    // script load, ahead of any session. Self-destructs: the search line no
+    // longer occurs once the gate is inserted into it. 8-space indented.
+    {
+        search: "        holding = !!objectGrab && (!grabMove || xr.type === 'immersive-ar');\n",
+        replace:
+            "        holding = !window.__ssPinEntity && !!objectGrab && (!grabMove || xr.type === 'immersive-ar');\n"
+    },
     // --- fork: publish the internal Viewer for every companion ---
     // supersplat-viewer >= 1.32 replaced `main()` with `createViewer()`, whose
     // page bootstrap discards the result, and whose result is a slim public
@@ -222,10 +241,11 @@ const PATCHES: EnginePatch[] = [
     // cannot take createViewer down.
     //
     // REQUIRED: every companion dies without the handle, so export paths throw
-    // when handlePublished is false (see splat-export-core.ts).
+    // when handlePublished is false (see splat-export-core.ts). supersplat-viewer
+    // 1.43 (splat-transform 3.11) added the constructor's `sequenceLoad` argument.
     {
-        search: '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n',
-        replace: `    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n${HANDLE_PUBLISH}    if (typeof window.__ssOnViewer === 'function') { try { window.__ssOnViewer(viewer); } catch (ssHookErr) { console.warn('viewer hook failed:', ssHookErr); } }\n`,
+        search: '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad, sequenceLoad);\n',
+        replace: `    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad, sequenceLoad);\n${HANDLE_PUBLISH}    if (typeof window.__ssOnViewer === 'function') { try { window.__ssOnViewer(viewer); } catch (ssHookErr) { console.warn('viewer hook failed:', ssHookErr); } }\n`,
         applied: HANDLE_PUBLISH
     }
 ];

@@ -18,6 +18,12 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
     let activeUid: number | null = null;
     const prev = new Vec3();
     let havePrev = false;
+    // While > 0 the camera is being posed for off-screen captures (WebMCP's
+    // render_view), not walked: its jumps are not crossings. Frames are ignored
+    // without updating `prev`, so the first frame after resuming compares the
+    // restored pose with the pose from before the capture. A count, so nested
+    // suspensions pair up.
+    let suspended = 0;
     const snapshot = new Map<number, boolean>();
 
     const splats = () => scene.getElementsByType(ElementType.splat) as Splat[];
@@ -81,6 +87,10 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
         }
     });
 
+    events.on('portals.suspendCrossing', (on: boolean) => {
+        suspended = Math.max(0, suspended + (on ? 1 : -1));
+    });
+
     events.on('scene.clear', () => {
         active = false;
         snapshot.clear();
@@ -95,7 +105,7 @@ const registerPortalsRuntime = (events: Events, scene: Scene) => {
     const prevTuple: [number, number, number] = [0, 0, 0];
     const curTuple: [number, number, number] = [0, 0, 0];
     events.on('prerender', (cameraWorldTransform: Mat4) => {
-        if (!active) {
+        if (!active || suspended > 0) {
             return;
         }
         const cur = cameraWorldTransform.getTranslation(curVec);

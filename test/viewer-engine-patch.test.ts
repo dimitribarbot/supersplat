@@ -62,16 +62,30 @@ const NAV_CURSOR_SNIPPET =
 // window.__supersplatViewer and call the __ssOnViewer hook, synchronously
 // before initUI). 4-space indented.
 const VIEWER_SNIPPET =
-    '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n' +
+    '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad, sequenceLoad);\n' +
     '    viewer.onDestroy(persistPreferences(events));\n';
 
-const BUNDLE = CAMERA_MANAGER_SNIPPET + POINTER_UP_SNIPPET + MOBILE_TAP_SNIPPET + NAV_CURSOR_SNIPPET + VIEWER_SNIPPET + EXPORT_SNIPPET;
+// The XR session-start decision whether the session holds the splat (fork
+// patch: gate it on window.__ssPinEntity, so a portal export's entity stays
+// put). 8-space indented.
+const XR_HOLDING_SNIPPET =
+    "        holding = !!objectGrab && (!grabMove || xr.type === 'immersive-ar');\n" +
+    '        if (objectGrab)\n';
+
+const BUNDLE =
+    CAMERA_MANAGER_SNIPPET +
+    POINTER_UP_SNIPPET +
+    MOBILE_TAP_SNIPPET +
+    NAV_CURSOR_SNIPPET +
+    XR_HOLDING_SNIPPET +
+    VIEWER_SNIPPET +
+    EXPORT_SNIPPET;
 
 describe('patchViewerEngine', () => {
     it('applies the fork viewer feature patches to the baked bundle', () => {
         const { source, patched } = patchViewerEngine(BUNDLE);
         expect(patched).toBe(VIEWER_ENGINE_PATCH_COUNT);
-        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(6);
+        expect(VIEWER_ENGINE_PATCH_COUNT).toBe(7);
 
         // fork patch: spawn-preserving reseat() inserted next to snap(), using
         // goto() (re-seat only) instead of onEnter() (grounds + stores spawn)
@@ -121,6 +135,12 @@ describe('patchViewerEngine', () => {
             '        if (window.__ssPortalMarkerAt && window.__ssPortalMarkerAt(offsetX, offsetY)) { this.hoverRing.hide(); return; }\n' +
             '        if (!this.hoverActive || this.navigating) {\n'
         );
+
+        // fork patch: a portal export (window.__ssPinEntity) never holds the
+        // splat in XR, so nothing places or grabs the start scene's entity
+        expect(source).toContain(
+            "        holding = !window.__ssPinEntity && !!objectGrab && (!grabMove || xr.type === 'immersive-ar');\n"
+        );
     });
 
     it('is idempotent (a second pass matches nothing)', () => {
@@ -157,7 +177,7 @@ describe('viewer handle publish', () => {
         const { source, handlePublished } = patchViewerEngine(VIEWER_SNIPPET);
         expect(handlePublished).toBe(true);
         expect(source).toContain(
-            '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);\n' +
+            '    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad, sequenceLoad);\n' +
             '    window.__supersplatViewer = viewer;\n' +
             '    if (typeof window.__ssOnViewer === \'function\') { try { window.__ssOnViewer(viewer); } catch (ssHookErr) { console.warn(\'viewer hook failed:\', ssHookErr); } }\n' +
             '    viewer.onDestroy(persistPreferences(events));\n'
@@ -182,16 +202,16 @@ describe('viewer handle publish', () => {
         const win: any = { __ssOnViewer: (v: any) => seen.push(v) };
         const viewerObj = { onDestroy: () => {} };
         // eslint-disable-next-line no-new-func
-        new Function('window', 'Viewer', 'global', 'gsplatLoad', 'skyboxLoad', 'collisionLoad', 'persistPreferences', 'events', 'console', source)(
-            win, function () { return viewerObj; }, {}, null, null, null, () => {}, {}, { warn: () => {} }
+        new Function('window', 'Viewer', 'global', 'gsplatLoad', 'skyboxLoad', 'collisionLoad', 'sequenceLoad', 'persistPreferences', 'events', 'console', source)(
+            win, function () { return viewerObj; }, {}, null, null, null, null, () => {}, {}, { warn: () => {} }
         );
         expect(win.__supersplatViewer).toBe(viewerObj);
         expect(seen).toEqual([viewerObj]);
 
         const throwing: any = { __ssOnViewer: () => { throw new Error('boom'); } };
         // eslint-disable-next-line no-new-func
-        expect(() => new Function('window', 'Viewer', 'global', 'gsplatLoad', 'skyboxLoad', 'collisionLoad', 'persistPreferences', 'events', 'console', source)(
-            throwing, function () { return viewerObj; }, {}, null, null, null, () => {}, {}, { warn: () => {} }
+        expect(() => new Function('window', 'Viewer', 'global', 'gsplatLoad', 'skyboxLoad', 'collisionLoad', 'sequenceLoad', 'persistPreferences', 'events', 'console', source)(
+            throwing, function () { return viewerObj; }, {}, null, null, null, null, () => {}, {}, { warn: () => {} }
         )).not.toThrow();
         expect(throwing.__supersplatViewer).toBe(viewerObj);
     });

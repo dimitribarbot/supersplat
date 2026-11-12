@@ -192,8 +192,9 @@ class ColorGrade {
         this.apply(c, false);
     }
 
+    // o is the geometric layer's linear opacity (splat-transform >= 3.11)
     applyOpacity(o: number): number {
-        return invSigmoid(sigmoid(o) * this.transparency);
+        return o * this.transparency;
     }
 
     applyAlpha(o: number): number {

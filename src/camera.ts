@@ -24,6 +24,7 @@ import {
     BlendState,
     Color,
     Entity,
+    FramePass,
     Mat4,
     Ray,
     RenderPass,
@@ -149,7 +150,7 @@ class Camera extends Element {
     zonePass: RenderPassForward;
     zoneDepthPass: RenderPassPicker;
     zoneDepthBlend: BlendState;
-    depthReducePass: RenderPass;
+    depthReducePass: FramePass;
     finalPass: SimpleRenderPass;
 
     // overridden target size
@@ -409,16 +410,14 @@ class Camera extends Element {
         // create render passes
         const device = scene.graphicsDevice;
         const { app } = scene;
-        const renderer = app.renderer;
-        const composition = app.scene.layers;
 
         this.clearPass = new RenderPass(device);
         this.stochasticClearPass = new RenderPass(device);
         this.warpClearPass = new RenderPass(device);
-        this.mainPass = new RenderPassForward(device, composition, app.scene, renderer);
-        this.splatPass = new RenderPassForward(device, composition, app.scene, renderer);
-        this.stochasticSplatPass = new RenderPassForward(device, composition, app.scene, renderer);
-        this.warpSplatPass = new RenderPassForward(device, composition, app.scene, renderer);
+        this.mainPass = new RenderPassForward(device, app.scene, camera);
+        this.splatPass = new RenderPassForward(device, app.scene, camera);
+        this.stochasticSplatPass = new RenderPassForward(device, app.scene, camera);
+        this.warpSplatPass = new RenderPassForward(device, app.scene, camera);
         this.stochasticResolvePass = new SimpleRenderPass(
             device,
             new ShaderQuad(device, vertexShader, stochasticResolveShader, 'stochastic-resolve'),
@@ -433,13 +432,13 @@ class Camera extends Element {
                 })
             }
         );
-        this.gizmoPass = new RenderPassForward(device, composition, app.scene, renderer);
-        this.zonePass = new RenderPassForward(device, composition, app.scene, renderer);
-        // compute-only pass between the splat and gizmo passes - never given a
-        // render target, so RenderPass.render runs it without opening one. It
-        // folds a stochastic frame's splat depth into the projected renderer's
-        // occlusion map before the gizmo pass clears the depth buffer
-        this.depthReducePass = new RenderPass(device);
+        this.gizmoPass = new RenderPassForward(device, app.scene, camera);
+        this.zonePass = new RenderPassForward(device, app.scene, camera);
+        // compute-only pass between the splat and gizmo passes - a FramePass,
+        // as it draws into no render target. It folds a stochastic frame's
+        // splat depth into the projected renderer's occlusion map before the
+        // gizmo pass clears the depth buffer
+        this.depthReducePass = new FramePass(device);
         this.depthReducePass.name = 'depthReduce';
         this.depthReducePass.execute = () => scene.projectedSplatRenderer.reduceDepth();
         this.finalPass = new SimpleRenderPass(
@@ -702,23 +701,23 @@ class Camera extends Element {
 
             // configure main pass - world layer with clears
             this.mainPass.init(this.mainTarget);
-            this.mainPass.addLayer(this.camera, scene.worldLayer, false, false);
-            this.mainPass.addLayer(this.camera, scene.worldLayer, true, false);
+            this.mainPass.addLayer(scene.worldLayer, false, false);
+            this.mainPass.addLayer(scene.worldLayer, true, false);
 
             // configure splat pass - MRT target, no clears
             this.splatPass.init(this.splatTarget);
-            this.splatPass.addLayer(this.camera, scene.splatLayer, false, false);
-            this.splatPass.addLayer(this.camera, scene.splatLayer, true, false);
+            this.splatPass.addLayer(scene.splatLayer, false, false);
+            this.splatPass.addLayer(scene.splatLayer, true, false);
 
             // configure zone pass - off-limits walls, drawn into the main target
             // AFTER the splats (so it blends over splat color) with NO clears
             // (so the shared depth/color from earlier passes is preserved).
             this.zonePass.init(this.mainTarget);
-            this.zonePass.addLayer(this.camera, scene.offLimitsLayer, false, false);
-            this.zonePass.addLayer(this.camera, scene.offLimitsLayer, true, false);
+            this.zonePass.addLayer(scene.offLimitsLayer, false, false);
+            this.zonePass.addLayer(scene.offLimitsLayer, true, false);
             this.stochasticSplatPass.init(this.stochasticTarget);
-            this.stochasticSplatPass.addLayer(this.camera, scene.splatLayer, false, false);
-            this.stochasticSplatPass.addLayer(this.camera, scene.splatLayer, true, false);
+            this.stochasticSplatPass.addLayer(scene.splatLayer, false, false);
+            this.stochasticSplatPass.addLayer(scene.splatLayer, true, false);
             this.stochasticClearPass.init(this.stochasticTarget);
             this.stochasticClearPass.setClearColor(new Color(0, 0, 0, 0));
             this.stochasticResolvePass.init(this.colorTarget);
@@ -728,12 +727,12 @@ class Camera extends Element {
             // so centers depth-test against each other alone and the gizmos then
             // start from a clean buffer again
             this.gizmoPass.init(this.mainTarget);
-            this.gizmoPass.addLayer(this.camera, scene.overlayLayer, false, false);
-            this.gizmoPass.addLayer(this.camera, scene.overlayLayer, true, false);
-            this.gizmoPass.addLayer(this.camera, scene.centersLayer, false, true);
-            this.gizmoPass.addLayer(this.camera, scene.centersLayer, true, false);
-            this.gizmoPass.addLayer(this.camera, scene.gizmoLayer, false, true);
-            this.gizmoPass.addLayer(this.camera, scene.gizmoLayer, true, false);
+            this.gizmoPass.addLayer(scene.overlayLayer, false, false);
+            this.gizmoPass.addLayer(scene.overlayLayer, true, false);
+            this.gizmoPass.addLayer(scene.centersLayer, false, true);
+            this.gizmoPass.addLayer(scene.centersLayer, true, false);
+            this.gizmoPass.addLayer(scene.gizmoLayer, false, true);
+            this.gizmoPass.addLayer(scene.gizmoLayer, true, false);
 
             this.finalPass.init(null);
 
@@ -967,8 +966,8 @@ class Camera extends Element {
             this.warpClearPass.init(this.warpTarget);
             this.warpClearPass.setClearDepth(1);
             this.warpSplatPass.init(this.warpTarget);
-            this.warpSplatPass.addLayer(this.camera, scene.splatLayer, false, false);
-            this.warpSplatPass.addLayer(this.camera, scene.splatLayer, true, false);
+            this.warpSplatPass.addLayer(scene.splatLayer, false, false);
+            this.warpSplatPass.addLayer(scene.splatLayer, true, false);
         }
         this.splatPass.enabled = !this.scene.movingRender;
         this.stochasticClearPass.enabled = this.scene.movingRender;

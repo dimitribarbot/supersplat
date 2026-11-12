@@ -183,7 +183,7 @@ class CachedImg extends FakeEl {
 // deep inside the modal bubbles, via the same parent chain as the DOM, all
 // the way up to a document-level listener -- unless something along the way
 // calls stopPropagation, exactly as in the real exported viewer.
-const loadRuntime = () => {
+const loadRuntime = (options: { viewerRoot?: boolean } = {}) => {
     const documentNode = new FakeEl('document');
     const body = new FakeEl('body');
     body.parent = documentNode;
@@ -192,9 +192,18 @@ const loadRuntime = () => {
         activeElement: body,
         createElement: (tag: string) => (tag === 'img' ? new CachedImg(tag) : new FakeEl(tag))
     });
+    // the viewer's own root (.sse-viewer), a child of body, as published on
+    // window.__supersplatViewer by the viewer-engine patch
+    const window: Record<string, unknown> = { __ssLang: 'en' };
+    let viewerRoot: FakeEl = null;
+    if (options.viewerRoot) {
+        viewerRoot = body.appendChild(new FakeEl('div'));
+        viewerRoot.className = 'sse-viewer';
+        window.__supersplatViewer = { global: { root: viewerRoot } };
+    }
     // eslint-disable-next-line no-new-func
     const factory = new Function('document', 'window', `${galleryRuntime}\nreturn { openGallery: openGallery, closeGallery: closeGallery };`);
-    return { body, document, ...factory(document, { __ssLang: 'en' }) };
+    return { body, document, viewerRoot, ...factory(document, window) };
 };
 
 const IMAGES = [
@@ -206,6 +215,17 @@ const IMAGES = [
 const overlayIn = (body: FakeEl) => body.querySelector('.ss-gallery');
 
 describe('gallery runtime', () => {
+    // The viewer's fullscreen button fullscreens its root (.sse-viewer), and a
+    // fullscreen page draws only that element's subtree: an overlay on body is
+    // not drawn at all, whatever its z-index. So it must mount inside the root.
+    it('mounts inside the viewer root, the element the viewer fullscreens', () => {
+        const { body, viewerRoot, openGallery } = loadRuntime({ viewerRoot: true });
+        openGallery(IMAGES, null);
+        const overlay = overlayIn(body);
+        expect(overlay).not.toBeNull();
+        expect(overlay.parent).toBe(viewerRoot);
+    });
+
     it('mounts an overlay on the body showing the first image', () => {
         const { body, openGallery } = loadRuntime();
         openGallery(IMAGES, null);
@@ -340,7 +360,7 @@ describe('event containment', () => {
     // element inside the modal (e.g. the image), which have no listeners of
     // their own -- so the event must genuinely bubble through the frame up to
     // the overlay's catch-all handler to be contained.
-    const pointerishTypes = ['click', 'pointerdown', 'pointerup', 'wheel', 'contextmenu'];
+    const pointerishTypes = ['click', 'pointerdown', 'pointerup', 'pointermove', 'wheel', 'contextmenu'];
     pointerishTypes.forEach((type) => {
         it(`stops a bubbled "${type}" from reaching a document-level listener`, () => {
             const { body, document, openGallery } = loadRuntime();
@@ -351,6 +371,21 @@ describe('event containment', () => {
             document.addEventListener(type, () => { reachedDocument = true; });
             img.dispatch(type);
             expect(reachedDocument).toBe(false);
+        });
+    });
+
+    // Mounted inside the viewer root, the root's own listeners are on the
+    // bubble path: a click there deselects the open annotation, and
+    // pointerdown/pointermove feed its drag detection and input-mode tracking.
+    pointerishTypes.forEach((type) => {
+        it(`stops a bubbled "${type}" from reaching a viewer-root listener`, () => {
+            const { body, viewerRoot, openGallery } = loadRuntime({ viewerRoot: true });
+            openGallery(IMAGES, null);
+            const img = overlayIn(body).querySelector('.ss-gallery-img');
+            let reachedRoot = false;
+            viewerRoot.addEventListener(type, () => { reachedRoot = true; });
+            img.dispatch(type);
+            expect(reachedRoot).toBe(false);
         });
     });
 

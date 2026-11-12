@@ -1,6 +1,7 @@
 import {
     logger as splatTransformLogger,
     materializeToDataTable,
+    resolveSplatModel,
     Transform,
     writeSpz,
     createChunkDataPool,
@@ -19,6 +20,7 @@ import type {
     OutputFormat,
     ReadRequest,
     SHBands,
+    SplatModel,
     Writer
 } from '@playcanvas/splat-transform';
 import { defaultPostEffectSettings } from '@playcanvas/splat-transform/viewer-settings';
@@ -31,8 +33,9 @@ import type {
 } from '@playcanvas/splat-transform/viewer-settings';
 import { Mat3, Mat4, PIXELFORMAT_BGRA8, Quat, Texture, Vec3, WebgpuGraphicsDevice } from 'playcanvas';
 
-import { ColorGrade, createGradeTerms, dcDecode, dcEncode, sigmoid } from './color-grade';
-import type { EditorSplatResource } from './editor-splat-resource';
+import { ColorGrade, createGradeTerms, dcDecode, dcEncode } from './color-grade';
+import { effectiveModel } from './editor-splat-resource';
+import type { AntiAliasMode, EditorSplatResource } from './editor-splat-resource';
 import type { Events } from './events';
 import { groupInstancesByChunk } from './gaussian-instances';
 import { PermutedChunkSource } from './io';
@@ -46,6 +49,12 @@ type SerializeSettings = {
     selected?: boolean; // only export selected gaussians. used for copy/paste
     minOpacity?: number; // filter out gaussians with alpha less than or equal to minAlpha
     removeInvalid?: boolean; // filter out gaussians with invalid data (NaN/Infinity)
+    antiAlias?: AntiAliasMode; // the view.antiAlias setting, applied to the exported model tag. defaults to 'auto'
+    // write a PLY's opacity as exact linear values (`opacity_linear`) rather than
+    // the logit. Only for the PLY shipped to the export server: since
+    // splat-transform 3.11 a source holds linear opacity, and a logit -> linear
+    // -> logit trip is not bit-exact in float32, which would break byte parity
+    linearOpacity?: boolean;
 
     // the following options are used when serializing for document save.
     // keepWorldTransform flows through the streaming source; keepStateData
@@ -235,9 +244,22 @@ class WebGPUUnavailableError extends Error {
     }
 }
 
+// Thrown when the compression device is lost mid-export, typically because the
+// OS GPU watchdog killed a long-running compute job.
+class GpuDeviceLostError extends Error {
+    constructor() {
+        super('The GPU device was lost');
+        this.name = 'GpuDeviceLostError';
+    }
+}
+
 // Cached WebGPU device for SOG compression
 let cachedGpuDevice: WebgpuGraphicsDevice | null = null;
 let cachedBackbuffer: Texture | null = null;
+
+// Number of compression devices lost so far, so a failed export can tell
+// whether a device loss caused the failure
+let gpuDeviceLostCount = 0;
 
 const createGpuDevice = async (): Promise<WebgpuGraphicsDevice> => {
     if (cachedGpuDevice) {
@@ -286,8 +308,38 @@ const createGpuDevice = async (): Promise<WebgpuGraphicsDevice> => {
 
     graphicsDevice.externalBackbuffer = cachedBackbuffer;
 
+    // Left alone, the engine restores a lost device in place, re-creating every
+    // Compute ever made on it - splat-transform never destroys its k-means
+    // kernels, so each restore rebuilds stale pipelines. Discard the device
+    // instead; the next export creates a fresh one.
+    graphicsDevice.once('devicelost', () => {
+        gpuDeviceLostCount++;
+        if (cachedGpuDevice === graphicsDevice) {
+            cachedGpuDevice = null;
+            cachedBackbuffer = null;
+        }
+        graphicsDevice.destroy();
+    });
+
     cachedGpuDevice = graphicsDevice;
     return graphicsDevice;
+};
+
+// Run a GPU-compressing write, reporting a device loss during it as
+// GpuDeviceLostError - the same check writeSplatFile makes, for the fork's
+// SOG and viewer paths that go through splat-export-core instead
+const withDeviceLostCheck = async (write: () => Promise<void>): Promise<void> => {
+    const lostCount = gpuDeviceLostCount;
+    try {
+        await write();
+    } catch (err) {
+        // the device's lost promise can settle just after the rejection that
+        // brought us here, so give it a task to land before checking
+        await new Promise<void>((resolve) => {
+            setTimeout(resolve);
+        });
+        throw gpuDeviceLostCount !== lostCount ? new GpuDeviceLostError() : err;
+    }
 };
 
 // Number of f_rest_* SH coefficients per band level (mirrors splat-transform's
@@ -408,7 +460,8 @@ const filteredIndices = async (splat: Splat, settings: SerializeSettings) => {
                     const instance = ordered[slot];
                     if (onlySelected && state[instance] !== State.selected) continue;
                     const i = splat.instances.sourceRow[instance] - base;
-                    if (minOpacity > 0 && sigmoid(opacity[i * 8 + 7]) < minOpacity) continue;
+                    // the geometric layer holds linear opacity (splat-transform >= 3.11)
+                    if (minOpacity > 0 && opacity[i * 8 + 7] < minOpacity) continue;
                     if (
                         removeInvalid &&
                         (!validFloatLayer(position, i) ||
@@ -480,13 +533,21 @@ class SuperSplatChunkSource implements ChunkSource {
             chunkSize: EXPORT_CHUNK_SIZE,
             numChunks: [numChunks],
             shBands: outputBands as SHBands,
-            // supersplat's edit pipeline doesn't carry the trained-model tag
-            // (antialiased / 2dgs) through load, so exports are untagged
-            model: 'default',
+            // the trained-model tag of the exported layers, as the view renders
+            // them. No format can hold two, so layers that disagree are written
+            // untagged, as splat-transform's own concat does; empty layers
+            // don't count
+            model: resolveSplatModel(
+                entries
+                    .filter((e) => e.end > e.start)
+                    .map((e) => effectiveModel(e.splat.resource.model, settings.antiAlias ?? 'auto'))
+            ),
             extraColumns: [],
             transform: Transform.PLY,
             availableLayers: new Set<ChunkLayer>(['position', 'geometric', 'color']),
-            layouts: buildLayouts(this.numRest)
+            layouts: buildLayouts(this.numRest),
+            // the PLY writer writes `opacity_linear` for a source that says so
+            ...(settings.linearOpacity ? { opacityAboveOne: true } : {})
         };
     }
 
@@ -719,8 +780,16 @@ const writeSplatFile = async (
         return;
     }
     const { source, pool } = built;
+    const lostCount = gpuDeviceLostCount;
     try {
         await writeSource({ filename, outputFormat, source, pool, options, createDevice: createGpuDevice }, fs);
+    } catch (err) {
+        // the device's lost promise can settle just after the rejection that
+        // brought us here, so give it a task to land before checking
+        await new Promise<void>((resolve) => {
+            setTimeout(resolve);
+        });
+        throw gpuDeviceLostCount !== lostCount ? new GpuDeviceLostError() : err;
     } finally {
         await source.close();
         pool.destroy();
@@ -791,7 +860,12 @@ const writeResourceFile = async (
  *
  * Async because building the source reads GPU-resident instance data back.
  */
-const extractDataTable = async (splats: Splat[], settings: SerializeSettings): Promise<DataTable> => {
+// Also returns the export source's splat-model tag, which the DataTable cannot
+// carry, for the DataTable writers to tag their output with.
+const extractDataTable = async (
+    splats: Splat[],
+    settings: SerializeSettings
+): Promise<{ dataTable: DataTable; model: SplatModel }> => {
     const built = await createExportSource(splats, settings);
     if (!built) {
         // Nothing passed the export filter. Callers rely on a non-null table, and
@@ -801,7 +875,7 @@ const extractDataTable = async (splats: Splat[], settings: SerializeSettings): P
     }
     const { source, pool } = built;
     try {
-        return await materializeToDataTable(source, pool);
+        return { dataTable: await materializeToDataTable(source, pool), model: source.meta.model };
     } finally {
         await source.close();
         pool.destroy();
@@ -825,7 +899,7 @@ const serializeViewer = async (
 ): Promise<void> => {
     const { experienceSettings, events, collision } = options;
     const portal = !!(experienceSettings.portalScenes && experienceSettings.portalScenes.length > 1);
-    const dataTable = await extractDataTable(
+    const { dataTable, model } = await extractDataTable(
         splats,
         portal ? portalSceneSettings(serializeSettings, splats) : serializeSettings
     );
@@ -846,25 +920,27 @@ const serializeViewer = async (
               voxelSize: entry.voxelSize,
               seed: entry.seed,
               streaming: options.streaming ?? false,
-              loadDataTable: () =>
-                  extractDataTable([entry.splat], portalSceneSettings(serializeSettings, [entry.splat]))
+              loadScene: () => extractDataTable([entry.splat], portalSceneSettings(serializeSettings, [entry.splat]))
           })) ?? [])
         : [];
 
-    await writeViewerCore({
-        dataTable,
-        viewerSettingsJson: experienceSettings,
-        viewerType,
-        createDevice: createGpuDevice,
-        fs,
-        events,
-        collision,
-        extraScenes,
-        posterBytes: options.poster,
-        annotationImages: options.annotationImages
-        // no brand: it is server-only (VIEWER_BRAND_* and the S3 publish's
-        // client brand), so a local browser export keeps the stock viewer.
-    });
+    await withDeviceLostCheck(() =>
+        writeViewerCore({
+            dataTable,
+            model,
+            viewerSettingsJson: experienceSettings,
+            viewerType,
+            createDevice: createGpuDevice,
+            fs,
+            events,
+            collision,
+            extraScenes,
+            posterBytes: options.poster,
+            annotationImages: options.annotationImages
+            // no brand: it is server-only (VIEWER_BRAND_* and the S3 publish's
+            // client brand), so a local browser export keeps the stock viewer.
+        })
+    );
 };
 const serializeViewerSettings = async (
     experienceSettings: ExperienceSettings,
@@ -889,8 +965,10 @@ type SogSettings = SerializeSettings & {
 
 const serializeSog = async (splats: Splat[], settings: SogSettings, fs: FileSystem): Promise<void> => {
     const { iterations = 10, events } = settings;
-    const dataTable = await extractDataTable(splats, settings);
-    await writeSogCore(dataTable, iterations, createGpuDevice, fs, events);
+    const { dataTable, model } = await extractDataTable(splats, settings);
+    await withDeviceLostCheck(() =>
+        writeSogCore(dataTable, iterations, createGpuDevice, fs, events, undefined, undefined, model)
+    );
 };
 
 type SpzSettings = SerializeSettings & {
@@ -914,7 +992,7 @@ const serializeSpz = async (splats: Splat[], settings: SpzSettings, fs: FileSyst
     );
 
     // Extract splat data to DataTable
-    const dataTable = await extractDataTable(splats, settings);
+    const { dataTable, model } = await extractDataTable(splats, settings);
 
     // unwind the logger's top-level scope on error (see serializeSog)
     try {
@@ -922,6 +1000,7 @@ const serializeSpz = async (splats: Splat[], settings: SpzSettings, fs: FileSyst
             {
                 filename: 'output.spz',
                 dataTable,
+                model,
                 version
             },
             fs
@@ -948,6 +1027,7 @@ export {
     PostEffectSettings,
     defaultPostEffectSettings,
     ExperienceSettings,
+    GpuDeviceLostError,
     SerializeSettings,
     SogSettings,
     SpzSettings,

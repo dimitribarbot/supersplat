@@ -269,8 +269,8 @@ class ImageSettingsDialog extends Container {
             };
 
             resolutionValue.value = [
-                widths[presetSelect.value] ?? resolutionValue.value[0],
-                heights[presetSelect.value] ?? resolutionValue.value[1]
+                widths[presetSelect.value as string] ?? resolutionValue.value[0],
+                heights[presetSelect.value as string] ?? resolutionValue.value[1]
             ];
         };
 
@@ -302,7 +302,7 @@ class ImageSettingsDialog extends Container {
             const isJpeg = formatSelect.value === 'jpeg';
             transparentBgRow.hidden = isJpeg;
             qualityRow.hidden = !isJpeg;
-            s3Rows.setExtension(formatExtensions[formatSelect.value]);
+            s3Rows.setExtension(formatExtensions[formatSelect.value as string]);
         });
 
         // handle key bindings for enter and escape
@@ -325,7 +325,7 @@ class ImageSettingsDialog extends Container {
         const reset = () => {
             updateResolution();
             s3Rows.reset(events.invoke('render.baseFilename'));
-            s3Rows.setExtension(formatExtensions[formatSelect.value]);
+            s3Rows.setExtension(formatExtensions[formatSelect.value as string]);
         };
 
         // function implementations

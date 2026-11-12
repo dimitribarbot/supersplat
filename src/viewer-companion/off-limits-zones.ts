@@ -1,4 +1,5 @@
-import { segmentBlockedByWall } from './off-limits-collision';
+import { followFullscreen } from './fullscreen-follow';
+import { segmentBlockedByWall, xrRigAfterBlock } from './off-limits-collision';
 
 type ZoneLike = {
     position: [number, number, number];
@@ -68,6 +69,7 @@ const companionRuntime = `
 
   var segmentBlockedByWall = ${segmentBlockedByWall.toString()};
   var resolveOffLimitsMessage = ${resolveOffLimitsMessage.toString()};
+  var followFullscreen = ${followFullscreen.toString()};
   var msgText = resolveOffLimitsMessage(custom, defaults, window.__ssLang || 'en');
 
   // --- DOM feedback (always available) ---
@@ -81,6 +83,8 @@ const companionRuntime = `
     document.body.appendChild(msgEl);
   }
   if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
+  // the viewer fullscreens its own root, which draws only that subtree
+  followFullscreen(document, function () { return [overlay, msgEl]; });
   var feedbackTimer = null;
   function flashFeedback() {
     overlay.classList.add('active');
@@ -104,13 +108,75 @@ const companionRuntime = `
   // the spawn at the clamp position (the pre-patch behaviour).
   // window.__supersplatViewer is published from the viewer bootstrap; poll for
   // it via rAF until it is ready.
+  //
+  // In an XR session the viewer leaves its camera manager alone, so its pose
+  // stays where the session started: the headset drives the camera entity
+  // instead, under the rig (its parent), which teleport and grab-move move.
+  // There the clamp reads the camera entity and moves the rig back
+  // (xrRigAfterBlock). The browser need not run window rAF callbacks while an
+  // immersive session presents, so in a session the clamp runs from the app's
+  // update event, which the session's frames drive. The red flash and the
+  // message are page overlays, which a session does not show: none there.
   var lastSafe = null;
+  var xrRigAfterBlock = ${xrRigAfterBlock.toString()};
+  var wasXr = false;
+  var prevRig = null;
+  var hookedApp = null;
   function reseat(cm) {
     if (typeof cm.reseat === 'function') cm.reseat();
     else if (typeof cm.snap === 'function') cm.snap();
   }
+  function liveApp() {
+    var v = window.__supersplatViewer;
+    return (v && v.global && v.global.app) || null;
+  }
+  function inXr(app) {
+    return !!(app && app.xr && app.xr.active);
+  }
   function tick() {
+    var app = liveApp();
+    if (app && app.on && hookedApp !== app) {
+      hookedApp = app;
+      app.on('update', function () { if (inXr(app)) clamp(); });
+    }
+    if (!inXr(app)) clamp();
+    requestAnimationFrame(tick);
+  }
+  function clampXr(camera) {
+    var rig = camera && camera.parent;
+    if (!rig || !camera.getPosition || !rig.getPosition || !rig.setPosition) return;
+    var p = camera.getPosition();
+    var cur = [p.x, p.y, p.z];
+    var r = rig.getPosition();
+    var rigPos = [r.x, r.y, r.z];
+    if (lastSafe && prevRig) {
+      for (var i = 0; i < zones.length; i++) {
+        var safe = segmentBlockedByWall(lastSafe, cur, zones[i]);
+        if (safe) {
+          var to = xrRigAfterBlock(safe, cur, prevRig, rigPos);
+          rig.setPosition(to[0], to[1], to[2]);
+          cur = [cur[0] + to[0] - rigPos[0], cur[1] + to[1] - rigPos[1], cur[2] + to[2] - rigPos[2]];
+          rigPos = to;
+          break;
+        }
+      }
+    }
+    lastSafe = cur;
+    prevRig = rigPos;
+  }
+  function clamp() {
     var viewer = window.__supersplatViewer;
+    var xr = inXr(liveApp());
+    // a session's edges jump the camera (to the headset, and back): no walk
+    if (xr !== wasXr) {
+      wasXr = xr;
+      lastSafe = null;
+      prevRig = null;
+    }
+    if (xr) {
+      clampXr(viewer.global.camera);
+      return;
+    }
     var cm = viewer && viewer.cameraManager;
     var cam = cm && cm.camera;
     if (cam && cam.position) {
@@ -129,7 +195,6 @@ const companionRuntime = `
       }
       lastSafe = cur;
     }
-    requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
 })();

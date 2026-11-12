@@ -128,7 +128,7 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     // (annotation-i18n.ts). Pin that createViewer constructs the Viewer and then
     // reaches initUI with no await in between.
     it('builds the UI synchronously after constructing the Viewer', () => {
-        const at = jsSource.indexOf('const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);');
+        const at = jsSource.indexOf('const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad, sequenceLoad);');
         const ui = jsSource.indexOf('initUI(global, handle', at);
         expect(at).toBeGreaterThan(-1);
         expect(ui).toBeGreaterThan(at);
@@ -138,7 +138,7 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     // Runtime fields and methods the companions read on the internal Viewer.
     it('keeps the internal Viewer surface the companions use', () => {
         expect(jsSource).toContain('this.global = global;');
-        expect(jsSource).toContain('this.cameraManager = new CameraManager(global, sceneBound);');
+        expect(jsSource).toContain('this.cameraManager = new CameraManager(global, sceneBound, null, !sequence);');
         expect(jsSource).toContain('this.inputController.collision = collision;');
         expect(jsSource).toContain('this.voxelOverlay = new VoxelDebugOverlay(app, collision, camera);');
         expect(jsSource).toContain('selectAnnotation(index) {');
@@ -179,30 +179,40 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     it('re-runs applyPerfSettings only on the events portals.ts re-clamps after', () => {
         expect(jsSource).toContain('gsplatComponent.lodRangeMin = 0;');
         const triggers = [...jsSource.matchAll(/events\.on\('([^']+)', applyPerfSettings\)/g)].map(m => m[1]);
-        expect(triggers.sort()).toEqual(['quality:changed', 'stochastic:changed', 'xrMode:changed']);
+        expect(triggers.sort()).toEqual(['debugMode:changed', 'performanceMode:changed', 'quality:changed', 'xrMode:changed']);
     });
 
-    // portals.ts switches an object export's XR grab off by disabling the
-    // script on the camera rig (global.camera's parent) when a session starts.
-    // That only works while the grab is a Script created there, by that name,
-    // before XR can start, and acting in update() -- which a disabled script
-    // never runs. A walk-in scene's grab (XrGrabMove) moves the user, not the
-    // entity, so portals.ts leaves it alone -- pin that it is still the scene
-    // branch. The Ice Cream hold moves the entity and is driven by
-    // state.iceCream, which portals.ts turns back off.
-    it('keeps the XR grab script and the Ice Cream switch portals.ts disables', () => {
-        expect(jsSource).toContain("static scriptName = 'xrManipulation';");
-        expect(jsSource).toContain('const { app, events, state, camera, renderer, root, localize, quality } = global;');
-        expect(jsSource).toContain('const parent = camera.parent;');
+    // Since supersplat-viewer 1.43 the XR session holds the splat (XrObjectGrab)
+    // when it is an object, or any splat in AR, placing it in front of the user
+    // and letting both hands grab it about. viewer-engine-patch.ts gates the
+    // session-start `holding` decision on window.__ssPinEntity (set by
+    // portals.ts) -- which only keeps the entity put while `holding` is what
+    // gates every mover. A walk-in scene's grab (XrGrabMove) moves the user,
+    // not the entity, so it stays. The Ice Cream hold moves the entity and is
+    // driven by state.iceCream, which portals.ts turns back off.
+    it('keeps the XR held-splat gate and the Ice Cream switch portals.ts relies on', () => {
+        expect(occurrences(jsSource, "holding = !!objectGrab && (!grabMove || xr.type === 'immersive-ar');")).toBe(1);
+        expect(jsSource).toContain([
+            '        if (objectGrab)',
+            '            objectGrab.enabled = holding;',
+            '        if (grabMove)',
+            '            grabMove.enabled = !holding;',
+            '        navigation.enableTeleport = !holding;'
+        ].join('\n'));
+        expect(jsSource).toContain([
+            '        if (holding) {',
+            '            objectGrab?.place();',
+            "            if (xr.type === 'immersive-ar')",
+            '                arPlacement?.start();',
+            '        }'
+        ].join('\n'));
         expect(jsSource).toContain([
             '        setGrabTarget: (entity, scene) => {',
             '            if (scene) {',
-            '                grabMove = new XrGrabMove(app, parent, setUserScale);',
-            '            }',
-            '            else {',
-            '                manipulation = parent.script.create(XrManipulation, {'
+            '                grabMove = new XrGrabMove(app, parent, setUserScale);'
         ].join('\n'));
-        expect(jsSource).toContain('this._startGrab(target, left, right);');
+        expect(jsSource).toContain('            objectGrab = new XrObjectGrab(app, entity, parent, scene);');
+        expect(jsSource).toContain('if (!xr?.active || this.paused || !this.enabled) {');
         expect(jsSource).toContain("const iceCreamChanged = events.on('iceCream:changed', (value) => {");
         expect(jsSource).toContain('iceCream.enabled = state.iceCream;');
     });
@@ -220,7 +230,7 @@ describe(`exported viewer anchors (@playcanvas/splat-transform ${version})`, () 
     });
 
     it('keeps the events the companions listen to', () => {
-        for (const name of ['selectedAnnotation:changed', 'progress:changed', 'loaded:changed', 'firstFrame', 'collisionOverlayEnabled:changed', 'cameraMode:changed', 'gamingControls:changed', 'quality:changed', 'stochastic:changed', 'iceCream:changed', 'inputEvent']) {
+        for (const name of ['selectedAnnotation:changed', 'progress:changed', 'loaded:changed', 'firstFrame', 'collisionOverlayEnabled:changed', 'cameraMode:changed', 'gamingControls:changed', 'quality:changed', 'performanceMode:changed', 'debugMode:changed', 'iceCream:changed', 'inputEvent']) {
             expect(jsSource, name).toContain(`'${name}'`);
         }
         expect(jsSource).toContain("'frame:ready'");

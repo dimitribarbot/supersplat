@@ -5,8 +5,14 @@
 // written to be interpolated INSIDE that companion's IIFE, so it defines plain
 // functions (openGallery / closeGallery) rather than an IIFE of its own.
 //
-// The modal mounts on document.body, NOT inside the tooltip: .pc-annotation is
-// pointer-events:none and its contents are rewritten on every activation.
+// The modal mounts on the viewer's root (.sse-viewer), NOT inside the tooltip:
+// .pc-annotation is pointer-events:none and its contents are rewritten on every
+// activation. Nor on document.body: the viewer's fullscreen button fullscreens
+// its root, and a fullscreen page draws only that element's subtree, so a
+// body-mounted modal is not drawn at all in fullscreen, whatever its z-index.
+// Inside the root it stacks above the viewer ui (the root isolates its stacking
+// context and the viewer sets no z-index), and its listeners stop every pointer
+// event before the root's own (a click there deselects the annotation).
 //
 // BUILD TRAP: template literals in this directory have their backslash escapes
 // eaten at build time, so the runtime below contains no regex literals and no
@@ -232,11 +238,14 @@ const galleryRuntime = `
     overlay.addEventListener('keyup', function (e) { e.stopPropagation(); });
     overlay.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
     overlay.addEventListener('pointerup', function (e) { e.stopPropagation(); });
+    overlay.addEventListener('pointermove', function (e) { e.stopPropagation(); });
     overlay.addEventListener('wheel', function (e) { e.stopPropagation(); });
     overlay.addEventListener('contextmenu', function (e) { e.stopPropagation(); });
 
     show(0);
-    document.body.appendChild(overlay);
+    var viewerHandle = window.__supersplatViewer;
+    var mountRoot = (viewerHandle && viewerHandle.global && viewerHandle.global.root) || document.body;
+    mountRoot.appendChild(overlay);
     openOverlay = overlay;
     openReturnFocus = returnFocusEl || null;
     overlay.focus();

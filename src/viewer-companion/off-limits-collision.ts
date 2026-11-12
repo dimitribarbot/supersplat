@@ -82,4 +82,22 @@ const segmentBlockedByWall = (prev: Vec3, cur: Vec3, wall: Wall): Vec3 | null =>
     return [prev[0], prev[1], prev[2]];
 };
 
-export { segmentBlockedByWall, Wall, Vec3, Quat };
+// Where to put the XR rig (the camera's parent, which the headset's pose is
+// relative to) when the head's move from `safe` to `head` crossed a wall. A
+// teleport moves the rig itself in one jump: undo it whole, height included,
+// since it may have landed on another level. Otherwise the head moved within
+// the rig (walking) or the rig slid (grab-move): push it back horizontally by
+// the overshoot, leaving its height alone so the floor does not bob with the
+// head. Self-contained, injected verbatim like segmentBlockedByWall.
+const xrRigAfterBlock = (safe: Vec3, head: Vec3, prevRig: Vec3, rig: Vec3): Vec3 => {
+    const jx = rig[0] - prevRig[0],
+        jy = rig[1] - prevRig[1],
+        jz = rig[2] - prevRig[2];
+    // no walk or grab-move covers half a metre in one frame
+    if (jx * jx + jy * jy + jz * jz > 0.25) {
+        return [prevRig[0], prevRig[1], prevRig[2]];
+    }
+    return [rig[0] + safe[0] - head[0], rig[1], rig[2] + safe[2] - head[2]];
+};
+
+export { segmentBlockedByWall, xrRigAfterBlock, Wall, Vec3, Quat };

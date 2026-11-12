@@ -18,7 +18,8 @@ import type {
     DeviceCreator,
     FileSystem,
     LogEvent,
-    Renderer
+    Renderer,
+    SplatModel
 } from '@playcanvas/splat-transform';
 
 import {
@@ -627,7 +628,8 @@ const MIN_LOD_SPLATS = 1024 * 1024;
 const buildStreamingLodSource = async (
     lod0: DataTable,
     createDevice: DeviceCreator,
-    onPhase?: (info: PhaseInfo) => void
+    onPhase?: (info: PhaseInfo) => void,
+    model?: SplatModel
 ): Promise<{ mainSource: ChunkSource; levelCounts: number[] }> => {
     // Count the coarser levels we'll generate up front so the phase label can
     // show an accurate "level N of M" (M = number of decimated levels). Mirror
@@ -675,7 +677,11 @@ const buildStreamingLodSource = async (
     // before stacking: a no-op for lod0, and the IDENTITY->PLY delta for the
     // decimated levels, so all levels share Transform.PLY and stackLods' match
     // assertion holds. writeLodSource then bakes PLY (fast-path no-op).
-    const mainSource = stackLods(levels.map((l) => bakeTransform(dataTableToChunkSource(l), Transform.PLY)));
+    // A DataTable carries no splat-model tag, so every level is tagged here
+    // (writeLodSource records the stacked source's model in lod-meta.json)
+    const mainSource = stackLods(
+        levels.map((l) => bakeTransform(dataTableToChunkSource(l, undefined, undefined, model), Transform.PLY))
+    );
     return { mainSource, levelCounts };
 };
 
@@ -776,7 +782,7 @@ const writePortalScene = async (
     await new Promise((resolve) => {
         setTimeout(resolve, 0);
     });
-    const dataTable = await scene.loadDataTable();
+    const { dataTable, model } = await scene.loadScene();
     let counts: number[] = [dataTable.numRows];
     // Voxelize first, on the pristine full-resolution table, before the streaming
     // LOD build reads it. This mirrors the primary scene's collision→LOD order so
@@ -802,9 +808,14 @@ const writePortalScene = async (
         }
     }
     if (scene.streaming) {
-        const { mainSource, levelCounts } = await buildStreamingLodSource(dataTable, createDevice, (info) => {
-            onPhase?.(info, false); // decimation passes carry their level in the label
-        });
+        const { mainSource, levelCounts } = await buildStreamingLodSource(
+            dataTable,
+            createDevice,
+            (info) => {
+                onPhase?.(info, false); // decimation passes carry their level in the label
+            },
+            model
+        );
         counts = levelCounts;
         onPhase?.(PHASES.packagingChunks(), true);
         await writeLodSource(
@@ -824,7 +835,15 @@ const writePortalScene = async (
         await mainSource.close();
     } else {
         await writeSog(
-            { filename: 'scene.sog', dataTable, bundle: true, iterations: 10, createDevice, logging: 'silent' },
+            {
+                filename: 'scene.sog',
+                dataTable,
+                model,
+                bundle: true,
+                iterations: 10,
+                createDevice,
+                logging: 'silent'
+            },
             sub
         );
     }
@@ -869,6 +888,9 @@ const repointCollisionUrl = (memFs: MemoryFileSystem): void => {
 // wrapper in splat-serialize.ts retains the strong ExperienceSettings type.
 type ViewerCoreOptions = {
     dataTable: DataTable;
+    // the splat-model tag (e.g. 'antialiased') the table was exported as; a
+    // DataTable carries none of its own. Defaults to untagged
+    model?: SplatModel;
     viewerSettingsJson: ViewerSettingsJson;
     viewerType: 'html' | 'package' | 'streaming';
     createDevice: DeviceCreator;
@@ -892,6 +914,7 @@ type ViewerCoreOptions = {
 const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
     const {
         dataTable,
+        model,
         viewerSettingsJson,
         createDevice,
         fs,
@@ -960,7 +983,8 @@ const writeStreamingViewerCore = async (options: ViewerCoreOptions): Promise<voi
         createDevice,
         (info) => {
             phase = withScene(info, primaryScene);
-        }
+        },
+        model
     );
 
     // Chunk packaging emits one accurate {index,total} per chunk - surface it.
@@ -1079,7 +1103,10 @@ const writeSogCore = async (
     fs: FileSystem,
     events?: Events,
     onLog?: (level: string, text: string) => void,
-    shouldCancel?: () => boolean
+    shouldCancel?: () => boolean,
+    // last, so the export server's positional call through its untyped import
+    // keeps every earlier argument in place
+    model?: SplatModel
 ): Promise<void> => {
     splatTransformLogger.setRenderer(
         createProgressRenderer(
@@ -1093,7 +1120,7 @@ const writeSogCore = async (
         )
     );
     try {
-        await writeSog({ filename: 'output.sog', dataTable, bundle: true, iterations, createDevice }, fs);
+        await writeSog({ filename: 'output.sog', dataTable, model, bundle: true, iterations, createDevice }, fs);
     } catch (err) {
         splatTransformLogger.unwindAll(true);
         throw err;
@@ -1104,7 +1131,9 @@ const writeSogCore = async (
 // resident at a time. At SH degree 3 a table is ~236 B/gaussian, so eagerly
 // materializing every scene cost ~N x the whole scene before a byte was written.
 type ExtraPortalScene = {
-    loadDataTable: () => Promise<DataTable>;
+    // the scene's table and its splat-model tag (see ViewerCoreOptions.model),
+    // which a DataTable cannot carry itself
+    loadScene: () => Promise<{ dataTable: DataTable; model?: SplatModel }>;
     streaming: boolean;
     collisionUrl: string | null;
     environment: 'indoor' | 'outdoor';
@@ -1116,6 +1145,7 @@ type ExtraPortalScene = {
 const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
     const {
         dataTable,
+        model,
         viewerType,
         createDevice,
         fs,
@@ -1170,7 +1200,15 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
             }
             const memFs = new MemoryFileSystem();
             await writeHtml(
-                { filename: 'output.html', dataTable, viewerSettingsJson, bundle: true, iterations: 10, createDevice },
+                {
+                    filename: 'output.html',
+                    dataTable,
+                    model,
+                    viewerSettingsJson,
+                    bundle: true,
+                    iterations: 10,
+                    createDevice
+                },
                 memFs
             );
             const raw = memFs.results.get('output.html');
@@ -1220,7 +1258,15 @@ const writeViewerCore = async (options: ViewerCoreOptions): Promise<void> => {
                 scenePrefix = { en: `Scene 1/${total}`, scene: { index: 1, total } };
             }
             await writeHtml(
-                { filename: 'index.html', dataTable, viewerSettingsJson, bundle: false, iterations: 10, createDevice },
+                {
+                    filename: 'index.html',
+                    dataTable,
+                    model,
+                    viewerSettingsJson,
+                    bundle: false,
+                    iterations: 10,
+                    createDevice
+                },
                 memFs
             );
             if (collision) {

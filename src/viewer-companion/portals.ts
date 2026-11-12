@@ -21,7 +21,9 @@ import {
 } from '../portal-preload';
 import { beginTeleportGuard, tickTeleportGuard } from '../portal-teleport-guard';
 import { tileGrid, tileGeometry, tileDelay, transitionReducer } from '../portal-transition';
+import { tickXrSession } from '../portal-xr-session';
 
+import { followFullscreen } from './fullscreen-follow';
 import { markerRuntime, markerStyle } from './portal-markers';
 import type { ViewerSettingsJson } from './viewer-settings-json';
 
@@ -149,6 +151,7 @@ const companionRuntime = `
   var crossingReducer = ${crossingReducer.toString()};
   var resolveLoadingMessage = ${resolveLoadingMessage.toString()};
   var collectLodFileUrls = ${collectLodFileUrls.toString()};
+  var followFullscreen = ${followFullscreen.toString()};
   var collectSogBlockFileUrls = ${collectSogBlockFileUrls.toString()};
   var buildPortalAdjacency = ${buildPortalAdjacency.toString()};
   var desiredResidentScenes = ${desiredResidentScenes.toString()};
@@ -167,6 +170,7 @@ const companionRuntime = `
   var resolvePortalCrossing = ${resolvePortalCrossing.toString()};
   var beginTeleportGuard = ${beginTeleportGuard.toString()};
   var tickTeleportGuard = ${tickTeleportGuard.toString()};
+  var tickXrSession = ${tickXrSession.toString()};
   var tileGrid = ${tileGrid.toString()};
   var tileGeometry = ${tileGeometry.toString()};
   var tileDelay = ${tileDelay.toString()};
@@ -271,6 +275,8 @@ const companionRuntime = `
   // while an annotation jump / reset / frame is lerping the camera to its new
   // pose, so that flight cannot be read as free navigation through a doorway.
   var teleportGuard = { target: null, until: 0 };
+  // XR session edges for crossing detection (see portal-xr-session.ts)
+  var xrSession = { inXr: false, startScene: null };
   var TELEPORT_GUARD_MS = 1250;             // reset / frame: the viewer's default 1s easeOut transition + margin for the frame it lands on
   var ANNOTATION_GUARD_MS = 2650;           // annotation flights last 1.2-2.4s (ANNOTATION_MIN/MAX_DURATION, supersplat-viewer 1.35) + the same 250ms margin
   function nowMs() {
@@ -455,6 +461,9 @@ const companionRuntime = `
     }
   };
   window.__ssLoadFailures = loadFailures;
+  // Read by the viewer-engine patch on supersplat-viewer's XR start, so it
+  // must be up before any session can: see the XR block in the viewer hook.
+  window.__ssPinEntity = true;
   function mountLoadDiag() { if (loadDiagEl && document.body) { document.body.appendChild(loadDiagEl); } }
   if (LOAD_DIAG) {
     loadDiagEl = document.createElement('div');
@@ -520,6 +529,12 @@ const companionRuntime = `
 
   function mountCovers() { document.body.appendChild(tileLayer); document.body.appendChild(defocusLayer); }
   if (document.body) { mountCovers(); } else { document.addEventListener('DOMContentLoaded', mountCovers); }
+
+  // The viewer fullscreens its own root, and a fullscreen page draws only that
+  // subtree, so every page-level overlay here follows the fullscreen element.
+  // The others mount at load, before any fullscreen; the markers mount late
+  // and place themselves (markerRoot is the marker runtime's, below).
+  var placeOverlays = followFullscreen(document, function () { return [lBackdrop, loadDiagEl, tileLayer, defocusLayer, markerRoot]; });
 
   function buildTiles() {
     var g = tileGrid(window.innerWidth || 1280, window.innerHeight || 720);
@@ -1285,7 +1300,7 @@ const companionRuntime = `
       });
       // The viewer's applyPerfSettings re-runs on these events (xrMode since
       // supersplat-viewer 1.37; quality and stochastic replaced performanceMode
-      // in 1.38): it reopens the start component's lodRangeMin
+      // in 1.38; performanceMode and debugMode replaced stochastic in 1.43): it reopens the start component's lodRangeMin
       // to 0 (wiping the budget clamp) AND applies the new splatBudget (a
       // standalone headset drops to its XR budget in a session). A frame later
       // (rAF: all listeners on the event run synchronously, so by then
@@ -1303,34 +1318,27 @@ const companionRuntime = `
         });
       };
       ev.on('quality:changed', reassertAfterPerfSettings);
-      ev.on('stochastic:changed', reassertAfterPerfSettings);
+      ev.on('performanceMode:changed', reassertAfterPerfSettings);
+      ev.on('debugMode:changed', reassertAfterPerfSettings);
       ev.on('xrMode:changed', reassertAfterPerfSettings);
     }
 
     // Portal scenes, portal markers, crossings and zones are all world-anchored,
     // so nothing in XR may move the start scene's entity: it would detach them
-    // from what the user sees. Since supersplat-viewer 1.38 a two-hand grab in
-    // a walk-in scene moves the USER (XrGrabMove) and leaves the entity put, so
-    // that grab stays. Two things still move the entity, and both are switched
-    // off here:
-    //   - an object (orbit) export's grab, the XrManipulation script the viewer
-    //     creates on the camera rig once the splat has loaded, before any
-    //     session can start. It only acts in update(), which a disabled script
-    //     never runs. Disabled at every start, so nothing can re-enable it
-    //     between sessions, and at once should a session already be running.
+    // from what the user sees. A two-hand grab in a walk-in VR scene moves the
+    // USER (XrGrabMove) and leaves the entity put, so that grab stays. Two
+    // things still move the entity, and both are switched off:
+    //   - supersplat-viewer 1.43's held splat (XrObjectGrab): an object export
+    //     in any session, and a walk-in scene in AR as a diorama, is placed in
+    //     front of the user at session start and then grabbed about. The viewer
+    //     decides that ("holding") at each session start, from a closure the
+    //     companion cannot reach, so a viewer-engine patch makes it read
+    //     window.__ssPinEntity, set at script load above. (Up to 1.38 this was
+    //     the XrManipulation script on the rig, disabled here at each start.)
     //   - the XR menu's Ice Cream hold (state.iceCream), which puts the entity
     //     on the user's fist. Turned back off whenever it is turned on. Deferred:
     //     the viewer's own iceCream:changed listener may run after this one in
     //     the same dispatch and would re-enable the hold with the stale value.
-    var rig = viewer.global && viewer.global.camera && viewer.global.camera.parent;
-    if (app.xr && app.xr.on && rig) {
-      var disableXrGrab = function () {
-        var grab = rig.script && rig.script.get('xrManipulation');
-        if (grab) { grab.enabled = false; }
-      };
-      app.xr.on('start', disableXrGrab);
-      if (app.xr.active) { disableXrGrab(); }
-    }
     var xrState = viewer.global && viewer.global.state;
     if (ev && ev.on && xrState) {
       var disableIceCream = function () {
@@ -1343,6 +1351,10 @@ const companionRuntime = `
     }
 
     liveApp = app;
+    // In an XR session the frame work runs here, not from window rAF (see tick)
+    if (app.on) {
+      app.on('update', function () { if (xrActiveNow()) { frame(); } });
+    }
     // Count dropped loads at the registry, which fires 'error' with (err, asset)
     // for every asset that gave up. Textures only: those are the block webps
     // whose loss shows up as a black region.
@@ -1551,7 +1563,18 @@ const companionRuntime = `
   }
 
   var tickErrored = false;
+  // The per-frame work runs from window rAF, except in an XR session: the
+  // browser need not run window rAF callbacks while an immersive session is
+  // presenting (the session has its own), so there the app's update event,
+  // which the session's frames drive, runs it instead (see start()).
+  function xrActiveNow() {
+    return !!(liveApp && liveApp.xr && liveApp.xr.active);
+  }
   function tick() {
+    if (!xrActiveNow()) { frame(); }
+    requestAnimationFrame(tick);
+  }
+  function frame() {
     // Never let a stray error kill the rAF loop (which would freeze navigation
     // entirely and switching with it); log it once and keep ticking.
     try {
@@ -1559,8 +1582,31 @@ const companionRuntime = `
       var viewer = window.__supersplatViewer;
       var cm = viewer && viewer.cameraManager;
       var cam = cm && cm.camera;
+      // In an XR session the viewer leaves its camera manager alone, so its
+      // pose stays where the session started: read the camera entity, which
+      // the headset drives (teleport, grab-move and walking all move it). The
+      // session's edges jump the camera, which is no walk, so drop the swept
+      // segment there; on exit the viewer restores the pre-session camera, so
+      // go back to the scene the session started in (portal-xr-session.ts).
+      var xrApp = viewer && viewer.global && viewer.global.app;
+      var xrActive = !!(xrApp && xrApp.xr && xrApp.xr.active);
+      var xrCam = xrActive ? viewer.global.camera : null;
       if (cam && cam.position) {
-        curPos[0] = cam.position.x; curPos[1] = cam.position.y; curPos[2] = cam.position.z;
+        var xs = tickXrSession(xrSession, xrActive, activeIndex);
+        xrSession = xs.state;
+        if (xs.changed) {
+          lastSafe = null;
+          if (xs.returnTo !== null) {
+            beginTeleport(xs.returnTo);
+            dispatch({ type: 'crossing', target: xs.returnTo, loaded: !!(entities[xs.returnTo] || sceneLoading[xs.returnTo]), ready: sceneReady(xs.returnTo) });
+          }
+        }
+        if (xrCam && xrCam.getPosition) {
+          var headPos = xrCam.getPosition();
+          curPos[0] = headPos.x; curPos[1] = headPos.y; curPos[2] = headPos.z;
+        } else {
+          curPos[0] = cam.position.x; curPos[1] = cam.position.y; curPos[2] = cam.position.z;
+        }
         var st = getState();
         // In animation mode the camera is driven by the authored path, so the
         // active scene is a pure function of the cursor time (handles play,
@@ -1583,7 +1629,8 @@ const companionRuntime = `
         // is actually open, keeping the steady state allocation-free.
         var tg = (teleportGuard.target !== null) ? tickTeleportGuard(teleportGuard, nowMs(), crossState.mode, crossState.target) : null;
         if (tg) { teleportGuard = tg.state; }
-        if (st && st.cameraMode === 'anim' && timeline) {
+        // (In XR the headset drives the camera, not the timeline.)
+        if (st && st.cameraMode === 'anim' && timeline && !xrActive) {
           var want = sceneAtTime(st.animationTime || 0);
           if (want !== activeIndex && want !== null && want !== undefined) {
             dispatch({ type: 'crossing', target: want, loaded: !!(entities[want] || sceneLoading[want]), ready: sceneReady(want) });
@@ -1612,7 +1659,9 @@ const companionRuntime = `
           var cr = resolvePortalCrossing(lastSafe, curPos, rects, activeIndex, segmentCrossesRect);
           var next = cr.uid;
           if (next !== activeIndex && next !== null) {
-            var kind = transitionKind(cr.portalIndex);
+            // the covers are page overlays, which an XR session does not
+            // show: swap at once rather than hold the old scene for a sweep
+            var kind = xrActive ? 'none' : transitionKind(cr.portalIndex);
             if (transState.phase === 'dismantling') {
               // Crossing already latched; the commit re-resolves it. Dispatching
               // now would switch the scene before the cover has closed.
@@ -1711,7 +1760,6 @@ const companionRuntime = `
       pendingIndex = null; overlayShown = false;
       hideLoading();
     }
-    requestAnimationFrame(tick);
   }
 
   // --- preload (cache-warming) of extra streaming scenes ----------------

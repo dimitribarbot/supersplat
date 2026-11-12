@@ -90,4 +90,27 @@ describe('portals-runtime walkthrough preview', () => {
         expect(splats[1].visible).toBe(true);        // still the start splat
         expect(splats[0].visible).toBe(false);
     });
+
+    // render_view poses the camera for each tile and jumps back; those jumps are
+    // captures, not walking, so they must not cross a portal.
+    it('ignores camera jumps while crossings are suspended', () => {
+        const events = makeEvents();
+        const splats = [{ uid: 1, visible: true }, { uid: 2, visible: true }];
+        registerPortalsRuntime(events, makeScene(splats));
+        events.function('portals.list', () => portalData());
+        events.function('portals.startSplat', () => 2);
+        events.fire('portals.walkthrough', true);
+        events.fire('prerender', camAt(0, 0, -1));   // the pose before the capture
+        events.fire('portals.suspendCrossing', true);
+        events.fire('prerender', camAt(0, 0, 1));    // a tile pose across the portal
+        events.fire('prerender', camAt(0, 5, 1));
+        expect(splats[1].visible).toBe(true);
+        events.fire('portals.suspendCrossing', false);
+        events.fire('prerender', camAt(0, 0, -1));   // restored: compared with the pre-capture pose
+        expect(splats[1].visible).toBe(true);        // still the start scene
+        expect(splats[0].visible).toBe(false);
+        // walking resumes normally afterwards
+        events.fire('prerender', camAt(0, 0, 1));
+        expect(splats[0].visible).toBe(true);
+    });
 });

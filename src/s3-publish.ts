@@ -30,7 +30,14 @@ const registerS3PublishEvents = (events: Events) => {
             });
 
             // browser-side PLY extraction (same path as server export)
-            const serializeSettings: SerializeSettings = { ...options.serializeSettings };
+            // linearOpacity: the shipped PLYs carry exact linear opacity, so the
+            // server reads back the very values a local export would write from
+            // antiAlias: tagged with the model the view renders, as every other export
+            const serializeSettings: SerializeSettings = {
+                ...options.serializeSettings,
+                antiAlias: events.invoke('view.antiAlias'),
+                linearOpacity: true
+            };
 
             // portal multi-scene upload: when the scene has portals, the PRIMARY
             // scene is the START scene alone; each extra scene uploads its own

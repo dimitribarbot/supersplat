@@ -248,7 +248,7 @@ class VideoSettingsDialog extends Container {
 
         // Update codec options when format changes
         const syncFormat = () => {
-            const format = formatSelect.value;
+            const format = formatSelect.value as string;
             const options = codecOptions[format] || codecOptions.mp4;
             codecSelect.options = options;
 
@@ -497,8 +497,8 @@ class VideoSettingsDialog extends Container {
 
         const encodingSettingsFor = (resolution: string) => {
             const { width, height } = dimensionsFor(resolution);
-            const frameRate = frameRates[frameRateSelect.value];
-            const bppf = bppfs[bitrateSelect.value] * bppfFactors[resolution];
+            const frameRate = frameRates[frameRateSelect.value as string];
+            const bppf = bppfs[bitrateSelect.value as string] * bppfFactors[resolution];
 
             return {
                 codec: codecSelect.value as VideoCodecChoice,
@@ -525,7 +525,7 @@ class VideoSettingsDialog extends Container {
         const outputFrames = () => {
             const range = frameRangeInput.value as number[];
             const animFrameRate = events.invoke('timeline.frameRate');
-            const frameRate = frameRates[frameRateSelect.value];
+            const frameRate = frameRates[frameRateSelect.value as string];
             const duration = (range[1] - range[0]) / animFrameRate;
             return Math.floor(duration * frameRate) + 1;
         };
@@ -543,7 +543,7 @@ class VideoSettingsDialog extends Container {
             const on = !is360 && compressAvailable && compressBoolean.value;
             // the saved file is the compressed WebM whenever compression runs,
             // so that — not the master's format — is what lands in storage
-            s3Rows.setExtension(on ? 'webm' : formatSelect.value);
+            s3Rows.setExtension(on ? 'webm' : (formatSelect.value as string));
             targetSizeRow.hidden = !on;
             setCompressHintVisible(on);
             compressBlocked = false;
@@ -557,12 +557,12 @@ class VideoSettingsDialog extends Container {
             }
 
             const frames = outputFrames();
-            const frameRate = frameRates[frameRateSelect.value];
+            const frameRate = frameRates[frameRateSelect.value as string];
             const seconds = frames / frameRate;
             const targetMB = targetSizeInput.value;
             const kbps = Math.floor(((targetMB * 8000) / seconds) * 0.97);
 
-            const { bitrate } = encodingSettingsFor(resolutionSelect.value);
+            const { bitrate } = encodingSettingsFor(resolutionSelect.value as string);
             const uploadMB = (bitrate / 8e6) * seconds;
 
             compressHint.text = i18n.t('popup.render-video.compress-hint', {
@@ -614,9 +614,9 @@ class VideoSettingsDialog extends Container {
         const compatibilityDescription = () => {
             const codec = codecSelect.value as VideoCodecChoice;
             return {
-                resolution: formatResolution(resolutionSelect.value),
+                resolution: formatResolution(resolutionSelect.value as string),
                 codec: codecNames[codec],
-                frameRate: frameRates[frameRateSelect.value],
+                frameRate: frameRates[frameRateSelect.value as string],
                 bitrate: i18n.t(`popup.render-video.bitrate-value.${bitrateSelect.value}`)
             };
         };
@@ -633,8 +633,8 @@ class VideoSettingsDialog extends Container {
             const is360 = projectionSelect.value === 'equirect';
             if (!is360 && compressAvailable && compressBoolean.value) return null;
 
-            const seconds = outputFrames() / frameRates[frameRateSelect.value];
-            const { bitrate } = encodingSettingsFor(resolutionSelect.value);
+            const seconds = outputFrames() / frameRates[frameRateSelect.value as string];
+            const { bitrate } = encodingSettingsFor(resolutionSelect.value as string);
             const uploadMB = (bitrate / 8e6) * seconds;
             return uploadMB * 1e6 > maxUpload ? uploadMB : null;
         };
@@ -642,7 +642,7 @@ class VideoSettingsDialog extends Container {
         const updateCompatibilityUI = () => {
             const options = activeResolutionOptions();
             updateCompressUI();
-            const selected = resolutionSelect.value;
+            const selected = resolutionSelect.value as string;
             const disabledOptions: Record<string, string> = {};
 
             if (probeState === 'ready') {
@@ -896,7 +896,7 @@ class VideoSettingsDialog extends Container {
                     }
 
                     const is360 = projectionSelect.value === 'equirect';
-                    const encodingSettings = encodingSettingsFor(resolutionSelect.value);
+                    const encodingSettings = encodingSettingsFor(resolutionSelect.value as string);
                     const frameRange = frameRangeInput.value as number[];
 
                     const videoSettings: VideoDialogResult = {
