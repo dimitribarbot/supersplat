@@ -460,7 +460,6 @@ const filteredIndices = async (splat: Splat, settings: SerializeSettings) => {
                     const instance = ordered[slot];
                     if (onlySelected && state[instance] !== State.selected) continue;
                     const i = splat.instances.sourceRow[instance] - base;
-                    // the geometric layer holds linear opacity (splat-transform >= 3.11)
                     if (minOpacity > 0 && opacity[i * 8 + 7] < minOpacity) continue;
                     if (
                         removeInvalid &&
@@ -498,6 +497,24 @@ type ExportEntry = {
     end: number;
     transform: SplatTransformCache;
     grade: ColorGradeCache;
+};
+
+// Whether some exported gaussian's opacity may exceed 1: its layer's source holds
+// opacity above 1 (decimated scenes, SOG v3), or a colour grade raises it. The
+// PLY writer writes opacity_linear, rather than the opacity logit that cannot
+// carry it, only when the source says so
+const exportsOpacityAboveOne = (entries: ExportEntry[]) => {
+    const terms = createGradeTerms();
+    return entries.some((e) => {
+        if (e.end <= e.start) return false;
+        if (e.splat.resource.source.meta.opacityAboveOne) return true;
+        const { colorPalette, instances } = e.splat;
+        const raising = new Set<number>();
+        for (let c = 0; c < colorPalette.size; ++c) {
+            if (colorPalette.getEntry(c, terms).transparency > 1) raising.add(c);
+        }
+        return raising.size > 0 && e.indices.some((instance) => raising.has(instances.colorIndex(instance)));
+    });
 };
 
 /**
@@ -546,8 +563,9 @@ class SuperSplatChunkSource implements ChunkSource {
             transform: Transform.PLY,
             availableLayers: new Set<ChunkLayer>(['position', 'geometric', 'color']),
             layouts: buildLayouts(this.numRest),
-            // the PLY writer writes `opacity_linear` for a source that says so
-            ...(settings.linearOpacity ? { opacityAboveOne: true } : {})
+            // the PLY writer writes `opacity_linear` for a source that says so: the
+            // export needs it, or a server-bound PLY asks for it (linearOpacity)
+            ...(settings.linearOpacity || exportsOpacityAboveOne(entries) ? { opacityAboveOne: true } : {})
         };
     }
 
