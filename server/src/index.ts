@@ -4,18 +4,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { config as loadEnv } from 'dotenv';
 import Fastify from 'fastify';
 import type { RouteHandlerMethod } from 'fastify';
+
 import { safeAnnotationImageName } from './annotation-images.js';
-import { warnRemovedBrandEnv } from './brand.js';
 import { validateBrandOverride } from './brand-resolve.js';
+import { warnRemovedBrandEnv } from './brand.js';
 import { probeFfmpeg } from './ffmpeg.js';
 import { probeGpu } from './gpu.js';
 import { createJob, createUploadJob, createVideoJob, getJob, subscribe } from './jobs.js';
+import type { ProgressEvent } from './progress.js';
+import type { ExportOptions } from './run-export.js';
 import { isConfigured as s3IsConfigured, listPrefix, objectExists } from './s3.js';
 
 // `--prod` swaps in the production settings (e.g. the prod S3 bucket). The prod
@@ -62,7 +66,7 @@ export const buildApp = async () => {
 
     app.post('/api/export', async (req, reply) => {
         let plyGz: Buffer | null = null;
-        let options: any = null;
+        let options: ExportOptions | null = null;
         let poster: Buffer | null = null;
         const extraPlyGz: Buffer[] = [];
         const annotationImages: { path: string; data: Uint8Array }[] = [];
@@ -118,7 +122,7 @@ export const buildApp = async () => {
         // that here would hold the whole video in memory.
         const dir = await mkdtemp(join(tmpdir(), 'ssvc-up-'));
         let masterPath: string | null = null;
-        let options: any = null;
+        let options: Record<string, unknown> | null = null;
 
         const fail = async (code: number, error: string) => {
             await rm(dir, { recursive: true, force: true });
@@ -138,15 +142,15 @@ export const buildApp = async () => {
                     }
                 }
             }
-        } catch (err: any) {
-            return fail(400, `upload failed: ${err?.message ?? err}`);
+        } catch (err) {
+            return fail(400, `upload failed: ${err instanceof Error ? err.message : err}`);
         }
 
         if (!masterPath) return fail(400, 'missing master file');
         if (!options) return fail(400, 'missing options');
 
         const { targetMB, frameRate, frames } = options;
-        const finite = (v: unknown, lo: number, hi: number) =>
+        const finite = (v: unknown, lo: number, hi: number): v is number =>
             typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 
         if (!finite(targetMB, 0.05, 2000)) return fail(400, 'targetMB must be a number between 0.05 and 2000');
@@ -169,11 +173,11 @@ export const buildApp = async () => {
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive'
         });
-        const send = (e: any) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
+        const send = (e: ProgressEvent) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
         // `unsub` may be invoked synchronously during subscribe() when the job
         // already finished (buffered events replay immediately), so declare it
         // first to avoid a temporal-dead-zone reference in the listener.
-        let unsub = () => {};
+        let unsub: () => void = () => undefined;
         unsub = subscribe(id, (e) => {
             send(e);
             if (e.kind === 'done' || e.kind === 'error') {
@@ -252,7 +256,7 @@ export const buildApp = async () => {
         try {
             for await (const part of req.parts()) {
                 if (part.type === 'field' && part.fieldname === 'options') {
-                    let options: any;
+                    let options: Record<string, unknown>;
                     try {
                         options = JSON.parse(part.value as string);
                     } catch {
@@ -273,8 +277,8 @@ export const buildApp = async () => {
                     await pipeline(part.file, createWriteStream(filePath));
                 }
             }
-        } catch (err: any) {
-            return fail(400, `upload failed: ${err?.message ?? err}`);
+        } catch (err) {
+            return fail(400, `upload failed: ${err instanceof Error ? err.message : err}`);
         }
 
         if (!key) return fail(400, 'missing options');
@@ -302,7 +306,7 @@ export const buildApp = async () => {
     app.post('/api/publish', async (req, reply) => {
         if (!s3IsConfigured()) return reply.code(503).send({ error: 'publishing not configured' });
         let plyGz: Buffer | null = null;
-        let options: any = null;
+        let options: (Pick<ExportOptions, 'serializeSettings' | 'viewerExportSettings' | 'portalExtras'> & Record<'subfolder' | 'name' | 'brandOverride' | 'overwrite' | 'public', unknown>) | null = null;
         let poster: Buffer | null = null;
         const extraPlyGz: Buffer[] = [];
         const annotationImages: { path: string; data: Uint8Array }[] = [];
@@ -362,6 +366,7 @@ const start = async () => {
     const app = await buildApp();
     warnRemovedBrandEnv();
     await app.listen({ port: PORT, host: '0.0.0.0' });
+    app.log.info(`Open in browser: http://localhost:${PORT}`);
 };
 
 // Only auto-start when run directly (`node dist/index.js`), not when imported
@@ -370,7 +375,6 @@ const start = async () => {
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
     start().catch((err) => {
-        // eslint-disable-next-line no-console
         console.error('Failed to start export server:', err);
         process.exit(1);
     });
