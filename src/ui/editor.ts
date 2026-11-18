@@ -5,13 +5,13 @@ import { version } from '../../package.json';
 import type { Events } from '../events';
 import { probeExportCapabilities, runVideoCompress } from '../export-server-client';
 import type { ExportSettings } from '../export-settings';
+import type { ImportGroup } from '../import-analysis';
 import type { BlobReadSource } from '../io';
 import { withVideoRenderState } from '../video-render-state';
 
 import { AboutPopup } from './about-popup';
 import { AnnotationImagesDialog } from './annotation-images-dialog';
 import { AnnotationTranslationsDialog } from './annotation-translations-dialog';
-import { AppearancePanel } from './appearance-panel';
 import { BottomToolbar } from './bottom-toolbar';
 import { CameraInfoOverlay } from './camera-info-overlay';
 import { ClipboardMenu } from './clipboard-menu';
@@ -19,8 +19,10 @@ import { DataPanel } from './data-panel';
 import { ExportPopup } from './export-popup';
 import { ExportSummaryDialog } from './export-summary-dialog';
 import { ImageSettingsDialog } from './image-settings-dialog';
+import { ImportReviewDialog } from './import-review-dialog';
 import { i18n } from './localization';
 import { Menu } from './menu';
+import { ModeToolbar } from './mode-toolbar';
 import { OverdrawLegend } from './overdraw-legend';
 import { OverlaysPanel } from './overlays-panel';
 import { PerfOverlay } from './perf-overlay';
@@ -170,10 +172,10 @@ class EditorUI {
         const clipboardMenu = new ClipboardMenu();
         const scenePanel = new ScenePanel(events, tooltips, clipboardMenu);
         const settingsPanel = new SettingsPanel(events, tooltips);
-        const appearancePanel = new AppearancePanel(events, tooltips);
         const overlaysPanel = new OverlaysPanel(events, tooltips);
         const bottomToolbar = new BottomToolbar(events, tooltips);
         const rightToolbar = new RightToolbar(events, tooltips);
+        const modeToolbar = new ModeToolbar(events, tooltips);
         const menu = new Menu(events);
         const cameraInfoOverlay = new CameraInfoOverlay(events, tooltips);
         const perfOverlay = new PerfOverlay(events);
@@ -190,6 +192,7 @@ class EditorUI {
         canvasContainer.append(scenePanel);
         canvasContainer.append(bottomToolbar);
         canvasContainer.append(rightToolbar);
+        canvasContainer.append(modeToolbar);
         canvasContainer.append(menu);
 
         // Set while a video render is showing a still of the view (see
@@ -200,7 +203,6 @@ class EditorUI {
         // the option popups come after the toolbars so their select dropdowns,
         // which can extend past the panel bounds, paint above them
         canvasContainer.append(settingsPanel);
-        canvasContainer.append(appearancePanel);
         canvasContainer.append(overlaysPanel);
 
         // view axes container
@@ -267,6 +269,9 @@ class EditorUI {
         // annotation translations
         const annotationTranslationsDialog = new AnnotationTranslationsDialog(events);
 
+        // review of a mixed set of picked or dropped files
+        const importReviewDialog = new ImportReviewDialog();
+
         // about popup
         const aboutPopup = new AboutPopup(events);
 
@@ -279,6 +284,7 @@ class EditorUI {
         topContainer.append(videoSettingsDialog);
         topContainer.append(annotationImagesDialog);
         topContainer.append(annotationTranslationsDialog);
+        topContainer.append(importReviewDialog);
         topContainer.append(shortcutsPopup);
         topContainer.append(aboutPopup);
         topContainer.append(clipboardMenu);
@@ -357,6 +363,10 @@ class EditorUI {
             if (publishSettings) {
                 await events.invoke('scene.publish', publishSettings);
             }
+        });
+
+        events.function('show.importReview', (groups: ImportGroup[]) => {
+            return importReviewDialog.show(groups);
         });
 
         events.function('show.imageSettingsDialog', async () => {

@@ -14,6 +14,7 @@ import { buildExportOptions } from './export-options';
 import type { FileType } from './file-handler';
 import type { GaussianColumn, GeneratorParam } from './generator-sandbox';
 import { runGenerator } from './generator-sandbox';
+import { isModelFile, modelFormatNames } from './import-formats';
 import { validateSplatSource } from './io';
 import type { Scene, ViewOverride } from './scene';
 import { Splat } from './splat';
@@ -102,12 +103,12 @@ type ViewSettings = {
     showGrid?: boolean;
     shBands?: number;
     tonemapping?: string;
-    showGaussians?: boolean;
-    showCenters?: boolean;
-    showRings?: boolean;
+    mode?: 'centers' | 'rings';
+    showMarkers?: boolean;
+    markersOnly?: boolean;
+    xray?: boolean;
     selectionColor?: boolean;
-    selectionCenters?: boolean;
-    selectionRings?: boolean;
+    outlineSelection?: boolean;
 };
 type ExportRequest = ExportChoices & {
     format: 'ply' | 'compressed-ply' | 'splat' | 'sog' | 'spz' | 'viewer-html' | 'viewer-zip';
@@ -122,27 +123,27 @@ type SessionQueries = {
 };
 
 const VIEW_ANGLES = { front: [0, 0], back: [180, 0], left: [270, 0], right: [90, 0], top: [0, -90], bottom: [0, 90] };
+// markers last: setting the mode switches them back on. X-ray is the editor's
+// pick depth inverted, handled apart from these maps
 const VIEW_EVENTS = {
     showGrid: 'grid.setVisible',
     shBands: 'view.setBands',
     tonemapping: 'camera.setTonemapping',
-    showGaussians: 'view.setGaussians',
-    showCenters: 'view.setCenters',
-    showRings: 'view.setRings',
+    mode: 'view.setMode',
+    markersOnly: 'view.setMarkersOnly',
     selectionColor: 'view.setSelectionColor',
-    selectionCenters: 'view.setSelectionCenters',
-    selectionRings: 'view.setSelectionRings'
+    outlineSelection: 'view.setOutlineSelection',
+    showMarkers: 'view.setEditView'
 };
 const VIEW_QUERIES = {
     showGrid: 'grid.visible',
     shBands: 'view.bands',
     tonemapping: 'camera.tonemapping',
-    showGaussians: 'view.gaussians',
-    showCenters: 'view.centers',
-    showRings: 'view.rings',
+    mode: 'view.mode',
+    showMarkers: 'view.editView',
+    markersOnly: 'view.markersOnly',
     selectionColor: 'view.selectionColor',
-    selectionCenters: 'view.selectionCenters',
-    selectionRings: 'view.selectionRings'
+    outlineSelection: 'view.outlineSelection'
 };
 
 // Session and file operations behind EditorAPI. The transport never needs a
@@ -174,7 +175,8 @@ const createEditorSession = (events: Events, scene: Scene, queue: CommandQueue, 
     };
     const viewInfo = () => ({
         background: (events.invoke('bgClr') as Color).clone(),
-        ...Object.fromEntries(Object.entries(VIEW_QUERIES).map(([key, name]) => [key, events.invoke(name)]))
+        ...Object.fromEntries(Object.entries(VIEW_QUERIES).map(([key, name]) => [key, events.invoke(name)])),
+        xray: !events.invoke('selection.useDepth')
     });
     const viewportInfo = () => {
         const frame = scene.camera.captureFrame();
@@ -487,6 +489,7 @@ const createEditorSession = (events: Events, scene: Scene, queue: CommandQueue, 
                     checkCancelled(options);
                     assertIdle();
                     if (s.background) events.fire('setBgClr', s.background);
+                    if (s.xray !== undefined) events.fire('selection.setUseDepth', !s.xray);
                     for (const [key, name] of Object.entries(VIEW_EVENTS)) {
                         const value = s[key as keyof ViewSettings];
                         if (value !== undefined) events.fire(name, value);
@@ -522,8 +525,8 @@ const createEditorSession = (events: Events, scene: Scene, queue: CommandQueue, 
                 if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password)
                     throw new EditorError('invalid_input', 'Use an HTTP(S) URL without embedded credentials.');
                 const name = filename ?? decodeURIComponent(parsed.pathname.split('/').pop());
-                if (!/\.(?:ply|splat|sog|spz|ksplat)$/i.test(name))
-                    throw new EditorError('unsupported_format', 'URL import supports PLY, SPLAT, SOG, SPZ and KSPLAT.');
+                if (!isModelFile(name))
+                    throw new EditorError('unsupported_format', `URL import supports ${modelFormatNames}.`);
                 const loaded = (await events.invoke('import', [{ url: parsed.href, filename: name }], false, {
                     ...options,
                     throwOnError: true,

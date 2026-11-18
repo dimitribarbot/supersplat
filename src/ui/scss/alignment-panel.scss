@@ -1,8 +1,10 @@
 @use 'colors.scss' as *;
+@use 'layout.scss' as *;
 
 #alignment-panel {
-    bottom: 80px;
-    right: 102px;
+    // 2px above the bottom toolbar, in line with the upstream panels
+    bottom: $edge + $bottom-toolbar-height + 2px;
+    right: $edge + $side-toolbar-width + $panel-gap;
     width: 520px;
     max-height: 560px;
     flex-direction: column;

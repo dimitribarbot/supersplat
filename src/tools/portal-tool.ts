@@ -58,14 +58,15 @@ class PortalTool {
 
         // icon-only: the label moves to the tooltip. E120/E111/E113 are the pcui
         // icon-font plus/move/rotate glyphs -- the same move/rotate the bottom
-        // toolbar and the sphere/box select toolbars use.
-        const addButton = new Button({ class: 'select-toolbar-mode', icon: 'E120' });
+        // toolbar and the sphere/box select toolbars use. As there, the gizmo
+        // modes share a well and the one-shot actions are bare ops.
+        const addButton = new Button({ class: 'select-toolbar-op', icon: 'E120' });
         addButton.dom.title = i18n.t('portals.add');
         const moveButton = new Button({ class: 'select-toolbar-mode', icon: 'E111' });
         moveButton.dom.title = i18n.t('portals.move');
         const rotateButton = new Button({ class: 'select-toolbar-mode', icon: 'E113' });
         rotateButton.dom.title = i18n.t('portals.rotate');
-        const glyphClass = ['select-toolbar-mode', 'select-toolbar-glyph'];
+        const glyphClass = ['select-toolbar-op', 'select-toolbar-glyph'];
         const boundsButton = new Button({ text: '⤢', class: glyphClass });
         boundsButton.dom.title = i18n.t('portals.bounds.tooltip');
         const transitionLabel = new Label({ text: i18n.t('portals.transition') });
@@ -94,9 +95,9 @@ class PortalTool {
         const entrySceneInput = new SelectInput({ type: 'number', options: [], width: 140 });
         // E212 is the pcui icon-font camera, E132 its cross -- icon-only like the
         // rest of the bar's actions, with the label carried by the tooltip
-        const entrySetButton = new Button({ class: 'select-toolbar-mode', icon: 'E212' });
+        const entrySetButton = new Button({ class: 'select-toolbar-op', icon: 'E212' });
         entrySetButton.dom.title = i18n.t('portals.entrypoint.set');
-        const entryClearButton = new Button({ class: 'select-toolbar-mode', icon: 'E132' });
+        const entryClearButton = new Button({ class: 'select-toolbar-op', icon: 'E132' });
         entryClearButton.dom.title = i18n.t('portals.entrypoint.clear');
 
         const group = (...els: Parameters<Container['append']>[0][]) => {
@@ -104,9 +105,11 @@ class PortalTool {
             els.forEach((el) => c.append(el));
             return c;
         };
+        const modes = new Container({ class: 'toolbar-well' });
+        modes.append(moveButton);
+        modes.append(rotateButton);
         bar.append(addButton);
-        bar.append(moveButton);
-        bar.append(rotateButton);
+        bar.append(modes);
         bar.append(boundsButton);
         bar.append(group(transitionLabel, transitionInput));
         bar.append(group(widthLabel, widthInput));
@@ -150,7 +153,9 @@ class PortalTool {
             const br = boundsButton.dom.getBoundingClientRect();
             const cr = canvasContainer.dom.getBoundingClientRect();
             boundsPopup.dom.style.left = `${br.left - cr.left + br.width / 2}px`;
-            boundsPopup.dom.style.top = `${br.bottom - cr.top + 8}px`;
+            // above the button: the bar floats just over the bottom toolbar,
+            // so there is no room below it for the 3x3 grid
+            boundsPopup.dom.style.bottom = `${cr.bottom - br.top + 8}px`;
         };
 
         const toggleBoundsPopup = (show?: boolean) => {

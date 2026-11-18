@@ -26,7 +26,7 @@ class ExportSummaryDialog extends Container {
     destroy: () => void;
 
     constructor(events: Events, tooltips: Tooltips, args = {}) {
-        super({ id: 'export-summary-dialog', hidden: true, tabIndex: -1, ...args });
+        super({ id: 'export-summary-dialog', class: 'blocks-shortcuts', hidden: true, tabIndex: -1, ...args });
 
         const dialog = new Container({ id: 'dialog' });
         const header = new Container({ id: 'header' });

@@ -62,7 +62,7 @@ class S3PublishDialog extends Container {
     destroy: () => void;
 
     constructor(events: Events, args = {}) {
-        super({ id: 's3-publish-dialog', hidden: true, tabIndex: -1, ...args });
+        super({ id: 's3-publish-dialog', class: 'blocks-shortcuts', hidden: true, tabIndex: -1, ...args });
 
         const dialog = new Container({ id: 'dialog' });
         const header = new Container({ id: 'header' });

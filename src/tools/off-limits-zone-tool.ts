@@ -49,14 +49,15 @@ class OffLimitsZoneTool {
 
         // icon-only: the label moves to the tooltip. E120/E111/E113 are the pcui
         // icon-font plus/move/rotate glyphs -- the same move/rotate the bottom
-        // toolbar and the sphere/box select toolbars use.
-        const addButton = new Button({ class: 'select-toolbar-mode', icon: 'E120' });
+        // toolbar and the sphere/box select toolbars use. As there, the gizmo
+        // modes share a well and the one-shot actions are bare ops.
+        const addButton = new Button({ class: 'select-toolbar-op', icon: 'E120' });
         addButton.dom.title = i18n.t('offLimitsZones.add');
         const moveButton = new Button({ class: 'select-toolbar-mode', icon: 'E111' });
         moveButton.dom.title = i18n.t('offLimitsZones.move');
         const rotateButton = new Button({ class: 'select-toolbar-mode', icon: 'E113' });
         rotateButton.dom.title = i18n.t('offLimitsZones.rotate');
-        const boundsButton = new Button({ text: '⤢', class: ['select-toolbar-mode', 'select-toolbar-glyph'] });
+        const boundsButton = new Button({ text: '⤢', class: ['select-toolbar-op', 'select-toolbar-glyph'] });
         boundsButton.dom.title = i18n.t('offLimitsZones.bounds.tooltip');
         const widthLabel = new Label({ text: i18n.t('offLimitsZones.width') });
         const widthInput = new NumericInput({ precision: 2, value: 2, width: 80, min: 0.01 });
@@ -65,9 +66,11 @@ class OffLimitsZoneTool {
         const messageLabel = new Label({ text: i18n.t('offLimitsZones.message') });
         const messageInput = new TextInput({ class: ['annotations-toolbar-input', 'off-limits-message-input'] });
 
+        const modes = new Container({ class: 'toolbar-well' });
+        modes.append(moveButton);
+        modes.append(rotateButton);
         bar.append(addButton);
-        bar.append(moveButton);
-        bar.append(rotateButton);
+        bar.append(modes);
         bar.append(boundsButton);
         bar.append(widthLabel);
         bar.append(widthInput);
@@ -119,7 +122,9 @@ class OffLimitsZoneTool {
             const br = boundsButton.dom.getBoundingClientRect();
             const cr = canvasContainer.dom.getBoundingClientRect();
             boundsPopup.dom.style.left = `${br.left - cr.left + br.width / 2}px`;
-            boundsPopup.dom.style.top = `${br.bottom - cr.top + 8}px`;
+            // above the button: the bar floats just over the bottom toolbar,
+            // so there is no room below it for the 3x3 grid
+            boundsPopup.dom.style.bottom = `${cr.bottom - br.top + 8}px`;
         };
 
         const toggleBoundsPopup = (show?: boolean) => {

@@ -1,5 +1,6 @@
 @use 'pcui-theme-grey.scss';
 @use 'colors.scss' as *;
+@use 'layout.scss' as *;
 @use 'tooltips.scss';
 @use 'panel.scss';
 @use 'menu-panel.scss';
@@ -11,7 +12,9 @@
 @use 'annotation-overlay.scss';
 @use 'splat-list.scss';
 @use 'transform.scss';
+@use 'toolbar.scss';
 @use 'bottom-toolbar.scss';
+@use 'mode-toolbar.scss';
 @use 'right-toolbar.scss';
 @use 'select-toolbar.scss';
 @use 'data-panel.scss';
@@ -31,6 +34,7 @@
 @use 'portal-entrypoint-overlay.scss';
 @use 'portal-bounds-popup.scss';
 @use 'off-limits-bounds-popup.scss';
+@use 'drop-overlay.scss';
 
 * {
     font-size: 12px;
@@ -261,8 +265,8 @@ body {
 
 #view-cube-container {
     position: absolute;
-    width: 140px;
-    height: 140px;
+    width: $view-cube-size;
+    height: $view-cube-size;
     right: 0px;
     top: 0px;
     pointer-events: none;

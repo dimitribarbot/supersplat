@@ -53,16 +53,16 @@
 
     // The set-view/move buttons carry plain text glyphs (⊙ ↑ ↓), not pcui
     // icon-font characters; .select-toolbar-glyph (see select-toolbar.scss) is
-    // what flex-centres those, and .select-toolbar-mode sizes the box so they
+    // what flex-centres those, and .select-toolbar-op sizes the box so they
     // match the icon buttons in the portal and off-limits bars.
     //
-    // All this rule adds is the margin, restoring what .select-toolbar-mode
+    // All this rule adds is the margin, restoring what .select-toolbar-op
     // zeroes: every other control in this bar carries pcui's 6px element margin,
     // and the bar itself has no vertical padding -- it leans on min-height to
     // look padded while it fits on one row. So a wrapped row of only these
     // buttons sat flush against the bar's bottom edge, while a row that also
     // held an input did not.
-    .select-toolbar-mode.annotations-toolbar-glyph {
+    .select-toolbar-op.annotations-toolbar-glyph {
         margin: 6px 1px;
     }
 }
