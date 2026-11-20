@@ -16,7 +16,6 @@ import type { ExportChoices, ExportDialogResult, ExportType } from '../export-op
 import { probeExportCapabilities } from '../export-server-client';
 import type { ExportSettings } from '../export-settings';
 import type { BlobReadSource, WriteTarget } from '../io';
-import type { Splat } from '../splat';
 
 import { PerSceneCollisionPanel } from './collision-params';
 import { i18n } from './localization';
@@ -242,28 +241,6 @@ class ExportPopup extends Container {
 
         compressRow.append(compressLabel);
         compressRow.append(compressBoolean);
-
-        // spherical harmonic bands
-
-        const bandsRow = new Container({
-            class: 'row'
-        });
-
-        const bandsLabel = new Label({
-            class: 'label'
-        });
-        i18n.bindText(bandsLabel, 'popup.export.sh-bands');
-
-        const bandsSlider = new SliderInput({
-            class: 'slider',
-            min: 0,
-            max: 3,
-            precision: 0,
-            value: 3
-        });
-
-        bandsRow.append(bandsLabel);
-        bandsRow.append(bandsSlider);
 
         // sog iterations
 
@@ -493,7 +470,6 @@ class ExportPopup extends Container {
         content.append(colorRow);
         content.append(fovRow);
         content.append(compressRow);
-        content.append(bandsRow);
         content.append(iterationsRow);
         content.append(streamingRow);
         content.append(collisionRow);
@@ -763,7 +739,6 @@ class ExportPopup extends Container {
                 colorRow,
                 fovRow,
                 compressRow,
-                bandsRow,
                 iterationsRow,
                 streamingRow,
                 collisionRow,
@@ -777,18 +752,17 @@ class ExportPopup extends Container {
             ];
 
             const activeRows: Container[] = {
-                ply: [compressRow, bandsRow, serverRow, filenameRow],
+                ply: [compressRow, serverRow, filenameRow],
                 splat: [filenameRow],
                 ssproj: [filenameRow],
-                sog: [bandsRow, iterationsRow, serverRow, filenameRow],
-                spz: [bandsRow, spzVersionRow, filenameRow],
+                sog: [iterationsRow, serverRow, filenameRow],
+                spz: [spzVersionRow, filenameRow],
                 viewer: [
                     viewerTypeRow,
                     animationRow,
                     loopRow,
                     colorRow,
                     fovRow,
-                    bandsRow,
                     streamingRow,
                     collisionRow,
                     environmentRow,
@@ -804,14 +778,6 @@ class ExportPopup extends Container {
             allRows.forEach((r) => {
                 r.hidden = activeRows.indexOf(r) === -1;
             });
-
-            // default to the scene's band count, capped by the viewport setting.
-            // higher values pad the missing coefficients with zeros
-            const sceneBands = Math.max(
-                0,
-                ...(events.invoke('scene.splats') as Splat[]).map((s) => s.resource.shBands)
-            );
-            bandsSlider.value = Math.min(events.invoke('view.bands'), sceneBands);
 
             // ply
             compressBoolean.value = false;
@@ -915,28 +881,24 @@ class ExportPopup extends Container {
                     case 'ply':
                         return {
                             filename,
-                            shBands: bandsSlider.value,
                             compressedPly: compressBoolean.value,
                             useServer
                         };
                     case 'sog':
                         return {
                             filename,
-                            shBands: bandsSlider.value,
                             sogIterations: iterationsSlider.value,
                             useServer
                         };
                     case 'spz':
                         return {
                             filename,
-                            shBands: bandsSlider.value,
                             spzVersion: spzVersionSelect.value === '3' ? 3 : 4
                         };
                     case 'viewer':
                     case 'viewerSettings':
                         return {
                             filename,
-                            shBands: bandsSlider.value,
                             viewerType: viewerTypeSelect.value === 'zip' ? 'zip' : 'html',
                             includeAnimation: animationToggle.value,
                             loopMode: loopSelect.value as ExportChoices['loopMode'],

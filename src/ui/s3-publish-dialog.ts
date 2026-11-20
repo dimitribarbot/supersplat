@@ -14,7 +14,6 @@ import type { Pose } from '../camera-poses';
 import type { Events } from '../events';
 import { buildPortalBundle } from '../portal-export';
 import type { ExportPortal } from '../portal-export';
-import type { Splat } from '../splat';
 import type { AnimTrack, ExperienceSettings } from '../splat-serialize';
 import { defaultPostEffectSettings } from '../splat-serialize';
 
@@ -36,7 +35,6 @@ export type S3PublishOptions = {
     subfolder: string;
     name: string;
     public: boolean;
-    serializeSettings: { shBands: number };
     viewerExportSettings: {
         type: 'zip';
         streaming: boolean;
@@ -94,7 +92,6 @@ class S3PublishDialog extends Container {
         });
         const color = new ColorPicker({ class: 'color-picker', value: [1, 1, 1, 1] });
         const fov = new SliderInput({ class: 'slider', min: 10, max: 120, precision: 0, value: 60 });
-        const bands = new SliderInput({ class: 'slider', min: 0, max: 3, precision: 0, value: 3 });
         const subfolder = new TextInput({ class: 'text-input' });
         const name = new TextInput({ class: 'text-input' });
         const isPublic = new BooleanInput({ class: 'boolean', type: 'toggle', value: false });
@@ -126,7 +123,6 @@ class S3PublishDialog extends Container {
         const loopRow = row('popup.export.loop-mode', loop);
         const colorRow = row('popup.export.background-color', color);
         const fovRow = row('popup.export.fov', fov);
-        const bandsRow = row('popup.export.sh-bands', bands);
         const subfolderRow = row('popup.publish.s3.subfolder', subfolder);
         const nameRow = row('popup.publish.s3.name', name);
         const publicRow = row('popup.publish.s3.public', isPublic);
@@ -147,7 +143,6 @@ class S3PublishDialog extends Container {
             loopRow,
             colorRow,
             fovRow,
-            bandsRow,
             subfolderRow,
             nameRow,
             publicRow,
@@ -219,13 +214,6 @@ class S3PublishDialog extends Container {
             const bgClr = events.invoke('bgClr');
             color.value = [bgClr.r, bgClr.g, bgClr.b];
             fov.value = events.invoke('camera.fov');
-            // default to the scene's band count, capped by the viewport setting;
-            // higher values pad the missing coefficients with zeros
-            const sceneBands = Math.max(
-                0,
-                ...(events.invoke('scene.splats') as Splat[]).map((s) => s.resource.shBands)
-            );
-            bands.value = Math.min(events.invoke('view.bands'), sceneBands);
             subfolder.value = '';
             // the name becomes the destination folder, so strip any file extension
             name.value = removeKnownExtension(splatNames[0] ?? 'scene');
@@ -326,7 +314,6 @@ class S3PublishDialog extends Container {
                     subfolder: subfolder.value.trim(),
                     name: name.value.trim(),
                     public: isPublic.value,
-                    serializeSettings: { shBands: bands.value },
                     viewerExportSettings: {
                         type: 'zip',
                         streaming: streaming.value,

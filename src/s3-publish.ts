@@ -33,8 +33,8 @@ const registerS3PublishEvents = (events: Events) => {
             // linearOpacity: the shipped PLYs carry exact linear opacity, so the
             // server reads back the very values a local export would write from
             // antiAlias: tagged with the model the view renders, as every other export
+            // (the scene's own SH bands are published, as upstream's publish does)
             const serializeSettings: SerializeSettings = {
-                ...options.serializeSettings,
                 antiAlias: events.invoke('view.antiAlias'),
                 linearOpacity: true
             };
@@ -89,7 +89,7 @@ const registerS3PublishEvents = (events: Events) => {
                 name: options.name,
                 public: options.public,
                 overwrite: true, // already confirmed (or didn't exist)
-                serializeSettings: options.serializeSettings,
+                serializeSettings: {},
                 // S3PublishOptions.viewerExportSettings never carries poster or
                 // image bytes (they travel as their own multipart parts below)
                 viewerExportSettings: {
